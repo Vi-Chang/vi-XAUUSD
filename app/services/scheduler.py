@@ -38,6 +38,19 @@ class AppState:
 state = AppState()
 
 
+async def broadcast(payload: dict) -> None:
+    """向所有 WebSocket 客戶端推送 JSON 訊息(壞連線自動清除)。"""
+    import json
+    msg = json.dumps(payload, ensure_ascii=False, default=str)
+    dead = set()
+    for ws in state.ws_clients:
+        try:
+            await ws.send_text(msg)
+        except Exception:  # noqa: BLE001
+            dead.add(ws)
+    state.ws_clients -= dead
+
+
 async def job_poll_price() -> None:
     if not market_is_open():
         return
@@ -51,6 +64,10 @@ async def job_poll_price() -> None:
             db.add(LivePrice(symbol=tick.symbol, bid=tick.bid, ask=tick.ask,
                              mid=tick.mid, spread=tick.spread, provider=tick.provider,
                              quote_time=tick.quote_time, received_at=now))
+        # 即時推送給 Dashboard(未收線 K 棒即時跳動用)
+        await broadcast({"type": "tick", "bid": tick.bid, "ask": tick.ask,
+                         "mid": tick.mid, "spread": tick.spread,
+                         "time": int(tick.quote_time.timestamp())})
     except Exception as exc:  # noqa: BLE001
         logger.error("poll_price failed: %s", exc)
 
@@ -82,15 +99,9 @@ async def job_m15_analysis() -> None:
                                             f"{result.data_quality.warnings[:3]}")
         state.last_decision_action = action
 
-        # WebSocket 廣播
-        import json
-        dead = set()
-        for ws in state.ws_clients:
-            try:
-                await ws.send_text(json.dumps(state.latest_result, ensure_ascii=False, default=str))
-            except Exception:  # noqa: BLE001
-                dead.add(ws)
-        state.ws_clients -= dead
+        # WebSocket 廣播:收線事件 + 最新分析
+        await broadcast({"type": "candle_closed", "timeframe": "15M"})
+        await broadcast({"type": "analysis", "data": state.latest_result})
     except Exception as exc:  # noqa: BLE001
         logger.exception("m15_analysis failed: %s", exc)
         if state.notifier:

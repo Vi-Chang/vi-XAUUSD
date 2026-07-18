@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "dev",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["scripts/dev_server.py"],
+      "port": 8710
+    }
+  ]
+}

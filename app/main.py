@@ -1,10 +1,13 @@
-"""FastAPI 入口:/health、分析 API、WebSocket 推送。"""
+"""FastAPI 入口:Dashboard、K 棒 API、分析 API、WebSocket 即時推送。"""
 from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from app import __version__
 from app.config import get_settings
@@ -14,8 +17,12 @@ from app.notifications.telegram import build_notification_manager
 from app.providers import get_primary_provider
 from app.services.heartbeat import health_payload
 from app.services.scheduler import build_scheduler, state
+from app.utils.timeutils import ensure_utc
 
 logger = logging.getLogger(__name__)
+
+STATIC_DIR = Path(__file__).parent / "static"
+CHART_TIMEFRAMES = ("15M", "1H", "4H", "1D")
 
 
 @asynccontextmanager
@@ -47,52 +54,13 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="XAUUSD Multi-Timeframe Analysis (MVP)", version=__version__,
               lifespan=lifespan)
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
 @app.get("/", include_in_schema=False)
-async def index():
-    """簡易首頁:系統狀態一覽與端點連結(完整 Dashboard 為 Phase 8)。"""
-    from fastapi.responses import HTMLResponse
-    return HTMLResponse("""<!doctype html>
-<html lang="zh-Hant"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>XAUUSD 分析系統</title>
-<style>
-  body{font-family:system-ui,-apple-system,"Noto Sans TC",sans-serif;max-width:720px;
-       margin:40px auto;padding:0 20px;line-height:1.7;color:#222;background:#fafafa}
-  @media (prefers-color-scheme:dark){body{color:#ddd;background:#111}a{color:#7ab8ff}
-    .card{background:#1b1b1b;border-color:#333}}
-  h1{font-size:1.4rem}
-  .card{background:#fff;border:1px solid #e3e3e3;border-radius:10px;padding:16px 20px;margin:14px 0}
-  code{background:rgba(127,127,127,.15);padding:2px 6px;border-radius:5px}
-  #status{white-space:pre-wrap;font-family:ui-monospace,monospace;font-size:.85rem}
-</style></head><body>
-<h1>XAUUSD 即時多週期分析系統(MVP)</h1>
-<div class="card">
-  <b>API 端點</b><br>
-  <a href="/health">/health</a> — 系統健康與資料源狀態<br>
-  <a href="/api/analysis/latest">/api/analysis/latest</a> — 最新完整分析(固定 JSON)<br>
-  <a href="/api/price">/api/price</a> — 即時報價<br>
-  <a href="/docs">/docs</a> — API 文件(Swagger)
-</div>
-<div class="card"><b>目前狀態</b><div id="status">載入中…</div></div>
-<div class="card" style="font-size:.85rem;opacity:.75">
-  本系統僅提供分析與通知,不執行任何交易(AUTO_TRADING_ENABLED=false)。<br>
-  日線以紐約 17:00 ET 切分;結構判定只使用已收線 K 棒;沒有優勢就等待。
-</div>
-<script>
-(async()=>{
-  try{
-    const h=await (await fetch('/health')).json();
-    const a=await (await fetch('/api/analysis/latest')).json();
-    document.getElementById('status').textContent=
-      `市場:${h.market_open?'開盤中':'休市'} | 資料源:${h.provider} | 系統:${h.status}\\n`+
-      `狀態:${a.market_state} | 決策:${a.decision.action}(${a.decision.confidence_grade})\\n`+
-      `價格:${a.current_price.mid ?? 'n/a'} | 資料品質:${a.data_quality.status}\\n`+
-      `${a.summary_zh_tw}\\n提醒:${a.most_likely_user_mistake_now}`;
-  }catch(e){document.getElementById('status').textContent='狀態載入失敗:'+e}
-})();
-</script></body></html>""")
+async def index() -> FileResponse:
+    """Dashboard(深色交易終端風格;完整功能見 app/static/)。"""
+    return FileResponse(STATIC_DIR / "index.html")
 
 
 @app.get("/health")
@@ -121,6 +89,99 @@ async def trigger_analysis() -> dict:
     return state.latest_result
 
 
+@app.get("/api/analysis/history")
+async def analysis_history(limit: int = 20) -> list[dict]:
+    """歷史分析紀錄(復盤分頁用)。"""
+    from sqlalchemy import select
+
+    from app.db.models import AnalysisRun
+    from app.db.session import db_session
+    limit = max(1, min(limit, 100))
+    with db_session() as db:
+        rows = db.execute(select(AnalysisRun)
+                          .order_by(AnalysisRun.run_time.desc())
+                          .limit(limit)).scalars().all()
+    return [{
+        "run_time": ensure_utc(r.run_time).isoformat(),
+        "trigger": r.trigger, "market_state": r.market_state,
+        "action": r.decision_action, "grade": r.confidence_grade,
+        "evidence_score": r.evidence_score, "quality": r.data_quality_status,
+    } for r in rows]
+
+
+@app.get("/api/candles")
+async def candles_api(timeframe: str = "15M", limit: int = 300) -> list[dict]:
+    """資料庫已儲存 K 棒(圖表用;與分析引擎同一份資料,spec 之一致性要求)。"""
+    if timeframe not in CHART_TIMEFRAMES:
+        raise HTTPException(400, f"timeframe must be one of {CHART_TIMEFRAMES}")
+    limit = max(10, min(limit, 1000))
+    from sqlalchemy import select
+
+    from app.db.models import Candle
+    from app.db.session import db_session
+    with db_session() as db:
+        rows = db.execute(select(Candle)
+                          .where(Candle.symbol == "XAUUSD", Candle.timeframe == timeframe)
+                          .order_by(Candle.open_time.desc(), Candle.received_at.desc())
+                          .limit(limit * 2)).scalars().all()
+    seen: set = set()
+    out: list[dict] = []
+    for r in rows:  # 同一 open_time 取最新 received_at(desc 排序下先出現者)
+        t = ensure_utc(r.open_time)
+        if t in seen:
+            continue
+        seen.add(t)
+        out.append({"time": int(t.timestamp()), "open": r.open, "high": r.high,
+                    "low": r.low, "close": r.close, "volume": r.volume,
+                    "is_closed": r.is_closed})
+    out.reverse()
+    return out[-limit:]
+
+
+@app.get("/api/structure/events")
+async def structure_events(timeframe: str = "15M", limit: int = 40) -> list[dict]:
+    """市場結構事件(圖表標記 BOS/CHoCH/假突破用)。"""
+    from sqlalchemy import select
+
+    from app.db.models import MarketStructure
+    from app.db.session import db_session
+    limit = max(1, min(limit, 200))
+    with db_session() as db:
+        rows = db.execute(select(MarketStructure)
+                          .where(MarketStructure.timeframe == timeframe)
+                          .order_by(MarketStructure.event_time.desc())
+                          .limit(limit)).scalars().all()
+    return [{
+        "event_type": r.event_type,
+        "time": int(ensure_utc(r.event_time).timestamp()),
+        "price": r.price, "still_valid": r.still_valid,
+    } for r in rows]
+
+
+@app.get("/api/events/upcoming")
+async def upcoming_events(limit: int = 5) -> list[dict]:
+    """即將到來的高影響經濟事件(倒數計時與時間軸標記用)。"""
+    from datetime import datetime, timezone
+
+    from app.services.event_service import load_manual_events
+    try:
+        events, _ = load_manual_events()
+    except Exception:  # noqa: BLE001
+        return []
+    now = datetime.now(timezone.utc)
+    out = []
+    for ev in events:
+        try:
+            t = datetime.fromisoformat(ev["time_utc"].replace("Z", "+00:00"))
+        except (KeyError, ValueError):
+            continue
+        if t >= now:
+            out.append({"name": ev.get("name"), "country": ev.get("country"),
+                        "impact": ev.get("impact"), "time": int(t.timestamp())})
+    out.sort(key=lambda e: e["time"])
+    return out[:limit]
+
+
 @app.get("/api/price")
 async def current_price() -> dict:
     tick = await state.provider.get_live_price()
@@ -131,13 +192,14 @@ async def current_price() -> dict:
 
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket) -> None:
-    """即時推送分析結果(每次 15M 收線分析後廣播)。"""
+    """即時推送:tick(未收線 K 棒跳動)、candle_closed、analysis。"""
     await ws.accept()
     state.ws_clients.add(ws)
     try:
         import json
         if state.latest_result:
-            await ws.send_text(json.dumps(state.latest_result, ensure_ascii=False, default=str))
+            await ws.send_text(json.dumps({"type": "analysis", "data": state.latest_result},
+                                          ensure_ascii=False, default=str))
         while True:
             await ws.receive_text()  # keepalive;client 可送任意訊息
     except WebSocketDisconnect:

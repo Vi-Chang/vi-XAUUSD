@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>XAUUSD 交易分析終端</title>
+<link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="dot" id="conn-dot" title="連線狀態"></span>
+    <h1>XAUUSD <span class="sub">多週期分析終端</span></h1>
+  </div>
+  <div class="price-block" id="price-block">
+    <div class="pq"><span class="lbl">Bid</span><span class="num big skel" id="px-bid">––––.––</span></div>
+    <div class="pq"><span class="lbl">Ask</span><span class="num big skel" id="px-ask">––––.––</span></div>
+    <div class="pq"><span class="lbl">Spread</span><span class="num skel" id="px-spread">–.––</span></div>
+  </div>
+  <div class="top-chips">
+    <span class="chip skel" id="chip-market">…</span>
+    <span class="chip skel" id="chip-quality">…</span>
+  </div>
+</header>
+
+<main class="layout">
+  <section class="chart-card card">
+    <div class="chart-toolbar">
+      <div class="tf-group" id="tf-group">
+        <button class="tf-btn active" data-tf="15M">15M</button>
+        <button class="tf-btn" data-tf="1H">1H</button>
+        <button class="tf-btn" data-tf="4H">4H</button>
+        <button class="tf-btn" data-tf="1D">1D</button>
+      </div>
+      <div class="chart-legend">
+        <span class="legend-item"><i class="sw" style="background:var(--bull)"></i>多方</span>
+        <span class="legend-item"><i class="sw" style="background:var(--bear)"></i>空方</span>
+        <span class="legend-note">成交量為 Tick Volume</span>
+      </div>
+    </div>
+    <div id="chart" class="chart-host">
+      <div class="chart-skeleton" id="chart-skeleton">
+        <div class="skel-bars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+        <span>載入 K 線資料…</span>
+      </div>
+    </div>
+  </section>
+
+  <aside class="side">
+    <div class="card" id="decision-card">
+      <div class="card-title">當前決策</div>
+      <div class="decision-row">
+        <span class="decision-badge skel" id="decision-badge">…</span>
+        <span class="grade-badge skel" id="grade-badge">…</span>
+      </div>
+      <div class="evidence-row">
+        <span class="lbl">證據分數</span>
+        <div class="bar"><div class="bar-fill" id="evidence-bar" style="width:0%"></div></div>
+        <span class="num" id="evidence-num">–</span>
+      </div>
+      <p class="reason skel" id="decision-reason">載入中…</p>
+    </div>
+
+    <div class="card">
+      <div class="card-title">多週期結構</div>
+      <div class="tf-capsules" id="tf-capsules">
+        <span class="capsule skel" data-tf="1D">1D</span>
+        <span class="capsule skel" data-tf="4H">4H</span>
+        <span class="capsule skel" data-tf="1H">1H</span>
+        <span class="capsule skel" data-tf="15M">15M</span>
+      </div>
+      <div class="state-chip-row"><span class="lbl">市場狀態</span>
+        <span class="chip skel" id="market-state-chip">…</span></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">事件風險</div>
+      <div class="countdown-wrap">
+        <div class="countdown num skel" id="event-countdown">--:--:--</div>
+        <div class="event-name" id="event-name">載入中…</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">系統</div>
+      <div class="kv"><span>資料源</span><span class="num" id="sys-provider">–</span></div>
+      <div class="kv"><span>資料品質</span><span id="sys-quality">–</span></div>
+      <div class="kv"><span>最近分析</span><span class="num" id="sys-lastrun">–</span></div>
+      <div class="mistake" id="mistake-box"></div>
+    </div>
+  </aside>
+</main>
+
+<section class="tabs-card card">
+  <nav class="tabs" id="tabs">
+    <button class="tab active" data-tab="scenarios">多空劇本</button>
+    <button class="tab" data-tab="position">持倉管理</button>
+    <button class="tab" data-tab="coach">交易教練</button>
+    <button class="tab" data-tab="history">歷史復盤</button>
+  </nav>
+  <div class="tab-panels">
+    <div class="panel active" id="panel-scenarios">
+      <div class="scenario-grid">
+        <div class="scenario long" id="scenario-long"><div class="empty">載入中…</div></div>
+        <div class="scenario short" id="scenario-short"><div class="empty">載入中…</div></div>
+      </div>
+    </div>
+    <div class="panel" id="panel-position">
+      <div id="position-body"><div class="empty">尚無持倉。持倉自動同步(券商成交紀錄)屬 Phase 7 範圍。</div></div>
+    </div>
+    <div class="panel" id="panel-coach">
+      <div id="coach-body"><div class="empty">尚無行為標籤。交易教練需要成交紀錄(Phase 7 啟用)。</div></div>
+    </div>
+    <div class="panel" id="panel-history">
+      <div id="history-body"><div class="empty">載入中…</div></div>
+    </div>
+  </div>
+</section>
+
+<footer class="foot">
+  本系統僅提供分析與通知,不執行任何交易(AUTO_TRADING_ENABLED=false)。
+  日線以紐約 17:00 ET 切分;結構判定只使用已收線 K 棒;沒有優勢就等待。
+</footer>
+
+<script src="/static/vendor/lightweight-charts.standalone.production.js"></script>
+<script src="/static/js/app.js"></script>
+</body>
+</html>

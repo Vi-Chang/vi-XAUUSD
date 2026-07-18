@@ -10,7 +10,9 @@ from datetime import datetime, timezone
 
 from app import PROMPT_VERSION, STRATEGY_VERSION
 from app.config import get_settings
-from app.db.models import AnalysisRun, CandidateLevel as CandidateLevelRow
+from app.db.models import (
+    AnalysisRun, CandidateLevel as CandidateLevelRow, MarketStructure,
+)
 from app.db.session import db_session
 from app.engines import data_quality, indicators, market_state
 from app.engines.key_levels import build_candidate_levels, resolve_ids
@@ -211,6 +213,24 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
                                          kind=lv.kind, price_low=lv.price_low,
                                          price_high=lv.price_high, strength=lv.strength,
                                          source=" + ".join(lv.sources)[:255], created_at=now))
+            # 結構事件持久化(Dashboard 圖表標記用;以 tf+type+time 去重)
+            from sqlalchemy import select as sa_select
+            for tf, rep in structures.items():
+                for ev in rep.events[-10:]:
+                    row = db.execute(sa_select(MarketStructure).where(
+                        MarketStructure.timeframe == tf,
+                        MarketStructure.event_type == ev.event_type,
+                        MarketStructure.event_time == ev.time,
+                    )).scalar_one_or_none()
+                    if row is None:
+                        db.add(MarketStructure(
+                            symbol=symbol, timeframe=tf, event_type=ev.event_type,
+                            event_time=ev.time, price=ev.price,
+                            confirming_candles=[t.isoformat() for t in ev.confirming_candles],
+                            invalidation_price=ev.invalidation_price,
+                            still_valid=ev.still_valid, created_at=now))
+                    elif row.still_valid != ev.still_valid:
+                        row.still_valid = ev.still_valid
     except Exception as exc:  # noqa: BLE001
         logger.error("persist analysis failed: %s", exc)
 
