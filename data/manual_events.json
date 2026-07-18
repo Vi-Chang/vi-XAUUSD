@@ -1,0 +1,22 @@
+{
+  "_readme": "手動維護的高影響事件 fallback(spec 二之5)。每週日花 5 分鐘從 Forex Factory / investing.com 抄錄本週高影響事件。時間一律 UTC ISO8601。updated_at 超過 7 天系統會提醒更新。",
+  "updated_at": "2026-07-18T00:00:00Z",
+  "events": [
+    {
+      "name": "US CPI (YoY)",
+      "country": "US",
+      "time_utc": "2026-08-12T12:30:00Z",
+      "impact": "HIGH",
+      "previous": null,
+      "forecast": null
+    },
+    {
+      "name": "FOMC Rate Decision",
+      "country": "US",
+      "time_utc": "2026-07-29T18:00:00Z",
+      "impact": "HIGH",
+      "previous": null,
+      "forecast": null
+    }
+  ]
+}
