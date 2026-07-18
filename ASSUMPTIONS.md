@@ -37,6 +37,10 @@
 ## 資料庫與基礎設施
 
 9. **本機快速展示用 SQLite、Redis 可留空**(行程內記憶體快取);Docker Compose 為正式配置(PostgreSQL+Redis)。TimescaleDB 為日後擴充選項。
+   **雲端(Zeabur)已改用 managed PostgreSQL 18**(服務名 postgresql,內部連線
+   `postgresql.zeabur.internal:5432`),持倉/帳戶/行為紀錄跨部署永久保存;
+   `init_db()` 啟動時 create_all + 補 account_id 欄位 + 種子帳戶,對 Postgres 與
+   SQLite 皆相容。本機開發仍用 SQLite(`xauusd.db`),不受影響。
 10. DB 操作為同步 SQLAlchemy Session(查詢皆為短操作);量大後可換 async engine。
 11. 通知冷卻狀態存在行程記憶體(重啟即重置);多實例部署時應改存 Redis。
 
