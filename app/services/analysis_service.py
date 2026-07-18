@@ -21,7 +21,8 @@ from app.engines.rule_engine import decide
 from app.providers.base import MarketDataProvider
 from app.schemas.analysis import (
     AnalysisResult, BiasAnalysis, CurrentPrice, DataQuality, Decision, EventRisk,
-    KeyLevels, Meta, TimeframeView, Timeframes, validate_candidate_refs,
+    KeyLevels, Meta, PositionManagement, TimeframeView, Timeframes, TradingCoachView,
+    validate_candidate_refs,
 )
 from app.services.candle_service import candles_to_df, refresh_candles
 from app.services.event_service import evaluate_event_risk
@@ -184,6 +185,39 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
         summary_zh_tw=f"[{state}] {decision.reason}",
         most_likely_user_mistake_now=MISTAKE_BY_STATE.get(state, ""),
     )
+
+    # ── 9b. 手動持倉整合(spec 十七:持倉管理優先於尋找新交易)──
+    try:
+        from app.services.position_service import (
+            list_positions, position_view, recent_behavior_flags,
+        )
+        open_positions = list_positions(include_closed=False, limit=5)
+        if open_positions:
+            v = position_view(open_positions[0], tick.mid)
+            result.position_management = PositionManagement(
+                has_position=True, position_side=v["side"],
+                entry_price=v["entry_price"],
+                current_r_multiple=v["r_multiple"],
+                recommended_action=v["recommended_action"],
+                partial_exit_plan="1R 平 20–30% → 主要目標再平 30–50% → 保留 20–40% 趨勢倉",
+                trailing_stop_plan="以最近已確認 15M/1H Swing 或 ATR 結構移動;不以固定金額移動",
+                full_exit_condition="最終目標到達/反向結構正式成立/原劇本失效/移動停損觸發/重大事件降風險",
+                prohibited_actions=v["prohibited_actions"])
+            if result.decision.action in ("WATCH", "PREPARE_LONG", "PREPARE_SHORT"):
+                result.decision.action = "MANAGE"
+                result.decision.reason = ("已有持倉,持倉管理優先於尋找新交易(spec 十七)。"
+                                          + result.decision.reason)
+        flags = recent_behavior_flags(limit=5)
+        if flags:
+            result.trading_coach = TradingCoachView(
+                behavior_flags=[f["flag"] for f in flags],
+                stop_loss_discipline=("注意:近期有 STOP_WIDENING 紀錄"
+                                       if any(f["flag"] == "STOP_WIDENING" for f in flags) else ""),
+                early_exit_risk=("注意:近期有 EARLY_EXIT 紀錄"
+                                  if any(f["flag"] == "EARLY_EXIT" for f in flags) else ""),
+                message=flags[0]["corrective_action"])
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("position integration failed: %s", exc)
 
     # 候選 ID 引用驗證(規則引擎也必須通過同一道防線)
     known_ids = {lv.level_id for lv in levels}

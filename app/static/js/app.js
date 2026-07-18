@@ -335,8 +335,6 @@ function applyAnalysis(a) {
 
   renderScenario($("scenario-long"), a.long_scenario, "多方 LONG");
   renderScenario($("scenario-short"), a.short_scenario, "空方 SHORT");
-  renderPosition(a.position_management);
-  renderCoach(a.trading_coach);
   applyOverlays().catch(console.error);
 }
 
@@ -416,34 +414,117 @@ function renderScenario(el, sc, title) {
     ${confirms ? `<div class="sc-confirm">等待確認:<ul>${confirms}</ul></div>` : ""}`;
 }
 
-function renderPosition(pm) {
-  const body = $("position-body");
-  if (!pm || !pm.has_position) {
-    body.innerHTML = '<div class="empty">尚無持倉。持倉自動同步(券商成交紀錄)屬 Phase 7 範圍。</div>';
-    return;
+/* ═══ 手動持倉管理 ═══ */
+async function loadPositions() {
+  const list = $("position-list");
+  try {
+    const rows = await (await fetch("/api/positions")).json();
+    if (!rows.length) {
+      list.innerHTML = '<div class="empty">尚無持倉紀錄。用上方表單輸入你在券商實際建立的部位,系統會追蹤 R 倍數並依規則給出管理建議。</div>';
+      return;
+    }
+    list.innerHTML = rows.map(posCard).join("");
+  } catch (e) {
+    list.innerHTML = '<div class="empty">持倉載入失敗。</div>';
   }
-  const r = pm.current_r_multiple || 0;
-  const pct = Math.max(0, Math.min(100, (r / 3) * 100));
-  body.innerHTML = `
-    <div class="kv"><span>方向</span><span class="num">${pm.position_side}</span></div>
-    <div class="kv"><span>進場價</span><span class="num">${fmt(pm.entry_price)}</span></div>
-    <div class="pos-row"><div class="lbl"><span>R 倍數進度(0 → 3R)</span>
-      <span class="num">${fmt(r, 2)}R</span></div>
-      <div class="progress"><div class="fill" style="width:${pct}%"></div></div></div>
-    <div class="kv"><span>建議動作</span><span>${pm.recommended_action || "–"}</span></div>
-    <div class="kv"><span>分批停利</span><span>${pm.partial_exit_plan || "–"}</span></div>
-    <div class="kv"><span>移動停損</span><span>${pm.trailing_stop_plan || "–"}</span></div>`;
 }
 
-function renderCoach(tc) {
+function posCard(p) {
+  const r = p.r_multiple;
+  const rPct = r == null ? 0 : Math.max(0, Math.min(100, (r / 3) * 100));
+  const pnl = p.unrealized_pnl;
+  const hist = [
+    ...(p.stop_modification_history || []).map((h) =>
+      `<li>${h.time.slice(5, 16).replace("T", " ")} 停損 ${fmt(h.old_stop)} → ${fmt(h.new_stop)}${h.widening ? "(⚠ 擴大)" : ""}</li>`),
+    ...(p.partial_exit_history || []).map((h) =>
+      `<li>${h.time.slice(5, 16).replace("T", " ")} 平倉 ${h.percent}% @ ${fmt(h.price)}(R=${h.r_at_exit ?? "–"})</li>`),
+  ].join("");
+  return `
+  <div class="pos-card ${p.side.toLowerCase()}" data-id="${p.id}">
+    <div class="pos-head">
+      <span class="pos-side">${p.side === "LONG" ? "多單 LONG" : "空單 SHORT"}</span>
+      <span class="num">${fmt(p.lot_size)} 手・剩餘 ${p.remaining_percent}%</span>
+      ${p.is_open ? "" : '<span class="pos-closed-tag">已平倉</span>'}
+      ${pnl != null ? `<span class="pos-pnl ${pnl >= 0 ? "pos" : "neg"}">${pnl >= 0 ? "+" : ""}${fmt(pnl)} USD</span>` : ""}
+    </div>
+    <div class="pos-meta">
+      <span>進場 <span class="num">${fmt(p.entry_price)}</span></span>
+      <span>停損 <span class="num">${fmt(p.stop_loss)}</span></span>
+      <span>目標 <span class="num">${(p.planned_targets || []).map((t) => fmt(t)).join(" / ") || "–"}</span></span>
+      <span>開倉 <span class="num">${p.open_time.slice(5, 16).replace("T", " ")}</span></span>
+    </div>
+    ${p.is_open ? `
+    <div class="pos-row"><div class="lbl"><span>R 倍數進度(0 → 3R)</span>
+      <span class="num">${r == null ? "無停損" : fmt(r, 2) + "R"}</span></div>
+      <div class="progress"><div class="fill" style="width:${rPct}%"></div></div></div>
+    ${p.recommended_action ? `<div class="pos-advice">${p.recommended_action}</div>` : ""}
+    <div class="pos-actions">
+      <button class="btn btn-sm btn-warn" onclick="actStop(${p.id})">修改停損</button>
+      <button class="btn btn-sm" onclick="actPartial(${p.id})">分批平倉</button>
+      <button class="btn btn-sm btn-danger" onclick="actClose(${p.id})">全部平倉</button>
+    </div>` : ""}
+    ${hist ? `<details class="pos-hist"><summary>操作歷史</summary><ul>${hist}</ul></details>` : ""}
+  </div>`;
+}
+
+async function postJSON(url, body) {
+  const r = await fetch(url, { method: "POST",
+    headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.detail || r.status);
+  return data;
+}
+
+async function actStop(id) {
+  const v = prompt("新停損價(停損只能往獲利方向移動;往虧損方向會被記錄 STOP_WIDENING):");
+  if (!v) return;
+  try {
+    const out = await postJSON(`/api/positions/${id}/stop`, { stop_loss: parseFloat(v) });
+    if (out.behavior_flag) alert(`⚠ 交易教練:偵測到 ${out.behavior_flag}(停損往虧損方向移動)`);
+  } catch (e) { alert("失敗:" + e.message); }
+  loadPositions(); loadCoach();
+}
+
+async function actPartial(id) {
+  const pct = prompt("平倉比例 %(例:30):");
+  if (!pct) return;
+  const px = prompt("平倉價格(留空 = 使用當前市價):");
+  try {
+    const out = await postJSON(`/api/positions/${id}/partial_exit`,
+      { percent: parseFloat(pct), price: px ? parseFloat(px) : null });
+    if (out.behavior_flag) alert(`⚠ 交易教練:偵測到 ${out.behavior_flag}`);
+  } catch (e) { alert("失敗:" + e.message); }
+  loadPositions(); loadCoach();
+}
+
+async function actClose(id) {
+  if (!confirm("確定全部平倉?")) return;
+  const px = prompt("平倉價格(留空 = 使用當前市價):");
+  try {
+    const out = await postJSON(`/api/positions/${id}/close`,
+      { price: px ? parseFloat(px) : null });
+    if (out.behavior_flag) alert(`⚠ 交易教練:偵測到 ${out.behavior_flag}`);
+  } catch (e) { alert("失敗:" + e.message); }
+  loadPositions(); loadCoach();
+}
+
+async function loadCoach() {
   const body = $("coach-body");
-  if (!tc || !(tc.behavior_flags || []).length) {
-    body.innerHTML = '<div class="empty">尚無行為標籤。交易教練需要成交紀錄(Phase 7 啟用)。</div>';
-    return;
+  try {
+    const flags = await (await fetch("/api/behavior/flags")).json();
+    if (!flags.length) {
+      body.innerHTML = '<div class="empty">尚無行為標籤。當持倉操作觸發紀律問題(擴大停損、過早平倉…)時會顯示於此。</div>';
+      return;
+    }
+    body.innerHTML = flags.map((f) => `
+      <div class="coach-flag">
+        <span class="cf-name">${f.flag}</span>
+        <span class="cf-time">${f.detected_at.slice(0, 16).replace("T", " ")} UTC</span>
+        <p>${f.corrective_action}</p>
+      </div>`).join("");
+  } catch (e) {
+    body.innerHTML = '<div class="empty">行為紀錄載入失敗。</div>';
   }
-  body.innerHTML = tc.behavior_flags.map((f) =>
-    `<span class="chip bad" style="margin:4px">${f}</span>`).join("") +
-    (tc.message ? `<p class="reason" style="margin-top:10px">${tc.message}</p>` : "");
 }
 
 async function loadHistory() {
@@ -513,7 +594,26 @@ async function boot() {
       t.classList.add("active");
       $("panel-" + t.dataset.tab).classList.add("active");
       if (t.dataset.tab === "history") loadHistory();
+      if (t.dataset.tab === "position") loadPositions();
+      if (t.dataset.tab === "coach") loadCoach();
     }));
+
+  $("pos-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const targets = $("pf-targets").value.split(",")
+      .map((s) => parseFloat(s.trim())).filter((x) => !isNaN(x));
+    try {
+      await postJSON("/api/positions", {
+        side: $("pf-side").value,
+        entry_price: parseFloat($("pf-entry").value),
+        stop_loss: $("pf-stop").value ? parseFloat($("pf-stop").value) : null,
+        lot_size: parseFloat($("pf-lot").value),
+        planned_targets: targets,
+      });
+      e.target.reset();
+      loadPositions();
+    } catch (err) { alert("新增失敗:" + err.message); }
+  });
 
   connectWS();
 

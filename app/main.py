@@ -184,6 +184,111 @@ async def upcoming_events(limit: int = 5) -> list[dict]:
     return out[:limit]
 
 
+# ── 手動持倉管理(spec 十三 C 手動輸入途徑)──────────────────
+from pydantic import BaseModel, Field  # noqa: E402
+
+
+class PositionCreateReq(BaseModel):
+    side: str
+    entry_price: float
+    stop_loss: float | None = None
+    lot_size: float = Field(gt=0)
+    planned_targets: list[float] = Field(default_factory=list)
+
+
+class StopModifyReq(BaseModel):
+    stop_loss: float
+
+
+class PartialExitReq(BaseModel):
+    percent: float = Field(gt=0, le=100)
+    price: float | None = None  # 未提供時使用當前市價
+
+
+class CloseReq(BaseModel):
+    price: float | None = None
+
+
+async def _price_or_market(price: float | None) -> float:
+    if price is not None:
+        return price
+    tick = await state.provider.get_live_price()
+    return tick.mid
+
+
+@app.get("/api/positions")
+async def get_positions(include_closed: bool = True) -> list[dict]:
+    from app.services.position_service import list_positions, position_view
+    try:
+        tick = await state.provider.get_live_price()
+        cur = tick.mid
+    except Exception:  # noqa: BLE001
+        cur = None
+    return [position_view(p, cur) for p in list_positions(include_closed=include_closed)]
+
+
+@app.post("/api/positions")
+async def create_position_api(req: PositionCreateReq) -> dict:
+    from app.services.position_service import create_position, position_view
+    try:
+        pos = create_position(side=req.side, entry_price=req.entry_price,
+                              stop_loss=req.stop_loss, lot_size=req.lot_size,
+                              planned_targets=req.planned_targets)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    cur = await _price_or_market(None) if state.provider else None
+    return position_view(pos, cur)
+
+
+@app.post("/api/positions/{position_id}/stop")
+async def modify_stop_api(position_id: int, req: StopModifyReq) -> dict:
+    from app.services.position_service import modify_stop, position_view
+    try:
+        pos, flag = modify_stop(position_id, req.stop_loss)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    cur = await _price_or_market(None)
+    out = position_view(pos, cur)
+    out["behavior_flag"] = flag
+    if flag and state.notifier:
+        await state.notifier.notify("RISK", f"behavior:{flag}",
+                                    f"交易教練:偵測到 {flag}(停損往虧損方向移動)。"
+                                    f"請恢復原結構失效點停損。")
+    return out
+
+
+@app.post("/api/positions/{position_id}/partial_exit")
+async def partial_exit_api(position_id: int, req: PartialExitReq) -> dict:
+    from app.services.position_service import partial_exit, position_view
+    price = await _price_or_market(req.price)
+    try:
+        pos, flag = partial_exit(position_id, req.percent, price)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    out = position_view(pos, price)
+    out["behavior_flag"] = flag
+    return out
+
+
+@app.post("/api/positions/{position_id}/close")
+async def close_position_api(position_id: int, req: CloseReq) -> dict:
+    from app.services.position_service import close_position, position_view
+    price = await _price_or_market(req.price)
+    try:
+        pos, flag = close_position(position_id, price)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    out = position_view(pos, price)
+    out["behavior_flag"] = flag
+    return out
+
+
+@app.get("/api/behavior/flags")
+async def behavior_flags(limit: int = 20) -> list[dict]:
+    from app.services.position_service import recent_behavior_flags
+    return recent_behavior_flags(limit=max(1, min(limit, 100)))
+
+
 @app.get("/api/price")
 async def current_price() -> dict:
     tick = await state.provider.get_live_price()

@@ -116,6 +116,9 @@ class Settings(BaseSettings):
     max_trades_per_day: int = 3
     stop_after_consecutive_losses: int = 2
 
+    # ── 持倉(手動輸入)──
+    gold_contract_oz: float = 100.0     # 1 標準手黃金 = 100 盎司(PnL 計算用,可調)
+
     # ── 分析 ──
     candle_history_count: int = 300
     analysis_timeframes: tuple[str, ...] = ("1D", "4H", "1H", "15M")

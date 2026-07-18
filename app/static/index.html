@@ -129,10 +129,21 @@
       </div>
     </div>
     <div class="panel" id="panel-position">
-      <div id="position-body"><div class="empty">尚無持倉。持倉自動同步(券商成交紀錄)屬 Phase 7 範圍。</div></div>
+      <form class="pos-form" id="pos-form">
+        <div class="pf-field">
+          <label>方向</label>
+          <select id="pf-side"><option value="LONG">多單 LONG</option><option value="SHORT">空單 SHORT</option></select>
+        </div>
+        <div class="pf-field"><label>進場價</label><input type="number" step="0.01" id="pf-entry" required placeholder="4010.50"></div>
+        <div class="pf-field"><label>停損</label><input type="number" step="0.01" id="pf-stop" placeholder="結構失效點"></div>
+        <div class="pf-field"><label>手數</label><input type="number" step="0.01" id="pf-lot" required placeholder="0.10"></div>
+        <div class="pf-field pf-wide"><label>目標價(逗號分隔)</label><input type="text" id="pf-targets" placeholder="4025, 4040"></div>
+        <button type="submit" class="btn btn-primary">新增持倉</button>
+      </form>
+      <div id="position-list"><div class="empty">載入中…</div></div>
     </div>
     <div class="panel" id="panel-coach">
-      <div id="coach-body"><div class="empty">尚無行為標籤。交易教練需要成交紀錄(Phase 7 啟用)。</div></div>
+      <div id="coach-body"><div class="empty">載入中…</div></div>
     </div>
     <div class="panel" id="panel-history">
       <div id="history-body"><div class="empty">載入中…</div></div>
