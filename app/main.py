@@ -49,6 +49,52 @@ app = FastAPI(title="XAUUSD Multi-Timeframe Analysis (MVP)", version=__version__
               lifespan=lifespan)
 
 
+@app.get("/", include_in_schema=False)
+async def index():
+    """簡易首頁:系統狀態一覽與端點連結(完整 Dashboard 為 Phase 8)。"""
+    from fastapi.responses import HTMLResponse
+    return HTMLResponse("""<!doctype html>
+<html lang="zh-Hant"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>XAUUSD 分析系統</title>
+<style>
+  body{font-family:system-ui,-apple-system,"Noto Sans TC",sans-serif;max-width:720px;
+       margin:40px auto;padding:0 20px;line-height:1.7;color:#222;background:#fafafa}
+  @media (prefers-color-scheme:dark){body{color:#ddd;background:#111}a{color:#7ab8ff}
+    .card{background:#1b1b1b;border-color:#333}}
+  h1{font-size:1.4rem}
+  .card{background:#fff;border:1px solid #e3e3e3;border-radius:10px;padding:16px 20px;margin:14px 0}
+  code{background:rgba(127,127,127,.15);padding:2px 6px;border-radius:5px}
+  #status{white-space:pre-wrap;font-family:ui-monospace,monospace;font-size:.85rem}
+</style></head><body>
+<h1>XAUUSD 即時多週期分析系統(MVP)</h1>
+<div class="card">
+  <b>API 端點</b><br>
+  <a href="/health">/health</a> — 系統健康與資料源狀態<br>
+  <a href="/api/analysis/latest">/api/analysis/latest</a> — 最新完整分析(固定 JSON)<br>
+  <a href="/api/price">/api/price</a> — 即時報價<br>
+  <a href="/docs">/docs</a> — API 文件(Swagger)
+</div>
+<div class="card"><b>目前狀態</b><div id="status">載入中…</div></div>
+<div class="card" style="font-size:.85rem;opacity:.75">
+  本系統僅提供分析與通知,不執行任何交易(AUTO_TRADING_ENABLED=false)。<br>
+  日線以紐約 17:00 ET 切分;結構判定只使用已收線 K 棒;沒有優勢就等待。
+</div>
+<script>
+(async()=>{
+  try{
+    const h=await (await fetch('/health')).json();
+    const a=await (await fetch('/api/analysis/latest')).json();
+    document.getElementById('status').textContent=
+      `市場:${h.market_open?'開盤中':'休市'} | 資料源:${h.provider} | 系統:${h.status}\\n`+
+      `狀態:${a.market_state} | 決策:${a.decision.action}(${a.decision.confidence_grade})\\n`+
+      `價格:${a.current_price.mid ?? 'n/a'} | 資料品質:${a.data_quality.status}\\n`+
+      `${a.summary_zh_tw}\\n提醒:${a.most_likely_user_mistake_now}`;
+  }catch(e){document.getElementById('status').textContent='狀態載入失敗:'+e}
+})();
+</script></body></html>""")
+
+
 @app.get("/health")
 async def health() -> dict:
     """供外部監控(UptimeRobot 免費方案)輪詢。"""
