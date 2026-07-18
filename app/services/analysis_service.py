@@ -20,8 +20,8 @@ from app.engines.market_structure import StructureReport, analyze_structure
 from app.engines.rule_engine import decide
 from app.providers.base import MarketDataProvider
 from app.schemas.analysis import (
-    AnalysisResult, CurrentPrice, DataQuality, Decision, EventRisk, KeyLevels, Meta,
-    TimeframeView, Timeframes, validate_candidate_refs,
+    AnalysisResult, BiasAnalysis, CurrentPrice, DataQuality, Decision, EventRisk,
+    KeyLevels, Meta, TimeframeView, Timeframes, validate_candidate_refs,
 )
 from app.services.candle_service import candles_to_df, refresh_candles
 from app.services.event_service import evaluate_event_risk
@@ -168,6 +168,10 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
         ),
         long_scenario=decision.long_scenario,
         short_scenario=decision.short_scenario,
+        bias_analysis=BiasAnalysis(
+            bull_pct=decision.bull_pct, bear_pct=decision.bear_pct,
+            bull_evidence=decision.bull_evidence, bear_evidence=decision.bear_evidence,
+            chase_flags=decision.chase_flags),
         decision=Decision(action=decision.action,
                           confidence_grade=decision.confidence_grade,
                           evidence_score=decision.evidence_score,

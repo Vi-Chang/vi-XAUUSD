@@ -27,6 +27,27 @@ class RuleDecision:
     chase_flags: list[str] = field(default_factory=list)
     evidence: list[str] = field(default_factory=list)     # 引用 K 棒時間/事件/候選 ID
     no_trade_code: str | None = None  # NO_TRADE_DATA_QUALITY / NO_TRADE_MID_RANGE / ...
+    # 多空「證據傾向」(非勝率,spec 二十一):由已成立條件加權計算,結構條件 ×2
+    bull_evidence: list[str] = field(default_factory=list)
+    bear_evidence: list[str] = field(default_factory=list)
+    bull_pct: int = 50
+    bear_pct: int = 50
+
+
+def evidence_bias(long_conds: list[str], short_conds: list[str]) -> tuple[int, int]:
+    """多空證據傾向百分比(確定性加權:STRUCT 條件 ×2,其餘 ×1)。
+
+    重要:這是「證據完整度的相對傾向」,不是勝率、不是漲跌機率(spec 二十一
+    禁止輸出無統計依據的勝率數字)。兩邊皆無證據時回傳 50/50。
+    """
+    def weight(conds: list[str]) -> int:
+        return sum(2 if c.startswith("STRUCT") else 1 for c in conds)
+
+    wb, ws = weight(long_conds), weight(short_conds)
+    if wb + ws == 0:
+        return 50, 50
+    bull = round(100 * wb / (wb + ws))
+    return bull, 100 - bull
 
 
 def _direction_conditions(direction: str, *, structures: dict[str, StructureReport],
@@ -176,8 +197,22 @@ def decide(*, quality: DataQualityReport, structures: dict[str, StructureReport]
         code = "NO_TRADE_DATA_QUALITY" if quality.status in ("STALE", "FAILED", "DEGRADED") else "NO_TRADE_MARKET_CLOSED"
         if not quality.market_open:
             code = "NO_TRADE_MARKET_CLOSED"
+        # 休市但資料完好:仍計算多空證據傾向(基於最後已收線結構),決策維持 NO_TRADE。
+        # 資料品質不良時不計算 —— 壞資料算出的傾向比沒有更危險。
+        bull_conds: list[str] = []
+        bear_conds: list[str] = []
+        if code == "NO_TRADE_MARKET_CLOSED" and quality.status == "GOOD" and structures:
+            bull_conds = _direction_conditions("LONG", structures=structures,
+                                               indicators_h1=indicators_h1, price=price,
+                                               levels=levels, atr15=atr15)
+            bear_conds = _direction_conditions("SHORT", structures=structures,
+                                               indicators_h1=indicators_h1, price=price,
+                                               levels=levels, atr15=atr15)
+        bp, bs = evidence_bias(bull_conds, bear_conds)
         return RuleDecision("NO_TRADE", f"{code}: {quality.status}; {quality.warnings[:3]}",
-                            0, "X", empty_long, empty_short, no_trade_code=code)
+                            0, "X", empty_long, empty_short, no_trade_code=code,
+                            bull_evidence=bull_conds, bear_evidence=bear_conds,
+                            bull_pct=bp, bear_pct=bs)
     if event_lockout:
         return RuleDecision("NO_TRADE", f"EVENT_LOCKOUT:高影響事件前 {s.event_lockout_minutes} 分鐘內禁止新倉",
                             0, "X", empty_long, empty_short, no_trade_code="EVENT_LOCKOUT")
@@ -230,7 +265,10 @@ def decide(*, quality: DataQualityReport, structures: dict[str, StructureReport]
             action, grade = "WATCH", "B" if market_state.startswith("STRONG") else "C"
             reason = f"{dominant} 方向條件 {max(n_long, n_short)} 項,尚缺結構/收線確認"
 
+    bull_pct, bear_pct = evidence_bias(long_conds, short_conds)
     return RuleDecision(action=action, reason=reason, evidence_score=score,
                         confidence_grade=grade, long_scenario=long_sc,
                         short_scenario=short_sc, chase_flags=chase,
-                        evidence=long_conds + short_conds)
+                        evidence=long_conds + short_conds,
+                        bull_evidence=long_conds, bear_evidence=short_conds,
+                        bull_pct=bull_pct, bear_pct=bear_pct)

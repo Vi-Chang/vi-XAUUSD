@@ -60,6 +60,40 @@ def test_uptrend_produces_watch_or_prepare_long_with_valid_ids():
     assert validate_candidate_refs(result, known) == []
 
 
+def test_evidence_bias_weighted_and_bounded():
+    from app.engines.rule_engine import evidence_bias
+    # 無證據 → 50/50(不得假裝有傾向)
+    assert evidence_bias([], []) == (50, 50)
+    # 結構條件權重 ×2:多方 1 結構(2)vs 空方 2 一般(2)→ 50/50
+    assert evidence_bias(["STRUCT:突破"], ["MOMO:偏空", "HTF:向下"]) == (50, 50)
+    # 多方 1 結構+1 一般(3)vs 空方 1 一般(1)→ 75/25
+    bull, bear = evidence_bias(["STRUCT:突破", "LEVEL:支撐"], ["MOMO:偏空"])
+    assert (bull, bear) == (75, 25)
+    assert bull + bear == 100
+
+
+def test_event_name_translation():
+    from app.services.event_service import translate_event_name
+    assert translate_event_name("US CPI (YoY)") == "消費者物價指數"
+    assert translate_event_name("Core CPI m/m") == "核心消費者物價指數"
+    assert translate_event_name("FOMC Rate Decision") == "聯準會利率決議"
+    assert translate_event_name("Nonfarm Payrolls") == "非農就業人數"
+    assert translate_event_name("Some Unknown Event") == "Some Unknown Event"
+
+
+def test_analysis_includes_bias_analysis():
+    from app.engines.data_quality import DataQualityReport
+    closes = zigzag_path([(20, 2.0), (8, -1.0), (20, 2.0), (8, -1.0), (25, 2.0)])
+    _, structures, price, levels = _setup(closes)
+    good = DataQualityReport(status="GOOD", market_open=True)
+    d = decide(quality=good, structures=structures, indicators_h1={"macd_hist": 1.2},
+               market_state="STRONG_BULL_TREND", price=price, atr15=3.0,
+               levels=levels, event_lockout=False)
+    assert d.bull_pct + d.bear_pct == 100
+    assert len(d.bull_evidence) >= len(d.bear_evidence)  # 多頭合成資料應偏多
+    assert d.bull_pct >= 50
+
+
 def test_chase_detected_far_from_structure():
     closes = zigzag_path([(20, 2.0), (8, -1.0), (30, 2.5)])
     _, structures, price, levels = _setup(closes)

@@ -139,6 +139,20 @@ class Decision(BaseModel):
     next_recheck_time: str = ""
 
 
+class BiasAnalysis(BaseModel):
+    """多空證據傾向(v2.1 擴充)。
+
+    由規則引擎「已成立條件」確定性加權計算(STRUCT ×2、其餘 ×1)。
+    這是證據完整度的相對傾向,不是勝率、不是漲跌機率(spec 二十一)。
+    """
+    bull_pct: int = 50
+    bear_pct: int = 50
+    bull_evidence: list[str] = Field(default_factory=list)
+    bear_evidence: list[str] = Field(default_factory=list)
+    chase_flags: list[str] = Field(default_factory=list)
+    disclaimer: str = "證據傾向 ≠ 勝率;僅代表當下多空條件的相對完整度(規格書二十一)"
+
+
 class Meta(BaseModel):
     prompt_version: str = ""
     strategy_version: str = ""
@@ -160,6 +174,7 @@ class AnalysisResult(BaseModel):
     key_levels: KeyLevels = KeyLevels()
     long_scenario: Scenario = Scenario()
     short_scenario: Scenario = Scenario()
+    bias_analysis: BiasAnalysis = BiasAnalysis()
     risk_manager: RiskManagerView = RiskManagerView()
     position_management: PositionManagement = PositionManagement()
     trading_coach: TradingCoachView = TradingCoachView()

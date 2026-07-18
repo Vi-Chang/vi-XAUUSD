@@ -74,11 +74,34 @@
     </div>
 
     <div class="card">
+      <div class="card-title">多空證據傾向</div>
+      <div class="bias-nums">
+        <span class="bias-label bull">多方 <b class="num" id="bias-bull-pct">–%</b></span>
+        <span class="bias-label bear"><b class="num" id="bias-bear-pct">–%</b> 空方</span>
+      </div>
+      <div class="bias-bar" id="bias-bar">
+        <div class="bias-bull-fill" id="bias-bull-fill" style="width:50%"></div>
+        <div class="bias-bear-fill" id="bias-bear-fill" style="width:50%"></div>
+      </div>
+      <details class="bias-details" id="bias-details-bull">
+        <summary>多方證據 <span class="num" id="bias-bull-count">0</span> 項</summary>
+        <ul id="bias-bull-list"></ul>
+      </details>
+      <details class="bias-details" id="bias-details-bear">
+        <summary>空方證據 <span class="num" id="bias-bear-count">0</span> 項</summary>
+        <ul id="bias-bear-list"></ul>
+      </details>
+      <div class="bias-disclaimer" id="bias-disclaimer">證據傾向 ≠ 勝率;僅代表當下多空條件的相對完整度</div>
+    </div>
+
+    <div class="card">
       <div class="card-title">事件風險</div>
       <div class="countdown-wrap">
         <div class="countdown num skel" id="event-countdown">--:--:--</div>
         <div class="event-name" id="event-name">載入中…</div>
+        <span class="chip" id="event-impact-chip" style="display:none"></span>
       </div>
+      <p class="event-detail" id="event-detail"></p>
     </div>
 
     <div class="card">

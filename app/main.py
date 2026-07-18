@@ -163,7 +163,7 @@ async def upcoming_events(limit: int = 5) -> list[dict]:
     """即將到來的高影響經濟事件(倒數計時與時間軸標記用)。"""
     from datetime import datetime, timezone
 
-    from app.services.event_service import load_manual_events
+    from app.services.event_service import load_manual_events, translate_event_name
     try:
         events, _ = load_manual_events()
     except Exception:  # noqa: BLE001
@@ -176,7 +176,9 @@ async def upcoming_events(limit: int = 5) -> list[dict]:
         except (KeyError, ValueError):
             continue
         if t >= now:
-            out.append({"name": ev.get("name"), "country": ev.get("country"),
+            out.append({"name": ev.get("name"),
+                        "name_zh": translate_event_name(ev.get("name", "")),
+                        "country": ev.get("country"),
                         "impact": ev.get("impact"), "time": int(t.timestamp())})
     out.sort(key=lambda e: e["time"])
     return out[:limit]

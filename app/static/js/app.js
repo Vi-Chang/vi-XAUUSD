@@ -186,7 +186,7 @@ async function applyOverlays() {
   // 高影響事件垂直線(僅畫得出的時間;未來事件由倒數卡涵蓋)
   for (const ev of S.events) {
     if (ev.impact !== "HIGH") continue;
-    const p = eventLinePrimitive(ev.time, ev.name);
+    const p = eventLinePrimitive(ev.time, ev.name_zh || ev.name);
     S.candles.attachPrimitive(p);
     S.eventPrims.push(p);
   }
@@ -329,25 +329,67 @@ function applyAnalysis(a) {
     mistake.classList.add("show");
   } else mistake.classList.remove("show");
 
-  // 事件倒數
-  if (a.event_risk && a.event_risk.minutes_remaining != null && a.event_risk.next_event) {
-    S.countdownTarget = Date.now() + a.event_risk.minutes_remaining * 60000;
-    $("event-name").textContent =
-      `${a.event_risk.next_event}(${a.event_risk.level}${a.event_risk.event_lockout ? "・鎖定中" : ""})`;
-  } else {
-    S.countdownTarget = null;
-    $("event-name").textContent = a.event_risk && a.event_risk.level === "UNKNOWN"
-      ? "事件來源失效(EVENT_RISK_UNKNOWN)" : "近期無已知高影響事件";
-    const cd = $("event-countdown");
-    unskel(cd);
-    cd.textContent = "—";
-  }
+  // 事件風險(全中文;僅倒數時間保留數字格式)
+  renderEventRisk(a.event_risk);
+  renderBias(a.bias_analysis);
 
   renderScenario($("scenario-long"), a.long_scenario, "多方 LONG");
   renderScenario($("scenario-short"), a.short_scenario, "空方 SHORT");
   renderPosition(a.position_management);
   renderCoach(a.trading_coach);
   applyOverlays().catch(console.error);
+}
+
+const IMPACT_ZH = { HIGH: "高影響", MEDIUM: "中影響", LOW: "低影響", UNKNOWN: "未知" };
+
+function renderEventRisk(er) {
+  const nameEl = $("event-name"), detailEl = $("event-detail"),
+        impactChip = $("event-impact-chip"), cd = $("event-countdown");
+  if (er && er.minutes_remaining != null && er.next_event) {
+    S.countdownTarget = Date.now() + er.minutes_remaining * 60000;
+    nameEl.textContent = er.next_event + (er.event_lockout ? "・鎖定中" : "");
+    impactChip.style.display = "";
+    impactChip.textContent = IMPACT_ZH[er.level] || er.level;
+    impactChip.className = "chip " + (er.level === "HIGH" ? "bad"
+      : er.level === "MEDIUM" ? "warn" : er.level === "UNKNOWN" ? "warn" : "good");
+  } else {
+    S.countdownTarget = null;
+    unskel(cd);
+    cd.textContent = "—";
+    impactChip.style.display = "none";
+    nameEl.textContent = er && er.level === "UNKNOWN"
+      ? "所有事件來源失效" : "近期無已知高影響事件";
+  }
+  detailEl.textContent = (er && er.reason) ||
+    "事件清單來自 data/manual_events.json,請每週日更新本週高影響事件。";
+}
+
+function renderBias(b) {
+  if (!b) return;
+  $("bias-bull-pct").textContent = `${b.bull_pct}%`;
+  $("bias-bear-pct").textContent = `${b.bear_pct}%`;
+  $("bias-bull-fill").style.width = `${b.bull_pct}%`;
+  $("bias-bear-fill").style.width = `${b.bear_pct}%`;
+  const strip = (s) => s.replace(/^(STRUCT|LEVEL|MOMO|HTF):/, "");
+  const fill = (listId, countId, items) => {
+    $(countId).textContent = items.length;
+    $(listId).innerHTML = items.length
+      ? items.map((x) => `<li>${strip(x)}</li>`).join("")
+      : "<li>目前無已成立條件</li>";
+  };
+  fill("bias-bull-list", "bias-bull-count", b.bull_evidence || []);
+  fill("bias-bear-list", "bias-bear-count", b.bear_evidence || []);
+  if (b.disclaimer) $("bias-disclaimer").textContent = b.disclaimer;
+  const flags = b.chase_flags || [];
+  let flagBox = document.getElementById("bias-flags");
+  if (!flagBox) {
+    flagBox = document.createElement("div");
+    flagBox.id = "bias-flags";
+    flagBox.className = "bias-flags";
+    $("bias-disclaimer").before(flagBox);
+  }
+  flagBox.innerHTML = flags.map((f) =>
+    `<span class="chip warn" title="${f}">${f.split(":")[0]}</span>`).join("");
 }
 
 function renderScenario(el, sc, title) {

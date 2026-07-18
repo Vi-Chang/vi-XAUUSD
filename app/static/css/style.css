@@ -158,12 +158,38 @@ body {
 .state-chip-row { display: flex; align-items: center; gap: 10px; }
 .state-chip-row .lbl { font-size: .72rem; color: var(--text-dim); }
 
+/* ═══ 多空證據傾向 ═══ */
+.bias-nums { display: flex; justify-content: space-between; margin-bottom: 6px; font-size: .82rem; }
+.bias-label.bull { color: var(--bull); }
+.bias-label.bear { color: var(--bear); }
+.bias-label b { font-size: 1.05rem; }
+.bias-bar {
+  display: flex; height: 14px; border-radius: 7px; overflow: hidden;
+  background: #0d1420; border: 1px solid var(--border);
+}
+.bias-bull-fill { background: linear-gradient(90deg, rgba(38,166,154,.55), var(--bull)); transition: width .6s; }
+.bias-bear-fill { background: linear-gradient(90deg, var(--bear), rgba(239,83,80,.55)); transition: width .6s; }
+.bias-details { margin-top: 8px; font-size: .78rem; }
+.bias-details summary { cursor: pointer; color: var(--text-dim); user-select: none; }
+.bias-details summary:hover { color: var(--text); }
+.bias-details ul { margin: 6px 0 2px 18px; color: var(--text-dim); }
+.bias-details li { margin: 3px 0; }
+#bias-details-bull li::marker { color: var(--bull); }
+#bias-details-bear li::marker { color: var(--bear); }
+.bias-disclaimer { margin-top: 8px; font-size: .68rem; color: var(--text-dim); opacity: .75; }
+.bias-flags { margin-top: 6px; }
+.bias-flags .chip { margin: 2px 4px 2px 0; }
+
 /* ═══ 事件倒數 ═══ */
 .countdown-wrap { text-align: center; padding: 6px 0 2px; }
 .countdown { font-size: 2rem; font-weight: 700; letter-spacing: 2px; }
 .countdown.urgent { color: var(--danger); animation: pulse 1s infinite; }
 @keyframes pulse { 50% { opacity: .55; } }
 .event-name { font-size: .8rem; color: var(--text-dim); margin-top: 4px; }
+.event-detail {
+  margin-top: 10px; font-size: .78rem; color: var(--text-dim);
+  border-top: 1px solid var(--border); padding-top: 8px;
+}
 
 /* ═══ 系統卡 ═══ */
 .kv { display: flex; justify-content: space-between; font-size: .82rem; padding: 3px 0; }
