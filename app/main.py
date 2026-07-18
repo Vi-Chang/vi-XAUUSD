@@ -8,6 +8,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
 from app import __version__
 from app.config import get_settings
@@ -71,22 +72,46 @@ async def health() -> dict:
 
 @app.get("/api/analysis/latest")
 async def latest_analysis() -> dict:
-    """最新分析結果(固定 JSON,spec 二十二)。"""
-    if state.latest_result is not None:
-        return state.latest_result
-    from app.services.analysis_service import run_analysis
-    result = await run_analysis(state.provider, trigger="manual")
-    state.latest_result = result.model_dump()
-    return state.latest_result
+    """最新分析結果(固定 JSON,spec 二十二)。輸出時套用 TMGM Offset 校正。"""
+    from app.services.price_offset import apply_offset_to_result
+    if state.latest_result is None:
+        from app.services.analysis_service import run_analysis
+        result = await run_analysis(state.provider, trigger="manual")
+        state.latest_result = result.model_dump()
+    return apply_offset_to_result(state.latest_result)
 
 
 @app.post("/api/analysis/run")
 async def trigger_analysis() -> dict:
     """使用者手動請求分析(LLM 觸發政策允許來源之一)。"""
     from app.services.analysis_service import run_analysis
+    from app.services.price_offset import apply_offset_to_result
     result = await run_analysis(state.provider, trigger="manual")
-    state.latest_result = result.model_dump()
-    return state.latest_result
+    state.latest_result = result.model_dump()   # 儲存 TwelveData 原值(分析真值)
+    return apply_offset_to_result(state.latest_result)
+
+
+@app.get("/api/offset")
+async def get_offset_api() -> dict:
+    """TMGM 價格校正資訊(右上角資訊面板 + 校正說明)。"""
+    from app.services.price_offset import offset_info
+    return offset_info()
+
+
+class OffsetReq(BaseModel):
+    value: float | None = None
+    mode: str | None = None
+
+
+@app.post("/api/offset")
+async def set_offset_api(req: OffsetReq) -> dict:
+    """手動修改 Offset 值或模式;即時生效,不重跑分析。"""
+    from app.services.price_offset import offset_info, set_offset
+    try:
+        set_offset(req.value, req.mode)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return offset_info()
 
 
 @app.get("/api/analysis/history")
@@ -185,9 +210,6 @@ async def upcoming_events(limit: int = 5) -> list[dict]:
 
 
 # ── 手動持倉管理(spec 十三 C 手動輸入途徑)──────────────────
-from pydantic import BaseModel, Field  # noqa: E402
-
-
 class PositionCreateReq(BaseModel):
     side: str
     entry_price: float
@@ -323,8 +345,10 @@ async def ws_endpoint(ws: WebSocket) -> None:
     try:
         import json
         if state.latest_result:
-            await ws.send_text(json.dumps({"type": "analysis", "data": state.latest_result},
-                                          ensure_ascii=False, default=str))
+            from app.services.price_offset import apply_offset_to_result
+            await ws.send_text(json.dumps(
+                {"type": "analysis", "data": apply_offset_to_result(state.latest_result)},
+                ensure_ascii=False, default=str))
         while True:
             await ws.receive_text()  # keepalive;client 可送任意訊息
     except WebSocketDisconnect:

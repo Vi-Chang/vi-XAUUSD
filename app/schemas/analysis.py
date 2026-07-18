@@ -153,6 +153,18 @@ class BiasAnalysis(BaseModel):
     disclaimer: str = "證據傾向 ≠ 勝率;僅代表當下多空條件的相對完整度(規格書二十一)"
 
 
+class OffsetInfo(BaseModel):
+    """TMGM 價格校正資訊(讀取時由 price_offset 服務填入)。"""
+    mode: str = "manual"                 # manual | auto
+    value: float = 0.0                   # TMGM − TwelveData
+    analysis_source: str = "TwelveData"
+    trading_broker: str = "TMGM"
+    applied_to: list[str] = Field(default_factory=lambda: ["entry", "stop_loss", "targets"])
+    auto_available: bool = False
+    formula: str = "TMGM = TwelveData + Offset"
+    note: str = ""
+
+
 class Meta(BaseModel):
     prompt_version: str = ""
     strategy_version: str = ""
@@ -179,6 +191,7 @@ class AnalysisResult(BaseModel):
     position_management: PositionManagement = PositionManagement()
     trading_coach: TradingCoachView = TradingCoachView()
     decision: Decision = Decision()
+    offset_info: OffsetInfo = OffsetInfo()
     meta: Meta = Meta()
     summary_zh_tw: str = ""
     most_likely_user_mistake_now: str = ""

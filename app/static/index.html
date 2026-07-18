@@ -21,6 +21,33 @@
     <span class="chip skel" id="chip-market">…</span>
     <span class="chip skel" id="chip-quality">…</span>
   </div>
+
+  <div class="offset-panel" id="offset-panel">
+    <div class="op-row"><span class="op-lbl">Analysis Source</span>
+      <span class="op-val info" id="op-source">TwelveData</span></div>
+    <div class="op-row"><span class="op-lbl">Trading Broker</span>
+      <span class="op-val warn" id="op-broker">TMGM</span></div>
+    <div class="op-row"><span class="op-lbl">Current Offset</span>
+      <span class="op-val num" id="op-offset">0.00</span>
+      <span class="op-mode num" id="op-mode">manual</span>
+      <button class="op-edit" id="op-edit" title="修改 Offset">✎</button></div>
+    <div class="op-editor" id="op-editor" hidden>
+      <div class="op-modes">
+        <label><input type="radio" name="op-mode-radio" value="manual" checked> Manual</label>
+        <label class="op-auto"><input type="radio" name="op-mode-radio" value="auto"> Auto
+          <span class="op-auto-tag">未啟用</span></label>
+      </div>
+      <div class="op-manual-row" id="op-manual-row">
+        <label>Offset (TMGM − TwelveData)</label>
+        <input type="number" step="0.01" id="op-input" class="num" placeholder="-0.48">
+      </div>
+      <div class="op-btns">
+        <button class="op-save" id="op-save">儲存</button>
+        <button class="op-cancel" id="op-cancel">取消</button>
+      </div>
+      <div class="op-hint" id="op-hint"></div>
+    </div>
+  </div>
 </header>
 
 <main class="layout">

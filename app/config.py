@@ -119,6 +119,14 @@ class Settings(BaseSettings):
     # ── 持倉(手動輸入)──
     gold_contract_oz: float = 100.0     # 1 標準手黃金 = 100 盎司(PnL 計算用,可調)
 
+    # ── TMGM 價格校正(Price Offset)──
+    # 分析永遠用 TwelveData;僅劇本進場/停損/停利「輸出價」套用此 Offset 校正為 TMGM 掛單價。
+    # Offset = TMGM Price − TwelveData Price(可於 Dashboard 即時修改,存 system_settings)。
+    price_offset: float = 0.0
+    offset_mode: str = "manual"                 # manual | auto(auto 需 TMGM 即時源,目前保留 UI)
+    analysis_source_label: str = "TwelveData"
+    trading_broker_label: str = "TMGM"
+
     # ── 分析 ──
     candle_history_count: int = 300
     analysis_timeframes: tuple[str, ...] = ("1D", "4H", "1H", "15M")

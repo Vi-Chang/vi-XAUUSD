@@ -99,9 +99,11 @@ async def job_m15_analysis() -> None:
                                             f"{result.data_quality.warnings[:3]}")
         state.last_decision_action = action
 
-        # WebSocket 廣播:收線事件 + 最新分析
+        # WebSocket 廣播:收線事件 + 最新分析(套用 TMGM Offset 校正)
+        from app.services.price_offset import apply_offset_to_result
         await broadcast({"type": "candle_closed", "timeframe": "15M"})
-        await broadcast({"type": "analysis", "data": state.latest_result})
+        await broadcast({"type": "analysis",
+                         "data": apply_offset_to_result(state.latest_result)})
     except Exception as exc:  # noqa: BLE001
         logger.exception("m15_analysis failed: %s", exc)
         if state.notifier:

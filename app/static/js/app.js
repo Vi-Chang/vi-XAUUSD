@@ -333,8 +333,10 @@ function applyAnalysis(a) {
   renderEventRisk(a.event_risk);
   renderBias(a.bias_analysis);
 
-  renderScenario($("scenario-long"), a.long_scenario, "多方 LONG");
-  renderScenario($("scenario-short"), a.short_scenario, "空方 SHORT");
+  if (a.offset_info) renderOffset(a.offset_info);
+  const offVal = a.offset_info ? a.offset_info.value : 0;
+  renderScenario($("scenario-long"), a.long_scenario, "多方 LONG", offVal);
+  renderScenario($("scenario-short"), a.short_scenario, "空方 SHORT", offVal);
   applyOverlays().catch(console.error);
 }
 
@@ -390,9 +392,10 @@ function renderBias(b) {
     `<span class="chip warn" title="${f}">${f.split(":")[0]}</span>`).join("");
 }
 
-function renderScenario(el, sc, title) {
+function renderScenario(el, sc, title, offset) {
   if (!sc) { el.innerHTML = '<div class="empty">無資料</div>'; return; }
   const rp = sc.resolved_prices || {};
+  const tag = offset ? `<span class="tmgm-tag">TMGM 校正 ${offset > 0 ? "+" : ""}${offset}</span>` : "";
   const lv = (id) => {
     const z = rp[id];
     return z ? `${fmt(z.price_low)} – ${fmt(z.price_high)}` : "–";
@@ -402,7 +405,7 @@ function renderScenario(el, sc, title) {
     .map((c) => `<li>${c}</li>`).join("");
   el.innerHTML = `
     <div class="sc-head"><span class="sc-dir">${title}</span>
-      <span class="sc-status ${sc.status}">${sc.status}</span></div>
+      <span class="sc-status ${sc.status}">${sc.status}</span>${tag}</div>
     <div class="sc-levels">
       <div class="kv"><span>進場區</span><span class="num">${lv(sc.entry_zone_id)}</span></div>
       <div class="kv"><span>停損</span><span class="num">${lv(sc.stop_loss_id)}</span></div>
@@ -412,6 +415,67 @@ function renderScenario(el, sc, title) {
     ${rrPills ? `<div class="sc-rr">${rrPills}</div>` : ""}
     ${sc.setup ? `<div class="sc-confirm">${sc.setup}</div>` : ""}
     ${confirms ? `<div class="sc-confirm">等待確認:<ul>${confirms}</ul></div>` : ""}`;
+}
+
+/* ═══ TMGM 價格校正(Price Offset)═══ */
+function renderOffset(info) {
+  if (!info) return;
+  $("op-source").textContent = info.analysis_source;
+  $("op-broker").textContent = info.trading_broker;
+  const v = info.value || 0;
+  $("op-offset").textContent = `${v > 0 ? "+" : ""}${v.toFixed(2)}`;
+  $("op-offset").style.color = v > 0 ? "var(--bull)" : v < 0 ? "var(--bear)" : "var(--text)";
+  $("op-mode").textContent = info.mode;
+}
+
+function setupOffsetEditor() {
+  const editor = $("op-editor");
+  const openBtn = $("op-edit"), saveBtn = $("op-save"), cancelBtn = $("op-cancel");
+  const input = $("op-input"), hint = $("op-hint");
+  const manualRow = $("op-manual-row");
+
+  const syncModeUI = () => {
+    const mode = document.querySelector('input[name="op-mode-radio"]:checked').value;
+    manualRow.style.opacity = mode === "manual" ? "1" : ".45";
+    input.disabled = mode !== "manual";
+    hint.textContent = mode === "auto"
+      ? "Auto 模式:未來接上 TMGM 即時價後,每 5 秒自動計算 Offset = TMGM − TwelveData。目前無即時源,暫存模式設定但仍套用手動值。"
+      : "分析永遠使用 TwelveData;此 Offset 僅校正劇本進場/停損/停利價為 TMGM 掛單價。";
+  };
+
+  openBtn.addEventListener("click", async () => {
+    const on = editor.hasAttribute("hidden");
+    if (!on) { editor.setAttribute("hidden", ""); return; }
+    try {
+      const info = await (await fetch("/api/offset")).json();
+      input.value = info.value;
+      document.querySelector(`input[name="op-mode-radio"][value="${info.mode}"]`).checked = true;
+    } catch (e) { /* noop */ }
+    syncModeUI();
+    editor.removeAttribute("hidden");
+    input.focus();
+  });
+  cancelBtn.addEventListener("click", () => editor.setAttribute("hidden", ""));
+  document.querySelectorAll('input[name="op-mode-radio"]').forEach((r) =>
+    r.addEventListener("change", syncModeUI));
+
+  saveBtn.addEventListener("click", async () => {
+    const mode = document.querySelector('input[name="op-mode-radio"]:checked').value;
+    const body = { mode };
+    if (mode === "manual") {
+      const val = parseFloat(input.value);
+      if (Number.isNaN(val)) { hint.textContent = "請輸入有效的 Offset 數值"; return; }
+      body.value = val;
+    }
+    try {
+      const info = await postJSON("/api/offset", body);
+      renderOffset(info);
+      editor.setAttribute("hidden", "");
+      // 即時生效:重新取分析(不重跑,套用新 Offset)
+      const a = await (await fetch("/api/analysis/latest")).json();
+      applyAnalysis(a);
+    } catch (e) { hint.textContent = "儲存失敗:" + e; }
+  });
 }
 
 /* ═══ 帳戶層(老師帶單 vs 自己交易)═══ */
@@ -673,6 +737,8 @@ async function boot() {
 
   connectWS();
   loadAccounts();
+  setupOffsetEditor();
+  try { renderOffset(await (await fetch("/api/offset")).json()); } catch (e) { /* noop */ }
 
   try {
     const h = await (await fetch("/health")).json();
