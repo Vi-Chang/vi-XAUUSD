@@ -25,10 +25,20 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def default_account_id() -> int | None:
+    """預設掛到 SELF(自己交易)帳戶。"""
+    from app.db.models import Account
+    with db_session() as db:
+        acc = db.execute(select(Account).where(Account.strategy_source == "SELF")
+                         .order_by(Account.id)).scalars().first()
+        return acc.id if acc else None
+
+
 def create_position(*, side: str, entry_price: float, stop_loss: float | None,
                     lot_size: float, planned_targets: list[float] | None = None,
-                    open_time: datetime | None = None) -> Position:
-    """建立手動持倉。停損方向錯誤(多單停損高於進場等)直接拒絕。"""
+                    open_time: datetime | None = None,
+                    account_id: int | None = None) -> Position:
+    """建立手動持倉(掛帳戶)。停損方向錯誤(多單停損高於進場等)直接拒絕。"""
     side = side.upper()
     if side not in ("LONG", "SHORT"):
         raise ValueError("side 必須是 LONG 或 SHORT")
@@ -39,24 +49,34 @@ def create_position(*, side: str, entry_price: float, stop_loss: float | None,
             raise ValueError("多單停損必須低於進場價")
         if side == "SHORT" and stop_loss <= entry_price:
             raise ValueError("空單停損必須高於進場價")
+    if account_id is None:
+        account_id = default_account_id()
+    else:
+        from app.db.models import Account
+        with db_session() as db:
+            if db.get(Account, account_id) is None:
+                raise ValueError(f"帳戶 {account_id} 不存在")
     with db_session() as db:
         pos = Position(symbol="XAUUSD", side=side, entry_price=entry_price,
                        stop_loss=stop_loss, lot_size=lot_size,
                        open_time=ensure_utc(open_time) if open_time else _now(),
                        planned_targets=planned_targets or [],
                        partial_exit_history=[], stop_modification_history=[],
-                       source="manual", is_open=True)
+                       source="manual", is_open=True, account_id=account_id)
         db.add(pos)
         db.flush()
         db.refresh(pos)
         return pos
 
 
-def list_positions(include_closed: bool = True, limit: int = 20) -> list[Position]:
+def list_positions(include_closed: bool = True, limit: int = 20,
+                   account_id: int | None = None) -> list[Position]:
     with db_session() as db:
         q = select(Position).order_by(Position.open_time.desc()).limit(limit)
         if not include_closed:
             q = q.where(Position.is_open.is_(True))
+        if account_id is not None:
+            q = q.where(Position.account_id == account_id)
         return list(db.execute(q).scalars().all())
 
 
@@ -193,7 +213,8 @@ def close_position(position_id: int, price: float) -> tuple[Position, str | None
 def position_view(pos: Position, current_price: float | None) -> dict:
     """單筆持倉的完整檢視(API 回應用)。"""
     view = {
-        "id": pos.id, "side": pos.side, "entry_price": pos.entry_price,
+        "id": pos.id, "account_id": pos.account_id,
+        "side": pos.side, "entry_price": pos.entry_price,
         "stop_loss": pos.stop_loss, "lot_size": pos.lot_size,
         "open_time": ensure_utc(pos.open_time).isoformat(),
         "close_time": ensure_utc(pos.close_time).isoformat() if pos.close_time else None,

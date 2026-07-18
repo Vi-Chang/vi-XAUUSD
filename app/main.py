@@ -194,6 +194,7 @@ class PositionCreateReq(BaseModel):
     stop_loss: float | None = None
     lot_size: float = Field(gt=0)
     planned_targets: list[float] = Field(default_factory=list)
+    account_id: int | None = None  # 未指定時掛預設 SELF 帳戶
 
 
 class StopModifyReq(BaseModel):
@@ -216,15 +217,31 @@ async def _price_or_market(price: float | None) -> float:
     return tick.mid
 
 
+@app.get("/api/accounts")
+async def get_accounts() -> list[dict]:
+    """帳戶清單(帳戶A 老師帶單 / 帳戶B 自己交易,可擴充)。"""
+    from app.services.account_service import list_accounts
+    return list_accounts()
+
+
+@app.get("/api/accounts/comparison")
+async def accounts_comparison() -> dict:
+    """對照頁:各帳戶分開統計並列(spec 二十四指標)。"""
+    from app.services.account_service import comparison
+    return comparison()
+
+
 @app.get("/api/positions")
-async def get_positions(include_closed: bool = True) -> list[dict]:
+async def get_positions(include_closed: bool = True,
+                        account_id: int | None = None) -> list[dict]:
     from app.services.position_service import list_positions, position_view
     try:
         tick = await state.provider.get_live_price()
         cur = tick.mid
     except Exception:  # noqa: BLE001
         cur = None
-    return [position_view(p, cur) for p in list_positions(include_closed=include_closed)]
+    return [position_view(p, cur)
+            for p in list_positions(include_closed=include_closed, account_id=account_id)]
 
 
 @app.post("/api/positions")
@@ -233,7 +250,8 @@ async def create_position_api(req: PositionCreateReq) -> dict:
     try:
         pos = create_position(side=req.side, entry_price=req.entry_price,
                               stop_loss=req.stop_loss, lot_size=req.lot_size,
-                              planned_targets=req.planned_targets)
+                              planned_targets=req.planned_targets,
+                              account_id=req.account_id)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     cur = await _price_or_market(None) if state.provider else None

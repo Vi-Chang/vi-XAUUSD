@@ -45,6 +45,30 @@ def db_session() -> Iterator[Session]:
 
 
 def init_db() -> None:
-    """建立所有資料表(開發/SQLite 用;正式環境建議 alembic upgrade head)。"""
+    """建立所有資料表 + 輕量自動遷移 + 預設帳戶種子。
+
+    (正式環境建議 alembic;此處的 ALTER 僅涵蓋「既有表補新欄位」的簡單情境。)
+    """
+    from sqlalchemy import inspect, text
+
     from app.db import models  # noqa: F401  (註冊 metadata)
-    models.Base.metadata.create_all(get_engine())
+    engine = get_engine()
+    models.Base.metadata.create_all(engine)
+
+    # 輕量遷移:既有 DB 補 account_id 欄位(create_all 不會改既有表)
+    inspector = inspect(engine)
+    with engine.begin() as conn:
+        for table in ("positions", "trade_journal"):
+            cols = {c["name"] for c in inspector.get_columns(table)}
+            if "account_id" not in cols:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN account_id INTEGER"))
+
+    # 預設帳戶種子(帳戶A 老師帶單 / 帳戶B 自己交易)
+    from datetime import datetime, timezone
+    with db_session() as db:
+        if db.query(models.Account).count() == 0:
+            now = datetime.now(timezone.utc)
+            db.add(models.Account(name="帳戶A・老師帶單", strategy_source="TEACHER",
+                                  description="跟隨老師訊號執行的交易", created_at=now))
+            db.add(models.Account(name="帳戶B・自己交易", strategy_source="SELF",
+                                  description="依本系統/自己判斷執行的交易", created_at=now))

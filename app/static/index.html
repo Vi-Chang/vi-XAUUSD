@@ -119,6 +119,7 @@
     <button class="tab active" data-tab="scenarios">多空劇本</button>
     <button class="tab" data-tab="position">持倉管理</button>
     <button class="tab" data-tab="coach">交易教練</button>
+    <button class="tab" data-tab="compare">對照統計</button>
     <button class="tab" data-tab="history">歷史復盤</button>
   </nav>
   <div class="tab-panels">
@@ -130,6 +131,10 @@
     </div>
     <div class="panel" id="panel-position">
       <form class="pos-form" id="pos-form">
+        <div class="pf-field">
+          <label>帳戶</label>
+          <select id="pf-account"></select>
+        </div>
         <div class="pf-field">
           <label>方向</label>
           <select id="pf-side"><option value="LONG">多單 LONG</option><option value="SHORT">空單 SHORT</option></select>
@@ -144,6 +149,9 @@
     </div>
     <div class="panel" id="panel-coach">
       <div id="coach-body"><div class="empty">載入中…</div></div>
+    </div>
+    <div class="panel" id="panel-compare">
+      <div id="compare-body"><div class="empty">載入中…</div></div>
     </div>
     <div class="panel" id="panel-history">
       <div id="history-body"><div class="empty">載入中…</div></div>

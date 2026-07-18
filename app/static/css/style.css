@@ -309,6 +309,12 @@ body {
 .hist-table td.num { color: var(--text); }
 .act-pill { font-family: var(--mono); font-size: .72rem; padding: 2px 8px; border-radius: 5px; }
 
+/* ═══ 對照統計 ═══ */
+.cmp-table td:first-child { color: var(--text-dim); }
+.cmp-table th .cmp-src { font-size: .64rem; color: var(--info); font-family: var(--mono); }
+.cmp-pos { color: var(--bull); }
+.cmp-neg { color: var(--bear); }
+
 .foot { margin-top: 14px; text-align: center; font-size: .72rem; color: var(--text-dim); opacity: .8; }
 
 /* ═══ 手機版 ═══ */

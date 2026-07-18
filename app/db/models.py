@@ -17,6 +17,17 @@ class Base(DeclarativeBase):
     pass
 
 
+class Account(Base):
+    """帳戶層:區分策略來源(老師帶單 vs 自己交易),供分開統計與對照。"""
+    __tablename__ = "accounts"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(64), unique=True)
+    strategy_source: Mapped[str] = mapped_column(String(16))   # TEACHER / SELF / OTHER
+    description: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class Instrument(Base):
     """1. instruments"""
     __tablename__ = "instruments"
@@ -209,6 +220,7 @@ class Position(Base):
     source: Mapped[str] = mapped_column(String(16), default="oanda")   # oanda/manual
     external_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     is_open: Mapped[bool] = mapped_column(Boolean, default=True)
+    account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id"), nullable=True)
 
 
 class TradeJournal(Base):
@@ -225,6 +237,7 @@ class TradeJournal(Base):
     pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
     raw: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     source: Mapped[str] = mapped_column(String(16), default="oanda")
+    account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id"), nullable=True)
 
 
 class BehaviorFlag(Base):

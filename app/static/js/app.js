@@ -414,6 +414,59 @@ function renderScenario(el, sc, title) {
     ${confirms ? `<div class="sc-confirm">等待確認:<ul>${confirms}</ul></div>` : ""}`;
 }
 
+/* ═══ 帳戶層(老師帶單 vs 自己交易)═══ */
+S.accounts = [];
+const accountName = (id) => {
+  const a = S.accounts.find((x) => x.id === id);
+  return a ? a.name : (id == null ? "未指定帳戶" : `帳戶#${id}`);
+};
+
+async function loadAccounts() {
+  try {
+    S.accounts = await (await fetch("/api/accounts")).json();
+    const sel = $("pf-account");
+    sel.innerHTML = S.accounts.map((a) =>
+      `<option value="${a.id}"${a.strategy_source === "SELF" ? " selected" : ""}>${a.name}</option>`).join("");
+  } catch (e) { console.warn("accounts load failed", e); }
+}
+
+async function loadComparison() {
+  const body = $("compare-body");
+  try {
+    const data = await (await fetch("/api/accounts/comparison")).json();
+    const accs = data.accounts || [];
+    if (!accs.length) {
+      body.innerHTML = '<div class="empty">尚無帳戶。</div>';
+      return;
+    }
+    const f = (v, suffix = "") => (v == null ? "–" : `${v}${suffix}`);
+    const pnlCell = (v) => v == null ? "–"
+      : `<span class="${v >= 0 ? "cmp-pos" : "cmp-neg"}">${v >= 0 ? "+" : ""}${v}</span>`;
+    const rows = [
+      ["已平倉筆數", (s) => f(s.total_trades)],
+      ["勝 / 敗", (s) => `${s.wins} / ${s.losses}`],
+      ["勝率", (s) => f(s.win_rate, "%")],
+      ["Expectancy(平均 R)", (s) => pnlCell(s.avg_r)],
+      ["總 R", (s) => pnlCell(s.total_r)],
+      ["獲利因子", (s) => f(s.profit_factor)],
+      ["最大回撤(R)", (s) => f(s.max_drawdown_r)],
+      ["總損益(USD)", (s) => pnlCell(s.total_pnl_usd)],
+      ["行為標籤數(紀律)", (s) => f(s.behavior_flags)],
+    ];
+    body.innerHTML = `
+      <table class="hist-table cmp-table"><thead><tr>
+        <th>指標</th>${accs.map((a) =>
+          `<th>${a.name}<div class="cmp-src">${a.strategy_source}</div></th>`).join("")}
+      </tr></thead><tbody>
+        ${rows.map(([label, fn]) => `<tr><td>${label}</td>${
+          accs.map((a) => `<td class="num">${fn(a.stats)}</td>`).join("")}</tr>`).join("")}
+      </tbody></table>
+      <div class="bias-disclaimer" style="margin-top:10px">${data.note || ""}</div>`;
+  } catch (e) {
+    body.innerHTML = '<div class="empty">對照統計載入失敗。</div>';
+  }
+}
+
 /* ═══ 手動持倉管理 ═══ */
 async function loadPositions() {
   const list = $("position-list");
@@ -443,6 +496,7 @@ function posCard(p) {
   <div class="pos-card ${p.side.toLowerCase()}" data-id="${p.id}">
     <div class="pos-head">
       <span class="pos-side">${p.side === "LONG" ? "多單 LONG" : "空單 SHORT"}</span>
+      <span class="chip info">${accountName(p.account_id)}</span>
       <span class="num">${fmt(p.lot_size)} 手・剩餘 ${p.remaining_percent}%</span>
       ${p.is_open ? "" : '<span class="pos-closed-tag">已平倉</span>'}
       ${pnl != null ? `<span class="pos-pnl ${pnl >= 0 ? "pos" : "neg"}">${pnl >= 0 ? "+" : ""}${fmt(pnl)} USD</span>` : ""}
@@ -596,6 +650,7 @@ async function boot() {
       if (t.dataset.tab === "history") loadHistory();
       if (t.dataset.tab === "position") loadPositions();
       if (t.dataset.tab === "coach") loadCoach();
+      if (t.dataset.tab === "compare") loadComparison();
     }));
 
   $("pos-form").addEventListener("submit", async (e) => {
@@ -609,6 +664,7 @@ async function boot() {
         stop_loss: $("pf-stop").value ? parseFloat($("pf-stop").value) : null,
         lot_size: parseFloat($("pf-lot").value),
         planned_targets: targets,
+        account_id: parseInt($("pf-account").value, 10) || null,
       });
       e.target.reset();
       loadPositions();
@@ -616,6 +672,7 @@ async function boot() {
   });
 
   connectWS();
+  loadAccounts();
 
   try {
     const h = await (await fetch("/health")).json();
