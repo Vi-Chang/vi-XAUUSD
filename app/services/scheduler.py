@@ -30,6 +30,7 @@ class AppState:
         self.last_job_run: dict[str, datetime] = {}
         self.last_decision_action: str | None = None
         self.last_daily_date = None
+        self.started_at: datetime | None = None   # 開機時間(死亡偵測寬限期用)
         self.ws_clients: set = set()
 
     def mark(self, job: str) -> None:

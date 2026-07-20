@@ -20,17 +20,30 @@ from app.services.market_calendar import market_is_open
 
 logger = logging.getLogger(__name__)
 
-CRITICAL_JOBS = {"poll_price": 300, "m15_analysis": 1200}  # job → 容忍秒數
+# job → 容忍秒數(須大於該 job 的執行間隔,避免時序抖動誤報)。
+# poll_price 對 twelve_data 每 300s 跑一次 → 容忍 700s(約 2 輪 + 緩衝)。
+# m15_analysis cron 每 900s → 容忍 1500s。
+CRITICAL_JOBS = {"poll_price": 700, "m15_analysis": 1500}
 
 
-def check_liveness(last_job_run: dict[str, datetime]) -> list[str]:
-    """回傳停止運作的元件清單。"""
+def check_liveness(last_job_run: dict[str, datetime],
+                   started_at: datetime | None = None) -> list[str]:
+    """回傳停止運作的元件清單。
+
+    開機寬限期:started_at 提供時,尚未執行過的 job 在「開機後未滿容忍時間」內
+    不算死亡(剛重啟時 poll/m15 還沒輪到第一次,不應誤報 degraded/ERROR)。
+    """
     now = datetime.now(timezone.utc)
     dead = []
     for job, tolerance in CRITICAL_JOBS.items():
         last = last_job_run.get(job)
-        if last is None or (now - last).total_seconds() > tolerance:
-            dead.append(f"{job} (last={last.isoformat() if last else 'never'})")
+        if last is not None:
+            if (now - last).total_seconds() > tolerance:
+                dead.append(f"{job} (last={last.isoformat()})")
+        else:
+            in_grace = started_at is not None and (now - started_at).total_seconds() <= tolerance
+            if not in_grace:
+                dead.append(f"{job} (last=never)")
     return dead
 
 
@@ -93,8 +106,8 @@ async def run_monitor(state) -> None:
     if not state.notifier:
         return
 
-    # 1) 元件死亡偵測(最嚴重)→ ERROR
-    dead = check_liveness(state.last_job_run)
+    # 1) 元件死亡偵測(最嚴重)→ ERROR(含開機寬限期)
+    dead = check_liveness(state.last_job_run, getattr(state, "started_at", None))
     if dead:
         await state.notifier.notify(
             "RISK", "component_down",
@@ -124,7 +137,8 @@ send_heartbeat = run_monitor
 
 def health_payload(state) -> dict:
     """GET /health 回應(供 UptimeRobot 等外部監控)。"""
-    dead = check_liveness(state.last_job_run) if market_is_open() else []
+    dead = (check_liveness(state.last_job_run, getattr(state, "started_at", None))
+            if market_is_open() else [])
     last_t, age_min = _last_15m_candle()
     lag = get_settings().data_lag_warn_minutes
     data_lagging = age_min is not None and age_min > lag and market_is_open()

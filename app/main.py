@@ -38,6 +38,8 @@ async def lifespan(app: FastAPI):
             and state.provider.name != "twelve_data"):
         from app.providers.twelve_data import TwelveDataProvider
         state.secondary = TwelveDataProvider()
+    from datetime import datetime, timezone
+    state.started_at = datetime.now(timezone.utc)
     scheduler = None
     if not s.disable_scheduler:
         scheduler = build_scheduler()

@@ -141,11 +141,35 @@ class TestSilentMonitor:
         _insert_15m_candle(5)
         _, log, push = mgr()
         st = _FakeState(NotificationManager([log, push]))
-        st.last_job_run = {}  # 沒有任何 job 執行過 → 死亡
+        st.last_job_run = {}          # 沒有任何 job 執行過
+        st.started_at = None          # 無寬限資訊 → 視為死亡
         await hb.run_monitor(st)
         assert len(push.sent) == 1
         assert "[ERROR]" in push.sent[0]
         assert "元件停止運作" in push.sent[0]
+
+    async def test_startup_grace_no_false_alarm(self, monkeypatch):
+        import app.services.heartbeat as hb
+        monkeypatch.setattr(hb, "market_is_open", lambda *a, **k: True)
+        _insert_15m_candle(5)
+        _, log, push = mgr()
+        st = _FakeState(NotificationManager([log, push]))
+        st.last_job_run = {}   # 剛開機、job 還沒輪到
+        st.started_at = datetime.now(timezone.utc)   # 開機寬限期內
+        await hb.run_monitor(st)
+        assert len(push.sent) == 0   # 不得誤報元件停止
+
+    async def test_grace_expired_alarms(self, monkeypatch):
+        import app.services.heartbeat as hb
+        monkeypatch.setattr(hb, "market_is_open", lambda *a, **k: True)
+        _insert_15m_candle(5)
+        _, log, push = mgr()
+        st = _FakeState(NotificationManager([log, push]))
+        st.last_job_run = {}
+        st.started_at = datetime.now(timezone.utc) - timedelta(seconds=3600)  # 開機已久仍無 job
+        await hb.run_monitor(st)
+        assert len(push.sent) == 1
+        assert "[ERROR]" in push.sent[0]
 
     async def test_daily_summary_fires_once(self, monkeypatch):
         import app.services.heartbeat as hb
