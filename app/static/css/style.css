@@ -349,6 +349,16 @@ body {
 .hist-table td.num { color: var(--text); }
 .act-pill { font-family: var(--mono); font-size: .72rem; padding: 2px 8px; border-radius: 5px; }
 
+/* ═══ 老師帶單 ═══ */
+.mentor-note { font-size: .82rem; color: var(--text-dim); margin-bottom: 12px;
+  padding: 8px 12px; border-left: 3px solid var(--info); background: rgba(88,166,255,.06);
+  border-radius: 0 6px 6px 0; }
+.mentor-note b { color: var(--info); }
+.mentor-card { border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px;
+  margin: 10px 0; }
+.mentor-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.mentor-memo { margin-top: 6px; font-size: .78rem; color: var(--text-dim); }
+
 /* ═══ 對照統計 ═══ */
 .cmp-table td:first-child { color: var(--text-dim); }
 .cmp-table th .cmp-src { font-size: .64rem; color: var(--info); font-family: var(--mono); }

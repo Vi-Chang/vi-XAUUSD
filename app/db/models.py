@@ -223,6 +223,24 @@ class Position(Base):
     account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id"), nullable=True)
 
 
+class MentorSignal(Base):
+    """老師帶單(僅供參考)— 老師發出的方向與價位,我並未實際下單,不算持倉。
+
+    完全獨立於 positions:純參考比對用,絕不進入「有無持倉」判斷、
+    不影響任何進出場決策、不加減證據分數。
+    """
+    __tablename__ = "mentor_signals"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    direction: Mapped[str] = mapped_column(String(8))          # LONG / SHORT
+    entry_price: Mapped[float] = mapped_column(Float)
+    stop_loss: Mapped[float | None] = mapped_column(Float, nullable=True)
+    targets: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    note: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    signal_time: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class TradeJournal(Base):
     """13. trade_journal — 成交紀錄(Trading Coach 輸入)"""
     __tablename__ = "trade_journal"

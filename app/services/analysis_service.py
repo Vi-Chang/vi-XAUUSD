@@ -186,7 +186,9 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
         most_likely_user_mistake_now=MISTAKE_BY_STATE.get(state, ""),
     )
 
-    # ── 9b. 手動持倉整合(spec 十七:持倉管理優先於尋找新交易)──
+    # ── 9b. 我的持倉整合(持倉管理優先於尋找新交易)──
+    # 注意:這裡只看「我實際下單的持倉」(positions 表)。老師帶單(mentor_signals)
+    # 是獨立資料表,絕不進入此判斷 —— 只有老師帶單、我空手時仍正常找新交易。
     try:
         from app.services.position_service import (
             list_positions, position_view, recent_behavior_flags,
@@ -231,6 +233,15 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
     for sc in (result.long_scenario, result.short_scenario):
         sc.resolved_prices = resolve_ids(levels, [sc.entry_zone_id, sc.stop_loss_id,
                                                   sc.invalidation_id, *sc.target_ids])
+
+    # ── 9c. 老師帶單比對(純顯示;讀取最終 decision,絕不回饋影響決策/證據)──
+    try:
+        from app.schemas.analysis import MentorComparison
+        from app.services.mentor_service import comparison_block
+        result.mentor_comparison = MentorComparison(
+            **comparison_block(result.decision.action, tick.mid))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("mentor comparison failed: %s", exc)
 
     # ── 10. 儲存 ──
     try:

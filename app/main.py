@@ -93,6 +93,50 @@ async def trigger_analysis() -> dict:
     return apply_offset_to_result(state.latest_result)
 
 
+class MentorSignalReq(BaseModel):
+    direction: str
+    entry_price: float
+    stop_loss: float | None = None
+    targets: list[float] = Field(default_factory=list)
+    note: str | None = None
+
+
+@app.get("/api/mentor/signals")
+async def get_mentor_signals() -> dict:
+    """老師帶單(僅供參考)+ 與目前系統方向的比對。"""
+    from app.services.mentor_service import comparison_block
+    action = "NO_TRADE"
+    if state.latest_result:
+        action = state.latest_result.get("decision", {}).get("action", "NO_TRADE")
+    cur = None
+    try:
+        cur = (await state.provider.get_live_price()).mid
+    except Exception:  # noqa: BLE001
+        pass
+    return comparison_block(action, cur)
+
+
+@app.post("/api/mentor/signals")
+async def create_mentor_signal(req: MentorSignalReq) -> dict:
+    """新增一筆老師帶單(不算持倉,純參考比對)。"""
+    from app.services.mentor_service import create_signal
+    try:
+        return create_signal(direction=req.direction, entry_price=req.entry_price,
+                             stop_loss=req.stop_loss, targets=req.targets, note=req.note)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/mentor/signals/{signal_id}/deactivate")
+async def deactivate_mentor_signal(signal_id: int) -> dict:
+    from app.services.mentor_service import deactivate_signal
+    try:
+        deactivate_signal(signal_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return {"ok": True}
+
+
 @app.get("/api/offset")
 async def get_offset_api() -> dict:
     """TMGM 價格校正資訊(右上角資訊面板 + 校正說明)。"""

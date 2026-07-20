@@ -153,6 +153,28 @@ class BiasAnalysis(BaseModel):
     disclaimer: str = "證據傾向 ≠ 勝率;僅代表當下多空條件的相對完整度(規格書二十一)"
 
 
+class MentorSignalView(BaseModel):
+    """老師帶單一筆 + 與系統方向的比對(純參考,不影響決策)。"""
+    id: int
+    direction: str
+    entry_price: float
+    stop_loss: float | None = None
+    targets: list[float] = Field(default_factory=list)
+    note: str = ""
+    signal_time: str = ""
+    system_direction: str | None = None
+    alignment: str = "SYSTEM_NEUTRAL"           # ALIGNED / OPPOSITE / SYSTEM_NEUTRAL
+    alignment_text: str = ""
+    entry_vs_current: float | None = None
+    entry_vs_current_text: str = ""
+
+
+class MentorComparison(BaseModel):
+    has_signals: bool = False
+    signals: list[MentorSignalView] = Field(default_factory=list)
+    note: str = "老師帶單僅供參考比對,不影響系統任何進出場判斷與證據分數"
+
+
 class OffsetInfo(BaseModel):
     """TMGM 價格校正資訊(讀取時由 price_offset 服務填入)。"""
     mode: str = "manual"                 # manual | auto
@@ -189,6 +211,7 @@ class AnalysisResult(BaseModel):
     bias_analysis: BiasAnalysis = BiasAnalysis()
     risk_manager: RiskManagerView = RiskManagerView()
     position_management: PositionManagement = PositionManagement()
+    mentor_comparison: MentorComparison = MentorComparison()
     trading_coach: TradingCoachView = TradingCoachView()
     decision: Decision = Decision()
     offset_info: OffsetInfo = OffsetInfo()

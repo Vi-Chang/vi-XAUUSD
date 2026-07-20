@@ -531,6 +531,47 @@ async function loadComparison() {
   }
 }
 
+/* ═══ 老師帶單(僅供參考,不影響決策)═══ */
+async function loadMentor() {
+  const body = $("mentor-body");
+  try {
+    const data = await (await fetch("/api/mentor/signals")).json();
+    if (!data.has_signals) {
+      body.innerHTML = '<div class="empty">目前沒有老師帶單。新增後這裡會顯示老師方向與系統方向的比對。</div>';
+      return;
+    }
+    const alignChip = (a, text) => {
+      const cls = a === "ALIGNED" ? "good" : a === "OPPOSITE" ? "bad" : "warn";
+      return `<span class="chip ${cls}">${text}</span>`;
+    };
+    body.innerHTML = data.signals.map((s) => `
+      <div class="mentor-card">
+        <div class="mentor-head">
+          <span class="pos-side">${s.direction === "LONG" ? "老師做多" : "老師做空"}</span>
+          ${alignChip(s.alignment, s.alignment_text)}
+          <button class="btn btn-sm" onclick="dismissMentor(${s.id})">移除</button>
+        </div>
+        <div class="kv"><span>老師進場價</span><span class="num">${fmt(s.entry_price)}</span></div>
+        ${s.stop_loss != null ? `<div class="kv"><span>老師停損</span><span class="num">${fmt(s.stop_loss)}</span></div>` : ""}
+        <div class="kv"><span>系統目前方向</span><span>${
+          s.system_direction === "LONG" ? "做多" : s.system_direction === "SHORT" ? "做空" : "無明確方向"}</span></div>
+        <div class="kv"><span>與現價差</span><span class="num">${s.entry_vs_current_text || "–"}</span></div>
+        ${s.note ? `<div class="mentor-memo">老師備註:${s.note}</div>` : ""}
+      </div>`).join("") +
+      `<div class="bias-disclaimer">${data.note}</div>`;
+  } catch (e) {
+    body.innerHTML = '<div class="empty">老師帶單載入失敗。</div>';
+  }
+}
+
+async function dismissMentor(id) {
+  try {
+    await postJSON(`/api/mentor/signals/${id}/deactivate`, {});
+    loadMentor();
+  } catch (e) { alert("移除失敗:" + e); }
+}
+window.dismissMentor = dismissMentor;
+
 /* ═══ 手動持倉管理 ═══ */
 async function loadPositions() {
   const list = $("position-list");
@@ -713,9 +754,24 @@ async function boot() {
       $("panel-" + t.dataset.tab).classList.add("active");
       if (t.dataset.tab === "history") loadHistory();
       if (t.dataset.tab === "position") loadPositions();
+      if (t.dataset.tab === "mentor") loadMentor();
       if (t.dataset.tab === "coach") loadCoach();
       if (t.dataset.tab === "compare") loadComparison();
     }));
+
+  $("mentor-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    try {
+      await postJSON("/api/mentor/signals", {
+        direction: $("mf-dir").value,
+        entry_price: parseFloat($("mf-entry").value),
+        stop_loss: $("mf-stop").value ? parseFloat($("mf-stop").value) : null,
+        note: $("mf-note").value || null,
+      });
+      e.target.reset();
+      loadMentor();
+    } catch (err) { alert("新增失敗:" + err); }
+  });
 
   $("pos-form").addEventListener("submit", async (e) => {
     e.preventDefault();
