@@ -549,7 +549,8 @@ async function loadMentor() {
           <button class="btn btn-sm" onclick="dismissMentor(${s.id})">移除</button>
         </div>
         <div class="kv"><span>老師進場價</span><span class="num">${fmt(s.entry_price)}</span></div>
-        ${s.stop_loss != null ? `<div class="kv"><span>老師停損</span><span class="num">${fmt(s.stop_loss)}</span></div>` : ""}
+        ${s.stop_loss != null ? `<div class="kv"><span>老師停損(賠錢出場)</span><span class="num">${fmt(s.stop_loss)}</span></div>` : ""}
+        ${(s.targets || []).length ? `<div class="kv"><span>老師停利(目標價)</span><span class="num">${s.targets.map((t) => fmt(t)).join(" / ")}</span></div>` : ""}
         <div class="kv"><span>系統目前方向</span><span>${
           s.system_direction === "LONG" ? "做多" : s.system_direction === "SHORT" ? "做空" : "無明確方向"}</span></div>
         <div class="kv"><span>與現價差</span><span class="num">${s.entry_vs_current_text || "–"}</span></div>
@@ -759,10 +760,12 @@ async function boot() {
   $("mentor-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     try {
+      const tgt = $("mf-target").value ? [parseFloat($("mf-target").value)] : [];
       await postJSON("/api/mentor/signals", {
         direction: $("mf-dir").value,
         entry_price: parseFloat($("mf-entry").value),
         stop_loss: $("mf-stop").value ? parseFloat($("mf-stop").value) : null,
+        targets: tgt,
         note: $("mf-note").value || null,
       });
       e.target.reset();

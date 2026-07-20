@@ -44,6 +44,15 @@ def test_comparison_alignment():
     assert ms.compare_signal(sig, "NO_TRADE", 4005.0)["alignment"] == "SYSTEM_NEUTRAL"
 
 
+def test_signal_with_target_only():
+    """老師只給停利/目標價、沒給停損 — 該格改成目標價也能存與讀回。"""
+    s = ms.create_signal(direction="LONG", entry_price=4000.0, targets=[4020.0])
+    assert s["stop_loss"] is None
+    assert s["targets"] == [4020.0]
+    sigs = ms.list_active_signals()
+    assert sigs[0].targets == [4020.0]
+
+
 def test_deactivate():
     s = ms.create_signal(direction="SHORT", entry_price=4000.0)
     ms.deactivate_signal(s["id"])
