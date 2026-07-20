@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from app.config import get_settings
+from app.i18n import dir_zh, state_zh
 from app.engines.data_quality import DataQualityReport
 from app.engines.key_levels import CandidateLevel, nearest_zone
 from app.engines.market_structure import StructureReport
@@ -62,46 +63,46 @@ def _direction_conditions(direction: str, *, structures: dict[str, StructureRepo
     if m15:
         labels = [s.label for s in m15.swings if s.label][-3:]
         if up and "HL" in labels:
-            ok.append("STRUCT:15M 已形成更高低點(HL)")
+            ok.append("STRUCT:15分K低點越墊越高,漲勢沒斷(更高低點 HL)")
         if not up and "LH" in labels:
-            ok.append("STRUCT:15M 已形成更低高點(LH)")
+            ok.append("STRUCT:15分K高點越壓越低,跌勢沒停(更低高點 LH)")
         for ev in m15.events[-4:]:
             if not ev.still_valid or ev.provisional:
                 continue
             if up and ev.event_type in ("BOS_UP", "CHOCH_UP"):
-                ok.append(f"STRUCT:15M 已收線突破局部高點 {ev.price:.2f} @ {ev.time}")
+                ok.append(f"STRUCT:15分K收盤站上前高 {ev.price:.2f},順勢突破")
             if not up and ev.event_type in ("BOS_DOWN", "CHOCH_DOWN"):
-                ok.append(f"STRUCT:15M 已收線跌破局部低點 {ev.price:.2f} @ {ev.time}")
+                ok.append(f"STRUCT:15分K收盤跌破前低 {ev.price:.2f},順勢跌破")
             if up and ev.event_type == "FAILED_BREAKDOWN":
-                ok.append(f"STRUCT:掃過前低後收回(假跌破)@ {ev.time}")
+                ok.append("STRUCT:假跌破,價格又漲回來(跌不下去)")
             if not up and ev.event_type == "FAILED_BREAKOUT":
-                ok.append(f"STRUCT:掃過前高後跌回(假突破)@ {ev.time}")
+                ok.append("STRUCT:假突破,價格又跌回來(漲不上去)")
 
     # 位置條件:靠近支撐做多 / 靠近壓力做空
     zone_kind = "SUP_ZONE" if up else "RES_ZONE"
     zone = nearest_zone(levels, price, zone_kind, "STRONG")
     if zone and zone.price_low - atr15 <= price <= zone.price_high + atr15:
-        ok.append(f"LEVEL:價格位於{'支撐' if up else '壓力'}區 {zone.level_id} 附近")
+        ok.append(f"LEVEL:價格剛好在{'支撐' if up else '壓力'}區附近(有{'撐' if up else '壓'})")
 
     # 動能條件(1H)
     hist = indicators_h1.get("macd_hist")
     if hist is not None:
         if up and hist > 0:
-            ok.append("MOMO:1H MACD 柱體位於零軸上方(動能偏多)")
+            ok.append("MOMO:1小時動能偏多(MACD 在零軸上)")
         if not up and hist < 0:
-            ok.append("MOMO:1H MACD 柱體位於零軸下方(動能偏空)")
+            ok.append("MOMO:1小時動能偏空(MACD 在零軸下)")
 
     # 高週期不否決
     if h4:
         if up and h4.trend in ("UP", "RANGE", "UNKNOWN"):
-            ok.append(f"HTF:4H 結構({h4.trend})支持或未否決多方")
+            ok.append("HTF:4小時大方向不擋你做多")
         if not up and h4.trend in ("DOWN", "RANGE", "UNKNOWN"):
-            ok.append(f"HTF:4H 結構({h4.trend})支持或未否決空方")
+            ok.append("HTF:4小時大方向不擋你做空")
     if h1:
         if up and h1.trend == "UP":
-            ok.append("HTF:1H 趨勢向上")
+            ok.append("HTF:1小時趨勢向上")
         if not up and h1.trend == "DOWN":
-            ok.append("HTF:1H 趨勢向下")
+            ok.append("HTF:1小時趨勢向下")
     return ok
 
 
@@ -117,8 +118,10 @@ def detect_chase(direction: str, *, price: float, atr15: float,
     if m15:
         ref = m15.last_swing_low if up else m15.last_swing_high
         if ref is not None and abs(price - ref) > s.chase_atr_mult * atr15:
-            flags.append(f"CHASE_{'LONG' if up else 'SHORT'}_RISK:距最近 15M 結構點 "
-                         f"{abs(price - ref) / max(atr15, 1e-9):.1f} ATR(>{s.chase_atr_mult})")
+            flags.append(f"CHASE_{'LONG' if up else 'SHORT'}_RISK:離最近的"
+                         f"{'支撐' if up else '壓力'}已經 "
+                         f"{abs(price - ref) / max(atr15, 1e-9):.1f} 倍波動幅度,"
+                         f"追{'高' if up else '低'}容易被套")
 
     # 距強壓力太近禁止追多;距強支撐太近禁止追空
     guard = nearest_zone(levels, price, "RES_ZONE" if up else "SUP_ZONE", "STRONG")
@@ -126,9 +129,10 @@ def detect_chase(direction: str, *, price: float, atr15: float,
         edge = guard.price_low if up else guard.price_high
         dist = (edge - price) if up else (price - edge)
         if 0 <= dist < s.no_chase_near_level_atr_mult * atr15:
-            flags.append(f"CHASE_{'LONG' if up else 'SHORT'}_RISK:距強"
-                         f"{'壓力' if up else '支撐'} {guard.level_id} 僅 "
-                         f"{dist / max(atr15, 1e-9):.2f} ATR,禁止追{'多' if up else '空'}")
+            flags.append(f"CHASE_{'LONG' if up else 'SHORT'}_RISK:"
+                         f"{'上方' if up else '下方'} "
+                         f"{dist / max(atr15, 1e-9):.2f} 倍波動就是強"
+                         f"{'壓力' if up else '支撐'},這裡追{'多' if up else '空'}很容易被巴")
     return flags
 
 
@@ -209,15 +213,21 @@ def decide(*, quality: DataQualityReport, structures: dict[str, StructureReport]
                                                indicators_h1=indicators_h1, price=price,
                                                levels=levels, atr15=atr15)
         bp, bs = evidence_bias(bull_conds, bear_conds)
-        return RuleDecision("NO_TRADE", f"{code}: {quality.status}; {quality.warnings[:3]}",
+        if code == "NO_TRADE_MARKET_CLOSED":
+            reason = "現在休市,先不動作。"
+        else:
+            reason = "資料品質有狀況,先不進場,免得照到錯的價格做決定。"
+        return RuleDecision("NO_TRADE", reason,
                             0, "X", empty_long, empty_short, no_trade_code=code,
                             bull_evidence=bull_conds, bear_evidence=bear_conds,
                             bull_pct=bp, bear_pct=bs)
     if event_lockout:
-        return RuleDecision("NO_TRADE", f"EVENT_LOCKOUT:高影響事件前 {s.event_lockout_minutes} 分鐘內禁止新倉",
+        return RuleDecision("NO_TRADE",
+                            f"快公布重要數據了(剩 {s.event_lockout_minutes} 分鐘),"
+                            f"先別進場,等公布後塵埃落定再看。",
                             0, "X", empty_long, empty_short, no_trade_code="EVENT_LOCKOUT")
     if market_state == "INSUFFICIENT_DATA":
-        return RuleDecision("NO_TRADE", "資料不足,禁止強迫產生訊號(spec 老問題 19)",
+        return RuleDecision("NO_TRADE", "資料還不夠,硬猜方向只會賠錢,先等一下。",
                             0, "X", empty_long, empty_short, no_trade_code="NO_TRADE_DATA_QUALITY")
 
     long_conds = _direction_conditions("LONG", structures=structures,
@@ -246,24 +256,29 @@ def decide(*, quality: DataQualityReport, structures: dict[str, StructureReport]
 
     if dominant is None or max(n_long, n_short) < 2 or market_state in ("RANGE", "COMPRESSION"):
         action, grade = "WATCH", "C"
-        reason = f"市場狀態 {market_state};多方條件 {n_long} 項、空方條件 {n_short} 項,無明確優勢 → 等待"
+        reason = (f"現在是{state_zh(market_state)},做多做空的理由都不夠強"
+                  f"(多方 {n_long} 個、空方 {n_short} 個),沒把握就先看著。")
     else:
+        d_zh = dir_zh(dominant)
         sc = long_sc if dominant == "LONG" else short_sc
         chase_this = [f for f in chase if dominant in f]
         if sc.status == "PREPARE" and rr_ok and not chase_this:
             action = f"PREPARE_{dominant}"
             grade = "A" if score >= 60 else "B"
-            reason = (f"{dominant} 條件 {max(n_long, n_short)} 項成立(含結構確認),"
-                      f"R/R={rr},等待最終觸發")
+            reason = (f"{d_zh}的條件湊齊了(含關鍵的順勢突破),賺賠比最高 {max(rr)} 倍、划算;"
+                      f"等最後一個進場訊號出現就可以動手。")
         elif sc.status == "PREPARE" and not rr_ok:
             action, grade = "WATCH", "C"
-            reason = f"{dominant} 結構條件成立但 R/R 不足({rr or 'n/a'}),優先等待更好位置(spec 十六)"
+            worst = rr[0] if rr else 0
+            reason = (f"{d_zh}方向對,但這裡進場賺賠比只有 {worst} 倍,"
+                      f"賺的比賠的還少、不划算,等更好的位置再說。")
         elif chase_this:
             action, grade = "WATCH", "C"
-            reason = f"{dominant} 有方向但屬追價位置:{chase_this[0]}"
+            desc = chase_this[0].split(":", 1)[1] if ":" in chase_this[0] else chase_this[0]
+            reason = f"看得出想{d_zh},但現在追進去風險大:{desc}。"
         else:
             action, grade = "WATCH", "B" if market_state.startswith("STRONG") else "C"
-            reason = f"{dominant} 方向條件 {max(n_long, n_short)} 項,尚缺結構/收線確認"
+            reason = f"{d_zh}方向,但還差關鍵的收線確認,再等一根 K 棒。"
 
     bull_pct, bear_pct = evidence_bias(long_conds, short_conds)
     return RuleDecision(action=action, reason=reason, evidence_score=score,

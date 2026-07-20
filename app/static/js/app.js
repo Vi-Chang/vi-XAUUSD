@@ -151,8 +151,8 @@ async function applyOverlays() {
       }));
     };
     mk(sc.entry_zone_id, C.info, "進場");
-    mk(sc.stop_loss_id, C.danger, "停損");
-    (sc.target_ids || []).forEach((tid, i) => mk(tid, C.bull, `T${i + 1}`));
+    mk(sc.stop_loss_id, C.danger, "賠錢出場");
+    (sc.target_ids || []).forEach((tid, i) => mk(tid, C.bull, `目標${i + 1}`));
   }
 
   // 結構事件標記(BOS/CHoCH/假突破)
@@ -167,10 +167,7 @@ async function applyOverlays() {
         if (t == null) continue;
       }
       const up = ev.event_type.endsWith("_UP") || ev.event_type === "FAILED_BREAKDOWN";
-      const label = ev.event_type.replace("FAILED_BREAKOUT", "假突破")
-        .replace("FAILED_BREAKDOWN", "假跌破").replace("BOS_UP", "BOS↑")
-        .replace("BOS_DOWN", "BOS↓").replace("CHOCH_UP", "CHoCH↑")
-        .replace("CHOCH_DOWN", "CHoCH↓");
+      const label = MSG.event[ev.event_type] || ev.event_type;
       markers.push({
         time: t,
         position: up ? "belowBar" : "aboveBar",
@@ -273,7 +270,7 @@ function applyAnalysis(a) {
 
   const badge = $("decision-badge");
   unskel(badge);
-  badge.textContent = a.decision.action;
+  badge.textContent = actionZh(a.decision.action);
   badge.className = "decision-badge " + decisionClass(a.decision.action);
 
   const grade = $("grade-badge");
@@ -302,7 +299,7 @@ function applyAnalysis(a) {
   });
   const msChip = $("market-state-chip");
   unskel(msChip);
-  msChip.textContent = a.market_state;
+  msChip.textContent = stateZh(a.market_state);
   msChip.className = "chip " + (a.market_state.includes("BULL") ? "good"
     : a.market_state.includes("BEAR") ? "bad"
     : a.market_state.includes("TRANSITION") || a.market_state.includes("PENDING") ? "warn" : "info");
@@ -335,8 +332,8 @@ function applyAnalysis(a) {
 
   if (a.offset_info) renderOffset(a.offset_info);
   const offVal = a.offset_info ? a.offset_info.value : 0;
-  renderScenario($("scenario-long"), a.long_scenario, "多方 LONG", offVal);
-  renderScenario($("scenario-short"), a.short_scenario, "空方 SHORT", offVal);
+  renderScenario($("scenario-long"), a.long_scenario, "做多劇本", offVal);
+  renderScenario($("scenario-short"), a.short_scenario, "做空劇本", offVal);
   applyOverlays().catch(console.error);
 }
 
@@ -389,7 +386,7 @@ function renderBias(b) {
     $("bias-disclaimer").before(flagBox);
   }
   flagBox.innerHTML = flags.map((f) =>
-    `<span class="chip warn" title="${f}">${f.split(":")[0]}</span>`).join("");
+    `<span class="chip warn" title="${f.split(":").slice(1).join(":")}">${MSG.chase[f.split(":")[0]] || f.split(":")[0]}</span>`).join("");
 }
 
 function renderScenario(el, sc, title, offset) {
@@ -400,21 +397,21 @@ function renderScenario(el, sc, title, offset) {
     const z = rp[id];
     return z ? `${fmt(z.price_low)} – ${fmt(z.price_high)}` : "–";
   };
-  const rrPills = (sc.risk_reward || []).map((r) => `<span class="rr-pill">R ${r}</span>`).join("");
+  const rrPills = (sc.risk_reward || []).map((r) => `<span class="rr-pill">賺賠比 ${r} 倍</span>`).join("");
   const confirms = (sc.required_confirmations || [])
     .map((c) => `<li>${c}</li>`).join("");
   el.innerHTML = `
     <div class="sc-head"><span class="sc-dir">${title}</span>
-      <span class="sc-status ${sc.status}">${sc.status}</span>${tag}</div>
+      <span class="sc-status ${sc.status}">${SC_STATUS_ZH[sc.status] || sc.status}</span>${tag}</div>
     <div class="sc-levels">
       <div class="kv"><span>進場區</span><span class="num">${lv(sc.entry_zone_id)}</span></div>
-      <div class="kv"><span>停損</span><span class="num">${lv(sc.stop_loss_id)}</span></div>
-      <div class="kv"><span>目標</span><span class="num">${
+      <div class="kv"><span>賠錢出場價</span><span class="num">${lv(sc.stop_loss_id)}</span></div>
+      <div class="kv"><span>目標價</span><span class="num">${
         (sc.target_ids || []).map((t) => lv(t)).filter((x) => x !== "–").join(" / ") || "–"}</span></div>
     </div>
     ${rrPills ? `<div class="sc-rr">${rrPills}</div>` : ""}
     ${sc.setup ? `<div class="sc-confirm">${sc.setup}</div>` : ""}
-    ${confirms ? `<div class="sc-confirm">等待確認:<ul>${confirms}</ul></div>` : ""}`;
+    ${confirms ? `<div class="sc-confirm">還要等這些條件:<ul>${confirms}</ul></div>` : ""}`;
 }
 
 /* ═══ TMGM 價格校正(Price Offset)═══ */
@@ -600,7 +597,7 @@ function posCard(p) {
   return `
   <div class="pos-card ${p.side.toLowerCase()}" data-id="${p.id}">
     <div class="pos-head">
-      <span class="pos-side">${p.side === "LONG" ? "多單 LONG" : "空單 SHORT"}</span>
+      <span class="pos-side">${p.side === "LONG" ? "做多" : "做空"}</span>
       <span class="chip info">${accountName(p.account_id)}</span>
       <span class="num">${fmt(p.lot_size)} 手・剩餘 ${p.remaining_percent}%</span>
       ${p.is_open ? "" : '<span class="pos-closed-tag">已平倉</span>'}
@@ -608,17 +605,17 @@ function posCard(p) {
     </div>
     <div class="pos-meta">
       <span>進場 <span class="num">${fmt(p.entry_price)}</span></span>
-      <span>停損 <span class="num">${fmt(p.stop_loss)}</span></span>
-      <span>目標 <span class="num">${(p.planned_targets || []).map((t) => fmt(t)).join(" / ") || "–"}</span></span>
+      <span>賠錢出場價 <span class="num">${fmt(p.stop_loss)}</span></span>
+      <span>目標價 <span class="num">${(p.planned_targets || []).map((t) => fmt(t)).join(" / ") || "–"}</span></span>
       <span>開倉 <span class="num">${p.open_time.slice(5, 16).replace("T", " ")}</span></span>
     </div>
     ${p.is_open ? `
-    <div class="pos-row"><div class="lbl"><span>R 倍數進度(0 → 3R)</span>
-      <span class="num">${r == null ? "無停損" : fmt(r, 2) + "R"}</span></div>
+    <div class="pos-row"><div class="lbl"><span>賺賠比進度(回本 → 3 倍)</span>
+      <span class="num">${r == null ? "沒設出場價" : fmt(r, 2) + " 倍"}</span></div>
       <div class="progress"><div class="fill" style="width:${rPct}%"></div></div></div>
     ${p.recommended_action ? `<div class="pos-advice">${p.recommended_action}</div>` : ""}
     <div class="pos-actions">
-      <button class="btn btn-sm btn-warn" onclick="actStop(${p.id})">修改停損</button>
+      <button class="btn btn-sm btn-warn" onclick="actStop(${p.id})">改出場價</button>
       <button class="btn btn-sm" onclick="actPartial(${p.id})">分批平倉</button>
       <button class="btn btn-sm btn-danger" onclick="actClose(${p.id})">全部平倉</button>
     </div>` : ""}
@@ -635,11 +632,11 @@ async function postJSON(url, body) {
 }
 
 async function actStop(id) {
-  const v = prompt("新停損價(停損只能往獲利方向移動;往虧損方向會被記錄 STOP_WIDENING):");
+  const v = prompt("新的賠錢出場價(只能往獲利方向移;往賠更多的方向移會被記一筆凹單):");
   if (!v) return;
   try {
     const out = await postJSON(`/api/positions/${id}/stop`, { stop_loss: parseFloat(v) });
-    if (out.behavior_flag) alert(`⚠ 交易教練:偵測到 ${out.behavior_flag}(停損往虧損方向移動)`);
+    if (out.behavior_flag) alert("⚠ 交易教練:你把出場價往賠更多的方向挪了(凹單),要小心。");
   } catch (e) { alert("失敗:" + e.message); }
   loadPositions(); loadCoach();
 }
@@ -698,7 +695,7 @@ async function loadHistory() {
       <th>時間 (UTC)</th><th>市場狀態</th><th>決策</th><th>信心</th><th>證據</th><th>品質</th>
       </tr></thead><tbody>${rows.map((r) => `<tr>
         <td class="num">${r.run_time.slice(5, 16).replace("T", " ")}</td>
-        <td>${r.market_state}</td>
+        <td>${stateZh(r.market_state)}</td>
         <td><span class="act-pill ${decisionClass(r.action)}">${r.action}</span></td>
         <td><span class="grade-badge g-${r.grade}" style="width:26px;height:26px;font-size:.85rem">${r.grade}</span></td>
         <td class="num">${r.evidence_score}</td>

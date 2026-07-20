@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 
 from app import PROMPT_VERSION, STRATEGY_VERSION
 from app.config import get_settings
+from app.i18n import state_zh
 from app.db.models import (
     AnalysisRun, CandidateLevel as CandidateLevelRow, MarketStructure,
 )
@@ -32,19 +33,19 @@ from app.utils.timeutils import to_taipei, trading_day
 logger = logging.getLogger(__name__)
 
 MISTAKE_BY_STATE = {
-    "STRONG_BULL_TREND": "在強趨勢中因 KD/RSI 超買而逆勢放空(老問題 5)",
-    "STRONG_BEAR_TREND": "在強趨勢中因 KD/RSI 超賣而逆勢做多(老問題 6)",
-    "BULLISH_PULLBACK": "把正常回檔誤判為反轉,或在支撐附近追空(老問題 9)",
-    "BEARISH_REBOUND": "把反彈誤判為反轉,或在壓力附近追多(老問題 9)",
-    "RANGE": "在區間中段進場、兩邊被掃(NO_TRADE_MID_RANGE)",
-    "COMPRESSION": "在壓縮末端猜方向,而不是等收線突破確認(老問題 7)",
-    "BREAKOUT_PENDING_CONFIRMATION": "用未收線 K 棒確認突破(老問題 7)",
-    "BREAKDOWN_PENDING_CONFIRMATION": "用未收線 K 棒確認跌破(老問題 7)",
-    "FAILED_BREAKOUT": "突破失敗後仍固守多頭劇本(老問題 12)",
-    "FAILED_BREAKDOWN": "跌破失敗後仍固守空頭劇本(老問題 12)",
-    "STRUCTURE_TRANSITION": "把大週期背景當成立即進場方向,忽略短週期已反轉(老問題 2、3)",
-    "EVENT_DRIVEN_VOLATILITY": "根據事件前技術指標預測公布後方向(spec 十二)",
-    "INSUFFICIENT_DATA": "缺乏資料時仍強迫產生交易訊號(老問題 19)",
+    "STRONG_BULL_TREND": "現在漲勢很強,別看到指標「超買」就急著放空,強勢盤可以一直買不停。",
+    "STRONG_BEAR_TREND": "現在跌勢很強,別看到指標「超賣」就急著抄底,強勢盤可以一直跌不停。",
+    "BULLISH_PULLBACK": "這只是漲勢中的正常回檔,別當成要反轉,更別在支撐附近追空。",
+    "BEARISH_REBOUND": "這只是跌勢中的正常反彈,別當成要反轉,更別在壓力附近追多。",
+    "RANGE": "現在是區間盤整,別在中間進場,很容易上下兩邊都被掃到。",
+    "COMPRESSION": "現在窄幅整理、隨時要變盤,別猜方向,等 K 棒收盤真的突破再說。",
+    "BREAKOUT_PENDING_CONFIRMATION": "K 棒還沒收盤,別急著當成突破成功,等這根收完再確認。",
+    "BREAKDOWN_PENDING_CONFIRMATION": "K 棒還沒收盤,別急著當成跌破成功,等這根收完再確認。",
+    "FAILED_BREAKOUT": "剛剛是假突破、又掉回來了,別再抱著「會漲」的想法不放。",
+    "FAILED_BREAKDOWN": "剛剛是假跌破、又漲回來了,別再抱著「會跌」的想法不放。",
+    "STRUCTURE_TRANSITION": "多空正在換手,別把大週期方向當成現在就能進場,短週期可能已經反轉了。",
+    "EVENT_DRIVEN_VOLATILITY": "數據公布造成大波動,別用公布前的指標去猜公布後會漲還是跌。",
+    "INSUFFICIENT_DATA": "資料還不夠,別硬逼自己一定要下單。",
 }
 
 
@@ -52,15 +53,19 @@ def _tf_view(rep: StructureReport | None, ind: dict) -> TimeframeView:
     if rep is None:
         return TimeframeView(structure="INSUFFICIENT_DATA", momentum="",
                              interpretation="資料不足")
+    from app.i18n import EVENT_TYPE_ZH
     labels = [s.label for s in rep.swings if s.label][-4:]
     hist = ind.get("macd_hist")
     momentum = ("動能偏多" if hist and hist > 0 else "動能偏空" if hist and hist < 0 else "動能中性")
-    recent_ev = [e.event_type for e in rep.events[-3:] if e.still_valid]
+    recent_ev = [EVENT_TYPE_ZH.get(e.event_type, e.event_type)
+                 for e in rep.events[-3:] if e.still_valid]
+    # structure 保留趨勢代碼開頭(前端膠囊顏色靠 UP/DOWN 判斷),後面加白話
+    trend_zh = {"UP": "偏多", "DOWN": "偏空", "RANGE": "盤整", "UNKNOWN": "不明"}.get(rep.trend, "")
     return TimeframeView(
-        structure=f"{rep.trend} ({'/'.join(labels) if labels else 'no swings'})",
+        structure=f"{rep.trend} {trend_zh}",
         momentum=momentum,
-        interpretation=f"最近結構事件: {recent_ev or '無'}; "
-                       f"swing H={rep.last_swing_high} L={rep.last_swing_low}",
+        interpretation=(f"近期訊號:{'、'.join(recent_ev) if recent_ev else '無'};"
+                        f"附近高點 {rep.last_swing_high}、低點 {rep.last_swing_low}"),
     )
 
 
@@ -177,12 +182,12 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
                           confidence_grade=decision.confidence_grade,
                           evidence_score=decision.evidence_score,
                           reason=decision.reason,
-                          next_bullish_trigger="15M 已收線突破局部高點且非追價位置",
-                          next_bearish_trigger="15M 已收線跌破局部低點且非追價位置",
-                          next_recheck_time="下一根 15M 收線"),
+                          next_bullish_trigger="等 15 分K 收盤站上前高、而且不是追高的位置,才考慮做多",
+                          next_bearish_trigger="等 15 分K 收盤跌破前低、而且不是追低的位置,才考慮做空",
+                          next_recheck_time="下一根 15 分K 收盤後再看"),
         meta=Meta(prompt_version=PROMPT_VERSION, strategy_version=STRATEGY_VERSION,
                   model_version="rule-engine-only", llm_cost_usd_today=0.0),
-        summary_zh_tw=f"[{state}] {decision.reason}",
+        summary_zh_tw=f"【{state_zh(state)}】{decision.reason}",
         most_likely_user_mistake_now=MISTAKE_BY_STATE.get(state, ""),
     )
 
@@ -201,21 +206,21 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
                 entry_price=v["entry_price"],
                 current_r_multiple=v["r_multiple"],
                 recommended_action=v["recommended_action"],
-                partial_exit_plan="1R 平 20–30% → 主要目標再平 30–50% → 保留 20–40% 趨勢倉",
-                trailing_stop_plan="以最近已確認 15M/1H Swing 或 ATR 結構移動;不以固定金額移動",
-                full_exit_condition="最終目標到達/反向結構正式成立/原劇本失效/移動停損觸發/重大事件降風險",
+                partial_exit_plan="回本後先落袋 2~3 成 → 到主要目標再落袋 3~5 成 → 留 2~4 成續抱趨勢",
+                trailing_stop_plan="賠錢出場價跟著最近的 15 分K/1 小時結構往上移,別用固定金額亂移",
+                full_exit_condition="到最終目標、行情正式反轉、原本的劇本壞了、移動停損被打到、或快出大數據要降風險",
                 prohibited_actions=v["prohibited_actions"])
             if result.decision.action in ("WATCH", "PREPARE_LONG", "PREPARE_SHORT"):
                 result.decision.action = "MANAGE"
-                result.decision.reason = ("已有持倉,持倉管理優先於尋找新交易(spec 十七)。"
+                result.decision.reason = ("你手上已經有單了,先顧好這張單、別急著找新的。"
                                           + result.decision.reason)
         flags = recent_behavior_flags(limit=5)
         if flags:
             result.trading_coach = TradingCoachView(
                 behavior_flags=[f["flag"] for f in flags],
-                stop_loss_discipline=("注意:近期有 STOP_WIDENING 紀錄"
+                stop_loss_discipline=("提醒:你最近有把賠錢出場價往虧損方向挪(凹單)的紀錄"
                                        if any(f["flag"] == "STOP_WIDENING" for f in flags) else ""),
-                early_exit_risk=("注意:近期有 EARLY_EXIT 紀錄"
+                early_exit_risk=("提醒:你最近有太早出場、沒抱到目標的紀錄"
                                   if any(f["flag"] == "EARLY_EXIT" for f in flags) else ""),
                 message=flags[0]["corrective_action"])
     except Exception as exc:  # noqa: BLE001

@@ -117,24 +117,23 @@ def recommended_action(pos: Position, current_price: float) -> tuple[str, list[s
     """依 spec 十七的階段規則產生建議與禁止事項。"""
     r = r_multiple(pos, current_price)
     prohibited = [
-        "不因單一反向小 K 棒 / KD 超買超賣 / MACD 柱體略縮就全部出場",
-        "不把停損往虧損方向移動",
-        "已達目標後不得因貪心取消原定停利(spec 十八)",
+        "別因為一根小黑K或指標超買就把單全部出掉",
+        "別把賠錢出場價往賠更多的方向挪(凹單)",
+        "到目標別因為想多賺就取消原本的停利",
     ]
     if r is None:
-        return "未設定停損,無法計算 R;請立即補上結構失效點停損(spec 十六)", prohibited
+        return "你還沒設賠錢出場價!請立刻補上,不然虧多少自己都不知道。", prohibited
     if r <= -1.0:
-        return (f"價格已到達或越過停損水位(R={r}),請確認是否已依紀律出場;"
-                "禁止擴大停損凹單", prohibited)
+        return (f"已經賠到或超過賠錢出場價了(賺賠比 {r} 倍),照紀律該出就出,"
+                "千萬別凹單放大虧損。", prohibited)
     if r < 1.0:
-        return (f"第一階段(R={r},未達 1R):停損維持原結構失效點,"
-                "不隨意移到進場價;除非交易邏輯失效,不因雜訊出場", prohibited)
+        return (f"還沒回本(賺賠比 {r} 倍):賠錢出場價守原本的位置,別急著移到成本價;"
+                "除非行情邏輯壞了,否則別被小震盪洗掉。", prohibited)
     if r < 2.0:
-        return (f"第二階段(R={r},已達 1R):可平倉 20–30% 落袋;"
-                "剩餘依 15M 結構管理,不強制立即移至保本(避免正常回踩掃損)", prohibited)
-    return (f"第三階段(R={r},達主要目標區):再平倉 30–50%,"
-            "至少保留 20–40% 趨勢倉,依最近已確認 15M/1H 結構移動停損;"
-            "分批落袋,不是全部跑,也不是全部賭", prohibited)
+        return (f"小賺了(賺賠比 {r} 倍):可以先落袋 2~3 成,剩下的看 15 分K 管理,"
+                "先別急著保本以免正常回踩被掃。", prohibited)
+    return (f"賺不少了(賺賠比 {r} 倍):再落袋 3~5 成,留 2~4 成續抱賺趨勢,"
+            "賠錢出場價跟著結構往上移;分批出,不是全跑、也不是全賭。", prohibited)
 
 
 def _flag(db, flag: str, evidence: dict, action: str) -> None:

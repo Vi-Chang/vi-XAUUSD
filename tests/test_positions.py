@@ -60,10 +60,10 @@ def test_early_exit_flagged_and_full_close():
 
 def test_recommended_action_stages():
     pos = ps.create_position(side="LONG", entry_price=4000.0, stop_loss=3990.0, lot_size=0.1)
-    assert "第一階段" in ps.recommended_action(pos, 4005.0)[0]   # 0.5R
-    assert "第二階段" in ps.recommended_action(pos, 4012.0)[0]   # 1.2R
-    assert "第三階段" in ps.recommended_action(pos, 4025.0)[0]   # 2.5R
-    assert "停損水位" in ps.recommended_action(pos, 3988.0)[0]   # < -1R
+    assert "還沒回本" in ps.recommended_action(pos, 4005.0)[0]   # 0.5R
+    assert "小賺了" in ps.recommended_action(pos, 4012.0)[0]     # 1.2R
+    assert "賺不少了" in ps.recommended_action(pos, 4025.0)[0]   # 2.5R
+    assert "賠錢出場價" in ps.recommended_action(pos, 3988.0)[0]  # < -1R
 
 
 def test_positions_api_flow():
