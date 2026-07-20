@@ -31,11 +31,9 @@ class TelegramChannel(NotificationChannel):
 
 
 def build_notification_manager() -> NotificationManager:
-    """有 Telegram 設定 → Telegram;否則 fallback 到 log channel。"""
+    """log channel 永遠在(寫檔);有 Telegram 設定時再加 Telegram 推播 channel。"""
     s = get_settings()
-    channels: list[NotificationChannel] = []
+    channels: list[NotificationChannel] = [LogChannel()]   # 永遠寫 log
     if s.telegram_bot_token and s.telegram_chat_id:
         channels.append(TelegramChannel(s.telegram_bot_token, s.telegram_chat_id))
-    else:
-        channels.append(LogChannel())
     return NotificationManager(channels)

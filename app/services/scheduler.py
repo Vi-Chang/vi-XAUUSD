@@ -29,6 +29,7 @@ class AppState:
         self.latest_result: dict | None = None
         self.last_job_run: dict[str, datetime] = {}
         self.last_decision_action: str | None = None
+        self.last_daily_date = None
         self.ws_clients: set = set()
 
     def mark(self, job: str) -> None:
@@ -94,9 +95,10 @@ async def job_m15_analysis() -> None:
                     f"{result.summary_zh_tw}\n"
                     f"最易犯的錯:{result.most_likely_user_mistake_now}")
             if result.data_quality.status in ("STALE", "FAILED"):
-                await state.notifier.notify("RISK", "data_quality",
-                                            f"資料品質 {result.data_quality.status}: "
-                                            f"{result.data_quality.warnings[:3]}")
+                await state.notifier.notify(
+                    "RISK", "data_quality",
+                    f"資料品質 {result.data_quality.status}: {result.data_quality.warnings[:3]}",
+                    severity="ERROR" if result.data_quality.status == "FAILED" else "WARN")
         state.last_decision_action = action
 
         # WebSocket 廣播:收線事件 + 最新分析(套用 TMGM Offset 校正)
@@ -107,7 +109,8 @@ async def job_m15_analysis() -> None:
     except Exception as exc:  # noqa: BLE001
         logger.exception("m15_analysis failed: %s", exc)
         if state.notifier:
-            await state.notifier.notify("RISK", "analysis_error", f"分析失敗:{exc}")
+            await state.notifier.notify("RISK", "analysis_error", f"分析失敗:{exc}",
+                                        severity="ERROR")
 
 
 async def job_cross_check() -> None:

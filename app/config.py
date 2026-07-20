@@ -70,6 +70,12 @@ class Settings(BaseSettings):
     telegram_chat_id: str = ""
     notify_cooldown_seconds: int = 900
     heartbeat_minutes: int = 30
+    # 分級通知門檻:低於此嚴重度只寫 log,達到才推 Telegram(DEBUG<INFO<WARN<ERROR)
+    # 預設 WARN:一切正常時手機不響,只有資料延遲/異常才推播(靜默 heartbeat)
+    notify_level: str = "WARN"
+    telegram_mention: str = ""              # ERROR 時前綴(如 @yourname);私聊可留空
+    data_lag_warn_minutes: int = 60         # 最新 K 棒落後現在超過此分鐘數 → WARN
+    daily_summary_hour_utc: int = 22        # 每日摘要最早發送的 UTC 時(約台北 06:00)
 
     # ── LLM(Phase 7;MVP 不呼叫)──
     llm_provider: str = "anthropic"
