@@ -48,10 +48,60 @@ def deactivate_signal(signal_id: int) -> None:
 
 
 def list_active_signals() -> list[MentorSignal]:
+    """進行中的老師帶單;CLOSED 歷史匯入單一律排除(不得混算)。"""
     with db_session() as db:
         return list(db.execute(select(MentorSignal)
-                               .where(MentorSignal.is_active.is_(True))
+                               .where(MentorSignal.is_active.is_(True),
+                                      MentorSignal.status != "CLOSED")
                                .order_by(MentorSignal.signal_time.desc())).scalars().all())
+
+
+# 匯入批次 → 已知資料缺口(避免日後誤判為「該期間空手」)
+KNOWN_GAPS: dict[str, list[str]] = {
+    "MENTOR_HISTORY_2026Q2": ["2026-04-28 ~ 2026-05-13"],
+}
+
+
+def history_block() -> dict:
+    """老師帶單歷史紀錄(CLOSED 匯入單)+ 統計摘要 + 已知缺口。純顯示。"""
+    from app.utils.timeutils import ensure_utc
+    with db_session() as db:
+        rows = list(db.execute(select(MentorSignal)
+                               .where(MentorSignal.status == "CLOSED")
+                               .order_by(MentorSignal.close_time.desc())).scalars().all())
+    trades = [{
+        "id": r.id, "direction": r.direction,
+        "entry_price": r.entry_price, "close_price": r.close_price,
+        "points": r.points, "lots": r.lots,
+        "pl_usd": r.pl_usd, "swap_usd": r.swap_usd, "net_usd": r.net_usd,
+        "stop_loss": r.stop_loss,          # 歷史匯入無停損資料 → null
+        "r_multiple": r.r_multiple, "r_source": r.r_source,
+        "close_time": ensure_utc(r.close_time).isoformat() if r.close_time else None,
+        "import_batch": r.import_batch,
+    } for r in rows]
+
+    pls = [t["pl_usd"] for t in trades if t["pl_usd"] is not None]
+    wins = [x for x in pls if x > 0]
+    losses = [x for x in pls if x < 0]
+    gross_win, gross_loss = sum(wins), abs(sum(losses))
+    gaps = sorted({g for t in trades if t["import_batch"]
+                   for g in KNOWN_GAPS.get(t["import_batch"], [])})
+    return {
+        "trades": trades,
+        "summary": {
+            "count": len(trades), "wins": len(wins), "losses": len(losses),
+            "net_pl_usd": round(sum(pls), 2),
+            "net_after_fees_usd": round(sum(t["net_usd"] for t in trades
+                                            if t["net_usd"] is not None), 2),
+            "gross_profit": round(gross_win, 2),
+            "gross_loss": round(-gross_loss, 2),
+            "profit_factor": (round(gross_win / gross_loss, 3)
+                              if gross_loss > 0 else None),
+        },
+        "known_gaps": gaps,
+        "note": ("歷史匯入單(TMGM App 截圖):無停損/停利/開倉時間資料,"
+                 "不算持倉、不影響任何進出場判斷與證據分數"),
+    }
 
 
 def _to_dict(sig: MentorSignal) -> dict:

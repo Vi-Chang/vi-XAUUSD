@@ -239,6 +239,25 @@ class MentorSignal(Base):
     signal_time: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    # ── 歷史紀錄擴充(IMPORT-MENTOR-HISTORY:已平倉匯入單)──
+    status: Mapped[str] = mapped_column(String(8), default="OPEN")   # OPEN | CLOSED
+    open_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    close_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    close_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    lots: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pl_usd: Mapped[float | None] = mapped_column(Float, nullable=True)    # 不含持倉費用
+    swap_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    net_usd: Mapped[float | None] = mapped_column(Float, nullable=True)   # pl - swap
+    points: Mapped[float | None] = mapped_column(Float, nullable=True)
+    r_multiple: Mapped[float | None] = mapped_column(Float, nullable=True)
+    r_source: Mapped[str | None] = mapped_column(String(12), nullable=True)  # ACTUAL/ESTIMATED/UNKNOWN
+    import_batch: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    account_no: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    __table_args__ = (
+        # 冪等匯入:重跑不得重複寫入
+        Index("uq_mentor_import", "account_no", "close_time", "entry_price",
+              "close_price", unique=True),
+    )
 
 
 class TradeJournal(Base):

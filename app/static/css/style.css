@@ -358,6 +358,13 @@ body {
   margin: 10px 0; }
 .mentor-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
 .mentor-memo { margin-top: 6px; font-size: .78rem; color: var(--text-dim); }
+.mentor-section-title { font-size: .72rem; color: var(--text-dim); text-transform: uppercase;
+  letter-spacing: 1.5px; margin: 18px 0 8px; border-top: 1px solid var(--border); padding-top: 12px; }
+.mentor-summary { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.mentor-gap { font-size: .76rem; color: var(--warn); background: rgba(240,160,32,.07);
+  border-left: 3px solid var(--warn); padding: 6px 10px; border-radius: 0 6px 6px 0;
+  margin-bottom: 10px; }
+.mentor-nodata { color: var(--text-dim); cursor: help; }
 
 /* ═══ 對照統計 ═══ */
 .cmp-table td:first-child { color: var(--text-dim); }

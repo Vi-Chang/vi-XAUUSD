@@ -55,13 +55,31 @@ def init_db() -> None:
     engine = get_engine()
     models.Base.metadata.create_all(engine)
 
-    # 輕量遷移:既有 DB 補 account_id 欄位(create_all 不會改既有表)
+    # 輕量遷移:既有 DB 補新欄位(create_all 不會改既有表)
+    migrations: dict[str, dict[str, str]] = {
+        "positions": {"account_id": "INTEGER"},
+        "trade_journal": {"account_id": "INTEGER"},
+        "mentor_signals": {   # IMPORT-MENTOR-HISTORY 歷史紀錄擴充
+            "status": "VARCHAR(8) DEFAULT 'OPEN'",
+            "open_time": "TIMESTAMPTZ", "close_time": "TIMESTAMPTZ",
+            "close_price": "FLOAT", "lots": "FLOAT",
+            "pl_usd": "FLOAT", "swap_usd": "FLOAT", "net_usd": "FLOAT",
+            "points": "FLOAT", "r_multiple": "FLOAT",
+            "r_source": "VARCHAR(12)", "import_batch": "VARCHAR(48)",
+            "account_no": "VARCHAR(24)",
+        },
+    }
     inspector = inspect(engine)
     with engine.begin() as conn:
-        for table in ("positions", "trade_journal"):
-            cols = {c["name"] for c in inspector.get_columns(table)}
-            if "account_id" not in cols:
-                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN account_id INTEGER"))
+        for table, cols_ddl in migrations.items():
+            existing = {c["name"] for c in inspector.get_columns(table)}
+            for col, ddl in cols_ddl.items():
+                if col not in existing:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}"))
+        # 冪等匯入唯一索引(SQLite 與 PostgreSQL 皆支援 IF NOT EXISTS)
+        conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_mentor_import ON mentor_signals "
+            "(account_no, close_time, entry_price, close_price)"))
 
     # 預設帳戶種子(帳戶A 老師帶單 / 帳戶B 自己交易)
     from datetime import datetime, timezone

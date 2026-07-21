@@ -12,3 +12,6 @@ build/
 *.egg-info/
 logs/
 .DS_Store
+# 老師帶單原始資料(含帳號,不進公開 repo)
+mentor_trades_XAUUSD.json
+IMPORT-MENTOR-HISTORY.md

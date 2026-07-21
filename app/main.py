@@ -134,6 +134,13 @@ async def create_mentor_signal(req: MentorSignalReq) -> dict:
         raise HTTPException(400, str(exc)) from exc
 
 
+@app.get("/api/mentor/history")
+async def get_mentor_history() -> dict:
+    """老師帶單歷史紀錄(CLOSED 匯入單)+ 統計 + 已知缺口。與進行中訊號分開。"""
+    from app.services.mentor_service import history_block
+    return history_block()
+
+
 @app.post("/api/mentor/signals/{signal_id}/deactivate")
 async def deactivate_mentor_signal(signal_id: int) -> dict:
     from app.services.mentor_service import deactivate_signal

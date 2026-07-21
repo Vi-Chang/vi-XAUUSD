@@ -562,6 +562,47 @@ async function loadMentor() {
   }
 }
 
+async function loadMentorHistory() {
+  const body = $("mentor-history");
+  try {
+    const h = await (await fetch("/api/mentor/history")).json();
+    if (!h.trades.length) {
+      body.innerHTML = '<div class="empty">尚無歷史紀錄。</div>';
+      return;
+    }
+    const s = h.summary;
+    const pnlCls = (v) => (v >= 0 ? "cmp-pos" : "cmp-neg");
+    const gapNote = (h.known_gaps || []).map((g) =>
+      `<div class="mentor-gap">⚠ 已知資料缺口:${g} —— 這段期間「沒有紀錄」,不代表老師空手</div>`).join("");
+    body.innerHTML = `
+      <div class="mentor-summary">
+        <span class="chip info">共 ${s.count} 筆</span>
+        <span class="chip good">勝 ${s.wins}</span>
+        <span class="chip bad">負 ${s.losses}</span>
+        <span class="chip">淨損益 <b class="num ${pnlCls(s.net_pl_usd)}">${s.net_pl_usd >= 0 ? "+" : ""}${s.net_pl_usd}</b></span>
+        <span class="chip">扣費後 <b class="num ${pnlCls(s.net_after_fees_usd)}">${s.net_after_fees_usd >= 0 ? "+" : ""}${s.net_after_fees_usd}</b></span>
+        <span class="chip">獲利因子 <b class="num">${s.profit_factor ?? "–"}</b></span>
+      </div>
+      ${gapNote}
+      <div style="overflow-x:auto"><table class="hist-table"><thead><tr>
+        <th>方向</th><th>進場 → 出場</th><th>點數</th><th>手數</th><th>損益</th>
+        <th>賠錢出場價</th><th>平倉時間</th></tr></thead><tbody>
+        ${h.trades.map((t) => `<tr>
+          <td class="${t.direction === "LONG" ? "cmp-pos" : "cmp-neg"}">${t.direction === "LONG" ? "做多" : "做空"}</td>
+          <td class="num">${fmt(t.entry_price)} → ${fmt(t.close_price)}</td>
+          <td class="num">${fmt(t.points)}</td>
+          <td class="num">${fmt(t.lots)}</td>
+          <td class="num ${pnlCls(t.pl_usd)}">${t.pl_usd >= 0 ? "+" : ""}${fmt(t.pl_usd)}</td>
+          <td class="num mentor-nodata" title="歷史匯入,無停損資料">${t.stop_loss != null ? fmt(t.stop_loss) : "—"}</td>
+          <td class="num">${(t.close_time || "").slice(0, 16).replace("T", " ")}</td>
+        </tr>`).join("")}
+      </tbody></table></div>
+      <div class="bias-disclaimer">${h.note}</div>`;
+  } catch (e) {
+    body.innerHTML = '<div class="empty">歷史紀錄載入失敗。</div>';
+  }
+}
+
 async function dismissMentor(id) {
   try {
     await postJSON(`/api/mentor/signals/${id}/deactivate`, {});
@@ -752,7 +793,7 @@ async function boot() {
       $("panel-" + t.dataset.tab).classList.add("active");
       if (t.dataset.tab === "history") loadHistory();
       if (t.dataset.tab === "position") loadPositions();
-      if (t.dataset.tab === "mentor") loadMentor();
+      if (t.dataset.tab === "mentor") { loadMentor(); loadMentorHistory(); }
       if (t.dataset.tab === "coach") loadCoach();
       if (t.dataset.tab === "compare") loadComparison();
     }));
