@@ -15,48 +15,90 @@ from app.config import get_settings
 logger = logging.getLogger(__name__)
 
 
-def validate_prices(direction: str, *, entry: float | None, sl: float | None,
-                    tps: list[float], current_price: float) -> list[str]:
-    """回傳違規清單(空 = 通過)。只驗證「已存在」的欄位組合:
-    entry+sl 存在即驗方向次序;tps 存在即驗排序;完整組合才驗 rr1。
+def _fmt(px: float) -> float:
+    """輸出層價格格式(黃金 2 位小數);內部計算保持全精度(P3)。"""
+    return round(px, 2)
+
+
+def validate_prices_detailed(direction: str, *, entry: float | None, sl: float | None,
+                             tps: list[float], current_price: float) -> list[dict]:
+    """回傳違規清單 [{"severity": "FATAL"|"REJECT", "msg": str}](空 = 通過)。
+
+    嚴重度分級(P1):
+    - FATAL:程式錯誤等級 —— 方向次序矛盾、非正數、幻覺價位。到這層代表上游壞了。
+    - REJECT:條件不足的正常狀況 —— rr1 低於下限,「沒有優勢就等待」。
     """
     s = get_settings()
-    reasons: list[str] = []
+    out: list[dict] = []
     up = direction == "LONG"
     present = [("entry", entry), ("sl", sl)] + [(f"tp{i+1}", t) for i, t in enumerate(tps)]
 
-    # 價位為正 + 現價 ±band 內
     band = s.setup_price_band_pct
     for name, px in present:
         if px is None:
             continue
         if px <= 0:
-            reasons.append(f"{name}={px} 非正數")
+            out.append({"severity": "FATAL", "msg": f"{name}={_fmt(px)} 非正數"})
         elif current_price > 0 and abs(px - current_price) / current_price > band:
-            reasons.append(f"{name}={px} 落在現價 {current_price} ±{band:.0%} 之外(疑似幻覺價位)")
+            out.append({"severity": "FATAL",
+                        "msg": f"{name}={_fmt(px)} 落在現價 {_fmt(current_price)} "
+                               f"±{band:.0%} 之外(疑似幻覺價位)"})
 
-    # 方向次序
+    fatal_ordering = False
     if entry is not None and sl is not None:
         if up and sl >= entry:
-            reasons.append(f"多單 SL({sl}) >= Entry({entry}),邏輯不可能成立")
+            fatal_ordering = True
+            out.append({"severity": "FATAL",
+                        "msg": f"多單 SL({_fmt(sl)}) >= Entry({_fmt(entry)}),邏輯不可能成立"})
         if not up and sl <= entry:
-            reasons.append(f"空單 SL({sl}) <= Entry({entry}),邏輯不可能成立")
+            fatal_ordering = True
+            out.append({"severity": "FATAL",
+                        "msg": f"空單 SL({_fmt(sl)}) <= Entry({_fmt(entry)}),邏輯不可能成立"})
     if entry is not None and tps:
         seq = [entry, *tps]
         ordered = all(a < b for a, b in zip(seq, seq[1:])) if up else \
                   all(a > b for a, b in zip(seq, seq[1:]))
         if not ordered:
-            reasons.append(f"目標價次序錯亂:entry={entry}, tps={tps}({direction})")
+            out.append({"severity": "FATAL",
+                        "msg": f"目標價次序錯亂:entry={_fmt(entry)}, "
+                               f"tps={[_fmt(t) for t in tps]}({direction})"})
 
-    # rr1 下限(完整組合才可算)
-    if entry is not None and sl is not None and tps and abs(entry - sl) > 0:
+    # rr1 下限:FATAL 存在時不得計算/顯示 rr —— 用錯誤 SL 算出的數字沒有意義
+    if fatal_ordering:
+        out.append({"severity": "FATAL", "msg": "因停損計算錯誤,風報比無法計算"})
+    elif entry is not None and sl is not None and tps and abs(entry - sl) > 0:
         rr1 = abs(tps[0] - entry) / abs(entry - sl)
         if rr1 < s.setup_min_rr1:
-            reasons.append(f"rr1={rr1:.2f} < 下限 {s.setup_min_rr1}")
-    return reasons
+            out.append({"severity": "REJECT",
+                        "msg": f"rr1={rr1:.2f} < 下限 {s.setup_min_rr1}"})
+    return out
 
 
-def log_invalid(direction: str, payload: dict, reasons: list[str]) -> None:
-    """INVALID 事件寫 log(含完整 setup 物件與原因,供統計失效頻率)。"""
-    logger.warning("SETUP_INVALID direction=%s reasons=%s setup=%s",
-                   direction, reasons, payload)
+def validate_prices(direction: str, *, entry: float | None, sl: float | None,
+                    tps: list[float], current_price: float) -> list[str]:
+    """相容介面:回傳違規訊息清單(空 = 通過)。"""
+    return [r["msg"] for r in validate_prices_detailed(
+        direction, entry=entry, sl=sl, tps=tps, current_price=current_price)]
+
+
+def has_fatal(detailed: list[dict]) -> bool:
+    return any(r["severity"] == "FATAL" for r in detailed)
+
+
+def stop_side_ok(direction: str, entry: float, sl: float) -> bool:
+    """產生端不變式(P1):BUY 須 SL<Entry;SELL 須 SL>Entry。"""
+    return sl < entry if direction == "LONG" else sl > entry
+
+
+def log_invalid(direction: str, payload: dict, reasons: list[str],
+                fatal: bool = False) -> None:
+    """INVALID 事件寫 log(含完整 setup 物件與原因,供統計失效頻率)。
+
+    FATAL(攔截器接到方向矛盾等程式錯誤)→ ERROR:代表上游產生端已經出錯。
+    """
+    if fatal:
+        logger.error("SETUP_INVALID_FATAL direction=%s reasons=%s setup=%s",
+                     direction, reasons, payload)
+    else:
+        logger.warning("SETUP_INVALID direction=%s reasons=%s setup=%s",
+                       direction, reasons, payload)

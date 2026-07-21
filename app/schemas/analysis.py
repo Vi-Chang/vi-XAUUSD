@@ -103,6 +103,7 @@ class Scenario(BaseModel):
     snapshot_ts: str = ""           # 本次計算使用的價格快照時間戳
     structure_event_id: str | None = None   # 觸發本 setup 的結構事件(BOS/CHoCH)
     invalid_reasons: list[str] = Field(default_factory=list)  # INVALID 時的違規清單
+    invalid_fatal: bool = False   # P1:FATAL(程式錯誤級)vs REJECT(條件不足)
 
 
 class RiskManagerView(BaseModel):

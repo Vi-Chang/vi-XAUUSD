@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 
 from app.config import get_settings
@@ -15,6 +16,8 @@ from app.engines.data_quality import DataQualityReport
 from app.engines.key_levels import CandidateLevel, nearest_zone
 from app.engines.market_structure import StructureReport
 from app.schemas.analysis import Scenario
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -199,27 +202,45 @@ def _build_scenario(direction: str, conditions: list[str], *, price: float,
     else:
         status = "WATCH"
 
-    # ── BUGFIX R2:Invariant 驗證(進 UI/決策評分之前)──
-    from app.engines.setup_validator import log_invalid, validate_prices
+    # ── P1 產生端不變式:產不出合法 SL 就不產出停損(不硬湊、不送出矛盾組合)──
+    from app.engines.setup_validator import (
+        has_fatal, log_invalid, stop_side_ok, validate_prices_detailed,
+    )
     entry_px = entry.mid if entry else None
     stop_px = (stop_ref.mid - (0.25 * atr15 if up else -0.25 * atr15)) if stop_ref else None
+    stop_dropped = False
+    if entry_px is not None and stop_px is not None and \
+            not stop_side_ok(direction, entry_px, stop_px):
+        logger.info("SETUP_STOP_DROPPED direction=%s entry=%.2f structural_sl=%.2f "
+                    "(結構停損點在進場區錯誤一側,拒絕產出停損)",
+                    direction, entry_px, stop_px)
+        stop_ref = None
+        stop_px = None
+        stop_dropped = True
+        status = "WATCH"   # 無合法停損 → 不得為可執行方案
     tp_mids = [t.mid for t in targets]
-    reasons = validate_prices(direction, entry=entry_px, sl=stop_px,
-                              tps=tp_mids, current_price=price)
+    if stop_px is None:
+        rr = []   # 無停損 → 風報比不可計算,不得顯示殘留數字
+
+    # ── BUGFIX R2:Invariant 驗證(進 UI/決策評分之前;防禦縱深)──
+    detailed = validate_prices_detailed(direction, entry=entry_px, sl=stop_px,
+                                        tps=tp_mids, current_price=price)
+    reasons = [r["msg"] for r in detailed]
+    fatal = has_fatal(detailed)
     event_id = _latest_structure_event_id(direction, structures)
 
     if reasons:
-        # 強制重算:本函數為確定性計算,同輸入必同輸出 → 重算等價於本次結果,
-        # 直接進入失效路徑:剝除全部價位,絕不顯示錯誤價位(spec R2)。
+        # 攔截器接到 FATAL = 上游產生端已出錯 → ERROR log 附完整 setup(P1)
         log_invalid(direction, {
             "entry": entry_px, "sl": stop_px, "tps": tp_mids, "rr": rr,
             "price": price, "structure_event_id": event_id,
-        }, reasons)
+        }, reasons, fatal=fatal)
         scenario = Scenario(
             status="INVALID",
             setup=("偵測到自相矛盾的價位組合,已攔截;"
                    "等待下一次結構更新後重新計算"),
             invalid_reasons=reasons,
+            invalid_fatal=fatal,
             structure_event_id=event_id,
         )
         return scenario, []
@@ -229,9 +250,11 @@ def _build_scenario(direction: str, conditions: list[str], *, price: float,
         setup=f"{'多方' if up else '空方'}:{'; '.join(conditions[:3]) if conditions else '條件未成立,等待'}",
         entry_zone_id=entry.level_id if entry else None,
         required_confirmations=(
-            [] if status == "PREPARE" else
-            [f"等待 15M 已收線{'突破局部高點/形成 HL' if up else '跌破局部低點/形成 LH'}",
-             "等待價格回到理想進場區(非追價位置)"]),
+            ([] if status == "PREPARE" else
+             [f"等待 15M 已收線{'突破局部高點/形成 HL' if up else '跌破局部低點/形成 LH'}",
+              "等待價格回到理想進場區(非追價位置)"])
+            + (["結構停損點位於進場區錯誤一側,暫無法定位合法停損,等待結構更新"]
+               if stop_dropped else [])),
         stop_loss_id=stop_ref.level_id if stop_ref else None,
         target_ids=[t.level_id for t in targets],
         risk_reward=rr,

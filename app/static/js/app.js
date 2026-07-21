@@ -428,13 +428,19 @@ function renderScenario(el, sc, title, offset) {
   if (!sc) { el.innerHTML = '<div class="empty">無資料</div>'; return; }
   const createdAge = sc.created_at ? relTime(Date.now() - Date.parse(sc.created_at)) : "";
   // BUGFIX R2:INVALID → 絕不顯示錯誤價位
+  // P1 分級:FATAL(紅,程式錯誤)vs REJECT(黃,條件不足);FATAL 存在時不顯示 rr1
   if (sc.status === "INVALID") {
+    const fatal = !!sc.invalid_fatal;
+    const reasons = (sc.invalid_reasons || []);
+    const shown = (fatal ? reasons.filter((r) => !r.startsWith("rr1")) : reasons)
+      .slice(0, 3).join(";") || "偵測到自相矛盾的價位組合";
     el.innerHTML = `
       <div class="sc-head"><span class="sc-dir">${title}</span>
-        <span class="sc-status INVALIDATED">已攔截</span>
+        <span class="sc-status INVALIDATED">${fatal ? "計算錯誤" : "條件不足"}</span>
         ${createdAge ? `<span class="sc-meta-age">${createdAge}</span>` : ""}</div>
-      <div class="sc-invalid">⚠️ Setup 失效中,重新計算<br>
-        <small>${(sc.invalid_reasons || []).slice(0, 2).join(";") || "偵測到自相矛盾的價位組合"}</small></div>`;
+      <div class="${fatal ? "sc-invalid-fatal" : "sc-invalid"}">
+        ${fatal ? "⛔ 停損計算錯誤,已攔截(系統將自動重算)" : "⚠️ 條件不足,等待更好的機會"}<br>
+        <small>${shown}</small></div>`;
     return;
   }
   const rp = sc.resolved_prices || {};

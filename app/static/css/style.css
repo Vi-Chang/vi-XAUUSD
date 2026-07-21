@@ -48,6 +48,10 @@ body {
 .sc-invalid {
   color: var(--warn); font-size: .85rem; padding: 14px 6px; text-align: center;
 }
+.sc-invalid-fatal {
+  color: var(--danger); font-size: .85rem; padding: 14px 6px; text-align: center;
+  background: rgba(248,81,73,.07); border-radius: 8px;
+}
 .sc-stale-tag { font-size: .68rem; color: var(--warn);
   border: 1px solid rgba(240,160,32,.45); padding: 1px 7px; border-radius: 999px; }
 .sc-meta-age { font-size: .68rem; color: var(--text-dim); margin-left: auto; }
