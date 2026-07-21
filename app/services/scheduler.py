@@ -135,6 +135,25 @@ async def job_structure_l2() -> None:
             reason = ";".join(e.reason_zh for e in events)
             await run_full_analysis(trigger="event", reason_zh=reason)
             return
+        # BUGFIX R4:進行中方案的現價偏離檢查 → 過時即重算(帶冷卻防抖動)
+        if tick is not None and state.latest_result:
+            for key in ("long_scenario", "short_scenario"):
+                sc = state.latest_result.get(key) or {}
+                if sc.get("status") not in ("PREPARE", "TRIGGERED"):
+                    continue
+                rp = sc.get("resolved_prices") or {}
+                lv = rp.get(sc.get("entry_zone_id")) or {}
+                if lv.get("price_low") is None:
+                    continue
+                entry_mid = (lv["price_low"] + lv["price_high"]) / 2
+                dev = abs(tick.mid - entry_mid) / entry_mid if entry_mid else 0
+                if dev > s.setup_stale_deviation_pct and \
+                        state.event_cooldown.allow("setup_stale", 15):
+                    await run_full_analysis(
+                        trigger="event",
+                        reason_zh=f"現價已偏離原進場方案 {dev:.2%}(方案過時),重新計算")
+                    return
+
         # 定時保底:距上次完整分析超過 tier3_max_age_minutes
         last = state.last_full_analysis
         overdue = (last is None or
@@ -203,10 +222,14 @@ async def run_full_analysis(*, trigger: str, reason_zh: str | None) -> None:
                     severity="ERROR" if result.data_quality.status == "FAILED" else "WARN")
         state.last_decision_action = action
 
+        from app.services.freshness import annotate_freshness
         from app.services.price_offset import apply_offset_to_result
+        fresh_tick = state.quote_cache.fresh_tick(max_age_seconds=600)
         await broadcast({"type": "candle_closed", "timeframe": "15M"})
         await broadcast({"type": "analysis",
-                         "data": apply_offset_to_result(state.latest_result)})
+                         "data": annotate_freshness(
+                             apply_offset_to_result(state.latest_result),
+                             current_mid=fresh_tick.mid if fresh_tick else None)})
     except Exception as exc:  # noqa: BLE001
         logger.exception("full_analysis failed: %s", exc)
         if state.notifier:

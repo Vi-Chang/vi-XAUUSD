@@ -265,8 +265,43 @@ function decisionClass(action) {
   return "d-notrade";
 }
 
+const relTime = (ms) => {
+  const m = Math.floor(ms / 60000);
+  if (m < 1) return "剛剛";
+  if (m < 60) return `${m} 分鐘前`;
+  return `${Math.floor(m / 60)} 小時 ${m % 60} 分前`;
+};
+
+/* ═══ 快照版本與過期警示(BUGFIX R6)═══ */
+function updateFreshnessUI() {
+  if (!S.analysisMeta) return;
+  const age = Date.now() - S.analysisMeta.ts;
+  const chip = $("chip-version");
+  unskel(chip);
+  chip.textContent = `分析 v${S.analysisMeta.version}・${relTime(age)}`;
+  const expired = S.analysisMeta.serverExpired || age > 2 * 15 * 60000; // 2 根 15M
+  chip.className = "chip " + (expired ? "bad" : age > 15 * 60000 ? "warn" : "good");
+  const banner = $("stale-banner");
+  if (expired) {
+    $("stale-age").textContent = Math.floor(age / 60000);
+    banner.hidden = false;
+  } else banner.hidden = true;
+}
+setInterval(updateFreshnessUI, 30000);
+
 function applyAnalysis(a) {
   S.analysis = a;
+  S.analysisMeta = {
+    version: a.version || 0,
+    ts: Date.parse(a.timestamp_utc || "") || Date.now(),
+    serverExpired: !!(a.freshness && a.freshness.snapshot_expired),
+  };
+  updateFreshnessUI();
+  // TC-11:四大區塊一律標記本次快照版本(單一來源渲染)
+  for (const id of ["decision-card", "mistake-box", "tf-capsules", "panel-scenarios"]) {
+    const el = $(id);
+    if (el) el.dataset.v = String(a.version || 0);
+  }
 
   const badge = $("decision-badge");
   unskel(badge);
@@ -391,7 +426,20 @@ function renderBias(b) {
 
 function renderScenario(el, sc, title, offset) {
   if (!sc) { el.innerHTML = '<div class="empty">無資料</div>'; return; }
+  const createdAge = sc.created_at ? relTime(Date.now() - Date.parse(sc.created_at)) : "";
+  // BUGFIX R2:INVALID → 絕不顯示錯誤價位
+  if (sc.status === "INVALID") {
+    el.innerHTML = `
+      <div class="sc-head"><span class="sc-dir">${title}</span>
+        <span class="sc-status INVALIDATED">已攔截</span>
+        ${createdAge ? `<span class="sc-meta-age">${createdAge}</span>` : ""}</div>
+      <div class="sc-invalid">⚠️ Setup 失效中,重新計算<br>
+        <small>${(sc.invalid_reasons || []).slice(0, 2).join(";") || "偵測到自相矛盾的價位組合"}</small></div>`;
+    return;
+  }
   const rp = sc.resolved_prices || {};
+  const staleTag = sc.stale
+    ? `<span class="sc-stale-tag" title="${sc.stale_reason || ""}">已過時,等待重算</span>` : "";
   const tag = offset ? `<span class="tmgm-tag">TMGM 校正 ${offset > 0 ? "+" : ""}${offset}</span>` : "";
   const lv = (id) => {
     const z = rp[id];
@@ -402,14 +450,17 @@ function renderScenario(el, sc, title, offset) {
     .map((c) => `<li>${c}</li>`).join("");
   el.innerHTML = `
     <div class="sc-head"><span class="sc-dir">${title}</span>
-      <span class="sc-status ${sc.status}">${SC_STATUS_ZH[sc.status] || sc.status}</span>${tag}</div>
+      <span class="sc-status ${sc.status}">${SC_STATUS_ZH[sc.status] || sc.status}</span>${staleTag}${tag}
+      ${createdAge ? `<span class="sc-meta-age">建立於 ${createdAge}</span>` : ""}</div>
+    <div class="${sc.stale ? "sc-body-stale" : ""}">
     <div class="sc-levels">
       <div class="kv"><span>進場區</span><span class="num">${lv(sc.entry_zone_id)}</span></div>
       <div class="kv"><span>賠錢出場價</span><span class="num">${lv(sc.stop_loss_id)}</span></div>
       <div class="kv"><span>目標價</span><span class="num">${
         (sc.target_ids || []).map((t) => lv(t)).filter((x) => x !== "–").join(" / ") || "–"}</span></div>
     </div>
-    ${rrPills ? `<div class="sc-rr">${rrPills}</div>` : ""}
+    ${(rrPills && !sc.stale) ? `<div class="sc-rr">${rrPills}</div>` : ""}
+    </div>
     ${sc.setup ? `<div class="sc-confirm">${sc.setup}</div>` : ""}
     ${confirms ? `<div class="sc-confirm">還要等這些條件:<ul>${confirms}</ul></div>` : ""}`;
 }

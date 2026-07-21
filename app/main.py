@@ -79,25 +79,32 @@ async def health() -> dict:
     return health_payload(state)
 
 
+def _serve_result(raw: dict) -> dict:
+    """統一讀取邊界:TMGM Offset 校正 → 時效/一致性標記(BUGFIX R2/R4/R6)。"""
+    from app.services.freshness import annotate_freshness
+    from app.services.price_offset import apply_offset_to_result
+    tick = state.quote_cache.fresh_tick(max_age_seconds=600) if state.quote_cache else None
+    return annotate_freshness(apply_offset_to_result(raw),
+                              current_mid=tick.mid if tick else None)
+
+
 @app.get("/api/analysis/latest")
 async def latest_analysis() -> dict:
-    """最新分析結果(固定 JSON,spec 二十二)。輸出時套用 TMGM Offset 校正。"""
-    from app.services.price_offset import apply_offset_to_result
+    """最新分析結果(固定 JSON,spec 二十二)。輸出時套用 Offset + 時效標記。"""
     if state.latest_result is None:
         from app.services.analysis_service import run_analysis
         result = await run_analysis(state.provider, trigger="manual")
         state.latest_result = result.model_dump()
-    return apply_offset_to_result(state.latest_result)
+    return _serve_result(state.latest_result)
 
 
 @app.post("/api/analysis/run")
 async def trigger_analysis() -> dict:
     """使用者手動請求分析(LLM 觸發政策允許來源之一)。"""
     from app.services.analysis_service import run_analysis
-    from app.services.price_offset import apply_offset_to_result
     result = await run_analysis(state.provider, trigger="manual")
     state.latest_result = result.model_dump()   # 儲存 TwelveData 原值(分析真值)
-    return apply_offset_to_result(state.latest_result)
+    return _serve_result(state.latest_result)
 
 
 class MentorSignalReq(BaseModel):
@@ -405,9 +412,8 @@ async def ws_endpoint(ws: WebSocket) -> None:
     try:
         import json
         if state.latest_result:
-            from app.services.price_offset import apply_offset_to_result
             await ws.send_text(json.dumps(
-                {"type": "analysis", "data": apply_offset_to_result(state.latest_result)},
+                {"type": "analysis", "data": _serve_result(state.latest_result)},
                 ensure_ascii=False, default=str))
         while True:
             await ws.receive_text()  # keepalive;client 可送任意訊息

@@ -7,6 +7,9 @@
 <link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body>
+<div class="stale-banner" id="stale-banner" hidden>
+  ⚠ 分析快照已過期(<span id="stale-age">–</span> 分鐘未更新)——以下內容不是即時分析,請勿依此操作,等待新版本。
+</div>
 <header class="topbar">
   <div class="brand">
     <span class="dot" id="conn-dot" title="連線狀態"></span>
@@ -20,6 +23,7 @@
   <div class="top-chips">
     <span class="chip skel" id="chip-market">…</span>
     <span class="chip skel" id="chip-quality">…</span>
+    <span class="chip" id="chip-version" title="全部區塊皆由同一版分析快照渲染">分析 v–</span>
   </div>
 
   <div class="offset-panel" id="offset-panel">

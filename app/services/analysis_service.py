@@ -48,6 +48,35 @@ MISTAKE_BY_STATE = {
     "INSUFFICIENT_DATA": "資料還不夠,別硬逼自己一定要下單。",
 }
 
+# 「最易犯的錯」重複偵測(BUGFIX R6:連續 N 版相同 → log 供人工檢查)
+_recent_mistakes: list[str] = []
+
+
+def build_mistake(state: str, action: str, chase_flags: list[str],
+                  scenario_invalid: bool) -> str:
+    """由當前快照實際狀態組合「最容易犯的錯」(方向/追價/失效情境化,非靜態查表)。"""
+    parts = [MISTAKE_BY_STATE.get(state, "")]
+    if scenario_invalid:
+        parts.append("系統剛攔截了一組矛盾價位,最不該做的就是自己憑感覺補一組進場價。")
+    elif action in ("PREPARE_SHORT", "SHORT"):
+        parts.append("現在劇本偏空,最容易手癢的是逆勢接多——別接。")
+    elif action in ("PREPARE_LONG", "LONG"):
+        parts.append("現在劇本偏多,最容易手癢的是嫌貴不敢上車又臨時逆勢放空——都別。")
+    elif action == "MANAGE":
+        parts.append("手上有單,最容易犯的是盯著浮動損益亂動單。")
+    if chase_flags:
+        parts.append("而且現在位置偏追價,更要忍住不追。")
+    text = "".join(p for p in parts if p)
+
+    from app.config import get_settings
+    _recent_mistakes.append(text)
+    n = get_settings().mistake_repeat_log_versions
+    if len(_recent_mistakes) >= n and len(set(_recent_mistakes[-n:])) == 1:
+        logger.warning("MISTAKE_TEXT_UNCHANGED for %d consecutive versions — "
+                       "check generation logic (text=%s)", n, text[:60])
+    del _recent_mistakes[:-n]
+    return text
+
 
 def _tf_view(rep: StructureReport | None, ind: dict) -> TimeframeView:
     if rep is None:
@@ -198,8 +227,12 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
         meta=Meta(prompt_version=PROMPT_VERSION, strategy_version=STRATEGY_VERSION,
                   model_version="rule-engine-only", llm_cost_usd_today=0.0),
         summary_zh_tw=f"【{state_zh(state)}】{decision.reason}",
-        most_likely_user_mistake_now=MISTAKE_BY_STATE.get(state, ""),
+        most_likely_user_mistake_now=build_mistake(
+            state, decision.action, decision.chase_flags,
+            scenario_invalid=(decision.long_scenario.status == "INVALID"
+                              or decision.short_scenario.status == "INVALID")),
     )
+    result.snapshot_ts = tick.quote_time.isoformat()
 
     # ── 9b. 我的持倉整合(持倉管理優先於尋找新交易)──
     # 注意:這裡只看「我實際下單的持倉」(positions 表)。老師帶單(mentor_signals)
@@ -244,10 +277,17 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
         result.decision.action = "NO_TRADE"
         result.decision.reason = f"NO_TRADE_AI_INVALID: unknown level ids {unknown}"
         result.decision.confidence_grade = "X"
-    # 反查 ID → 實際數字(呈現用)
-    for sc in (result.long_scenario, result.short_scenario):
-        sc.resolved_prices = resolve_ids(levels, [sc.entry_zone_id, sc.stop_loss_id,
-                                                  sc.invalidation_id, *sc.target_ids])
+    # 反查 ID → 實際數字(呈現用)。Scenario 為 frozen(R1/TC-08):
+    # 禁止逐欄修改,一律 model_copy 整組替換。
+    def _stamped(sc):
+        return sc.model_copy(update={
+            "resolved_prices": resolve_ids(levels, [sc.entry_zone_id, sc.stop_loss_id,
+                                                    sc.invalidation_id, *sc.target_ids]),
+            "created_at": now.isoformat(),
+            "snapshot_ts": tick.quote_time.isoformat(),
+        })
+    result.long_scenario = _stamped(result.long_scenario)
+    result.short_scenario = _stamped(result.short_scenario)
 
     # ── 9c. 老師帶單比對(純顯示;讀取最終 decision,絕不回饋影響決策/證據)──
     try:
@@ -267,11 +307,14 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
                 confidence_grade=result.decision.confidence_grade,
                 evidence_score=result.decision.evidence_score,
                 data_quality_status=quality.status,
-                result_json=result.model_dump(),
+                result_json={},
                 prompt_version=PROMPT_VERSION, strategy_version=STRATEGY_VERSION,
                 model_version="rule-engine-only")
             db.add(run)
             db.flush()
+            # BUGFIX R6:版本號 = analysis_runs.id(單調遞增、跨重啟持續)
+            result.version = run.id
+            run.result_json = result.model_dump()
             for lv in levels:
                 db.add(CandidateLevelRow(analysis_run_id=run.id, level_id=lv.level_id,
                                          kind=lv.kind, price_low=lv.price_low,

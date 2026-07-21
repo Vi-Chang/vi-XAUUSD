@@ -76,10 +76,17 @@ class KeyLevels(BaseModel):
     invalidation_levels: list[dict] = Field(default_factory=list)
 
 
-ScenarioStatus = Literal["WATCH", "PREPARE", "TRIGGERED", "INVALIDATED"]
+ScenarioStatus = Literal["WATCH", "PREPARE", "TRIGGERED", "INVALIDATED", "INVALID"]
 
 
 class Scenario(BaseModel):
+    """交易劇本(setup)。
+
+    frozen=True(BUGFIX R1/TC-08):禁止任何程式路徑單獨更新個別欄位;
+    要變更只能用 model_copy(update=...) 產生新物件整組替換。
+    """
+    model_config = {"frozen": True}
+
     status: ScenarioStatus = "WATCH"
     setup: str = ""
     entry_zone_id: str | None = None
@@ -91,6 +98,11 @@ class Scenario(BaseModel):
     expiration_time: str | None = None
     # 後端反查候選 ID 填入的實際數字(呈現用;AI 不得填寫此欄)
     resolved_prices: dict = Field(default_factory=dict)
+    # ── BUGFIX R1/R3/R4:原子快照與可追溯性 ──
+    created_at: str = ""            # setup 生成時間(UI 顯示「X 分鐘前」)
+    snapshot_ts: str = ""           # 本次計算使用的價格快照時間戳
+    structure_event_id: str | None = None   # 觸發本 setup 的結構事件(BOS/CHoCH)
+    invalid_reasons: list[str] = Field(default_factory=list)  # INVALID 時的違規清單
 
 
 class RiskManagerView(BaseModel):
@@ -196,6 +208,8 @@ class Meta(BaseModel):
 
 class AnalysisResult(BaseModel):
     """spec 二十二之完整固定輸出。"""
+    version: int = 0                # BUGFIX R6:遞增版本號(=analysis_runs.id)
+    snapshot_ts: str = ""           # 本次分析使用的價格數據時間戳
     timestamp_utc: str = ""
     timestamp_taipei: str = ""
     symbol: str = "XAUUSD"

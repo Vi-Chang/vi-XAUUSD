@@ -147,6 +147,14 @@ class Settings(BaseSettings):
     # 頻率保護
     twelve_data_soft_limit: int = 600        # TD 當日達此用量 → 警告 + 降級(只用快取資料)
 
+    # ── Setup 一致性與時效(BUGFIX spec R2/R4/R6)──
+    setup_min_rr1: float = 1.5              # 第一目標最低賺賠比,低於即 INVALID
+    setup_price_band_pct: float = 0.05      # 所有價位須在現價 ±5% 內(防幻覺價位)
+    setup_stale_deviation_pct: float = 0.005  # 現價偏離 entry > 0.5% → STALE
+    setup_expiry_bars: int = 8              # 生成後 N 根 15M 未觸發 → STALE
+    snapshot_expiry_bars: int = 2           # 快照超過 N 根 15M 無新版本 → 全頁過期警示
+    mistake_repeat_log_versions: int = 8    # 「最易犯的錯」連續 N 版相同 → log 警示
+
     # ── 分析 ──
     candle_history_count: int = 300
     analysis_timeframes: tuple[str, ...] = ("1D", "4H", "1H", "15M")

@@ -37,6 +37,22 @@ body {
 }
 @keyframes shimmer { to { background-position: -200% 0; } }
 
+/* ═══ 快照過期警示(BUGFIX R6)═══ */
+.stale-banner {
+  position: sticky; top: 0; z-index: 100;
+  background: rgba(248,81,73,.14); border: 1px solid var(--danger);
+  color: var(--danger); font-weight: 700; text-align: center;
+  padding: 10px 14px; border-radius: 8px; margin-bottom: 10px;
+  animation: pulse 1.6s infinite;
+}
+.sc-invalid {
+  color: var(--warn); font-size: .85rem; padding: 14px 6px; text-align: center;
+}
+.sc-stale-tag { font-size: .68rem; color: var(--warn);
+  border: 1px solid rgba(240,160,32,.45); padding: 1px 7px; border-radius: 999px; }
+.sc-meta-age { font-size: .68rem; color: var(--text-dim); margin-left: auto; }
+.sc-body-stale { opacity: .38; filter: grayscale(.6); }
+
 /* ═══ 頂欄 ═══ */
 .topbar {
   display: flex; align-items: center; gap: 20px; flex-wrap: wrap;

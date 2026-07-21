@@ -38,6 +38,7 @@ const MSG = {
 
 const SC_STATUS_ZH = {
   WATCH: "先觀察", PREPARE: "準備中", TRIGGERED: "可進場", INVALIDATED: "已失效",
+  INVALID: "已攔截",
 };
 
 const stateZh = (c) => (MSG.state[c] || c);

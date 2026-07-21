@@ -136,10 +136,36 @@ def detect_chase(direction: str, *, price: float, atr15: float,
     return flags
 
 
+def _latest_structure_event_id(direction: str,
+                               structures: dict[str, StructureReport]) -> str | None:
+    """本 setup 對應的最新 15M 結構事件識別碼(BUGFIX R3:可追溯)。
+
+    只認「最新一筆」有效事件:支持本方向 → 掛其 ID;
+    與本方向相反(如 CHoCH/BOS 向下 vs 多單)→ 回傳 None ——
+    反轉後原方向 setup 不得再引用反轉前的舊結構事件。
+    """
+    m15 = structures.get("15M")
+    if not m15:
+        return None
+    up = direction == "LONG"
+    wanted = ("BOS_UP", "CHOCH_UP", "FAILED_BREAKDOWN") if up else \
+             ("BOS_DOWN", "CHOCH_DOWN", "FAILED_BREAKOUT")
+    for ev in reversed(m15.events):
+        if not ev.still_valid or ev.provisional:
+            continue
+        return (f"15M:{ev.event_type}:{ev.time.isoformat()}"
+                if ev.event_type in wanted else None)
+    return None
+
+
 def _build_scenario(direction: str, conditions: list[str], *, price: float,
                     levels: list[CandidateLevel], atr15: float,
                     structures: dict[str, StructureReport]) -> tuple[Scenario, list[float]]:
-    """組劇本(欄位全為候選 ID)並由 Python 計算 R/R(spec 十六)。"""
+    """組劇本(欄位全為候選 ID)並由 Python 計算 R/R(spec 十六)。
+
+    BUGFIX R1/R2:單一函數一次性輸出完整物件(Scenario 為 frozen,禁止逐欄修改);
+    輸出前強制通過 Invariant 驗證,違反 → INVALID + 剝除價位,絕不顯示錯誤價位。
+    """
     up = direction == "LONG"
     entry = nearest_zone(levels, price, "SUP_ZONE" if up else "RES_ZONE", "STRONG")
     stop_ref = None
@@ -173,6 +199,31 @@ def _build_scenario(direction: str, conditions: list[str], *, price: float,
     else:
         status = "WATCH"
 
+    # ── BUGFIX R2:Invariant 驗證(進 UI/決策評分之前)──
+    from app.engines.setup_validator import log_invalid, validate_prices
+    entry_px = entry.mid if entry else None
+    stop_px = (stop_ref.mid - (0.25 * atr15 if up else -0.25 * atr15)) if stop_ref else None
+    tp_mids = [t.mid for t in targets]
+    reasons = validate_prices(direction, entry=entry_px, sl=stop_px,
+                              tps=tp_mids, current_price=price)
+    event_id = _latest_structure_event_id(direction, structures)
+
+    if reasons:
+        # 強制重算:本函數為確定性計算,同輸入必同輸出 → 重算等價於本次結果,
+        # 直接進入失效路徑:剝除全部價位,絕不顯示錯誤價位(spec R2)。
+        log_invalid(direction, {
+            "entry": entry_px, "sl": stop_px, "tps": tp_mids, "rr": rr,
+            "price": price, "structure_event_id": event_id,
+        }, reasons)
+        scenario = Scenario(
+            status="INVALID",
+            setup=("偵測到自相矛盾的價位組合,已攔截;"
+                   "等待下一次結構更新後重新計算"),
+            invalid_reasons=reasons,
+            structure_event_id=event_id,
+        )
+        return scenario, []
+
     scenario = Scenario(
         status=status,
         setup=f"{'多方' if up else '空方'}:{'; '.join(conditions[:3]) if conditions else '條件未成立,等待'}",
@@ -185,6 +236,7 @@ def _build_scenario(direction: str, conditions: list[str], *, price: float,
         target_ids=[t.level_id for t in targets],
         risk_reward=rr,
         invalidation_id=stop_ref.level_id if stop_ref else None,
+        structure_event_id=event_id,
     )
     return scenario, rr
 
@@ -253,6 +305,18 @@ def decide(*, quality: DataQualityReport, structures: dict[str, StructureReport]
     # R/R 檢核(spec 十六:主要目標原則上 >= 2R,否則等待)
     rr = long_rr if dominant == "LONG" else short_rr if dominant == "SHORT" else []
     rr_ok = bool(rr) and (rr[0] >= 1.0) and (max(rr) >= 2.0)
+
+    # BUGFIX R2:主方向 setup 被攔截 → 決策卡「暫無有效方案」,證據分數不得沿用
+    dominant_sc = long_sc if dominant == "LONG" else short_sc if dominant == "SHORT" else None
+    if dominant_sc is not None and dominant_sc.status == "INVALID":
+        bull_pct, bear_pct = evidence_bias(long_conds, short_conds)
+        return RuleDecision(
+            action="WATCH", reason="暫無有效方案:偵測到自相矛盾的價位組合,已攔截,等待下一次重算。",
+            evidence_score=0, confidence_grade="X",
+            long_scenario=long_sc, short_scenario=short_sc, chase_flags=chase,
+            evidence=long_conds + short_conds,
+            bull_evidence=long_conds, bear_evidence=short_conds,
+            bull_pct=bull_pct, bear_pct=bear_pct)
 
     if dominant is None or max(n_long, n_short) < 2 or market_state in ("RANGE", "COMPRESSION"):
         action, grade = "WATCH", "C"
