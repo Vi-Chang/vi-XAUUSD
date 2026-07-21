@@ -211,6 +211,20 @@ def detect_events(df: pd.DataFrame, swings: list[SwingPoint], timeframe: str, *,
                     invalidation_price=None))
             elif look_end > n - 1:
                 ev.provisional = True
+
+    # 假突破/假跌破的「再推翻」偵測:失敗事件成立後,價格又收回原突破方向
+    # → 該 FAILED_* 事件本身失效(否則「跌不下去又漲回來」在真跌下去後仍被顯示)。
+    for ev in events:
+        if ev.event_type not in ("FAILED_BREAKOUT", "FAILED_BREAKDOWN"):
+            continue
+        idx = time_to_idx[ev.time]
+        later = closes[idx + 1:]
+        if len(later) == 0:
+            continue
+        if ev.event_type == "FAILED_BREAKDOWN" and min(later) < ev.price:
+            ev.still_valid = False   # 收回後又跌破 → 假跌破敘事被推翻
+        if ev.event_type == "FAILED_BREAKOUT" and max(later) > ev.price:
+            ev.still_valid = False   # 跌回後又突破 → 假突破敘事被推翻
     events.sort(key=lambda e: e.time)
     return events
 

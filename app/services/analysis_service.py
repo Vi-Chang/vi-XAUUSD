@@ -170,7 +170,8 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
     state = market_state.classify(
         structures=structures, indicators_h1=ind.get("1H", {}),
         indicators_m15=ind.get("15M", {}), m15_df=dfs_all.get("15M"),
-        event_volatility=(ev.level == "HIGH" and not ev.event_lockout))
+        event_volatility=(ev.level == "HIGH" and not ev.event_lockout),
+        price=tick.mid)
 
     # ── 8. 規則引擎 ──
     decision = decide(quality=quality, structures=structures,

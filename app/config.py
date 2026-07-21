@@ -94,6 +94,9 @@ class Settings(BaseSettings):
     source_mismatch_event_relax_mult: float = 2.0  # 高波動事件時段放寬倍數
     stale_price_seconds: int = 60
 
+    # ── 市場狀態分類 ──
+    state_event_max_age_minutes: int = 180  # FAILED_* 事件超過此時間不再定義市場狀態
+
     # ── 市場結構引擎 ──
     swing_left_bars: int = 2
     swing_right_bars: int = 2
