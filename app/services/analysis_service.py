@@ -303,6 +303,48 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
     except Exception as exc:  # noqa: BLE001
         logger.warning("mentor comparison failed: %s", exc)
 
+    # ── 9d. V2 AI 分析層(4 Agent;任何失敗不影響上面的確定性輸出)──
+    try:
+        from app.llm.client import llm_available
+        from app.schemas.ai import AiStrategy
+        ok_ai, ai_reason = llm_available()
+        if not ok_ai:
+            result.ai_strategy = AiStrategy(unavailable_reason=ai_reason)
+        else:
+            from app.services.price_offset import get_offset_for
+            off = get_offset_for(tick.provider or "")
+            pos_dict = None
+            if result.position_management.has_position:
+                pm = result.position_management
+                pos_dict = {"has": True, "side": pm.position_side,
+                            "entry": pm.entry_price, "r": pm.current_r_multiple}
+            from app.llm.service import generate_ai_strategy
+            result.ai_strategy = await generate_ai_strategy(
+                price=tick.mid, atr15=atr15, state=state,
+                quality_status=quality.status, ev=ev, ind=ind,
+                structures=structures, levels=levels, dfs_closed=dfs_closed,
+                bias=result.bias_analysis, position=pos_dict,
+                no_signal=not off.get("calibrated", False))
+            # 跨市場資料同步填入顯示欄位(讀快取,不重複抓)
+            from app.services.cross_market import get_cross_market
+            cross = await get_cross_market()
+            cm = result.cross_market_context
+            cm.dxy = (f"{cross.dxy}({cross.dxy_chg_pct:+.2f}%)"
+                      if cross.dxy is not None and cross.dxy_chg_pct is not None
+                      else (str(cross.dxy) if cross.dxy is not None else ""))
+            cm.us10y = (f"{cross.us10y}%({cross.us10y_chg:+.2f})"
+                        if cross.us10y is not None and cross.us10y_chg is not None
+                        else (f"{cross.us10y}%" if cross.us10y is not None else ""))
+            cm.vix = str(cross.vix) if cross.vix is not None else ""
+            cm.data_freshness = cross.fetched_at
+            cm.interpretation = cross.interpretation_zh()
+            from app.llm.usage import spent_today
+            result.meta.llm_cost_usd_today = spent_today()
+            if result.ai_strategy.available:
+                result.meta.model_version = f"rules+{result.ai_strategy.model}"
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("ai strategy layer failed: %s", exc)
+
     # ── 10. 儲存 ──
     try:
         with db_session() as db:

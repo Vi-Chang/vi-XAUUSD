@@ -12,6 +12,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from app.schemas.ai import AiStrategy
+
 
 class CurrentPrice(BaseModel):
     bid: float | None = None
@@ -235,6 +237,7 @@ class AnalysisResult(BaseModel):
     mentor_comparison: MentorComparison = MentorComparison()
     trading_coach: TradingCoachView = TradingCoachView()
     decision: Decision = Decision()
+    ai_strategy: AiStrategy = Field(default_factory=AiStrategy)   # V2 AI 分析層
     offset_info: OffsetInfo = OffsetInfo()
     meta: Meta = Meta()
     summary_zh_tw: str = ""

@@ -216,6 +216,15 @@ def _strip_all_scenario_prices(out: dict, warning: str) -> None:
         d["evidence_score"] = 0
         d["reason"] = warning
         out["decision"] = d
+    # V2 AI 策略同樣受 fail-safe 管制:未校準不得輸出任何可執行價位
+    ai = out.get("ai_strategy")
+    if ai and (ai.get("available") or ai.get("trade_plan", {}).get("resolved")):
+        ai["available"] = False
+        ai["unavailable_reason"] = warning
+        ai["trade_plan"] = {"entry_id": None, "stop_loss_id": None, "tp1_id": None,
+                            "tp2_id": None, "tp3_id": None, "resolved": {}}
+        if (ai.get("action") or {}).get("type") in ("Buy", "Sell"):
+            ai["action"]["type"] = "Wait"
     out["no_signal"] = True
 
 
@@ -236,12 +245,16 @@ def apply_offset_to_result(result: dict) -> dict:
     value = info["value"] or 0.0
     if not value:
         return out
-    for key in ("long_scenario", "short_scenario"):
-        sc = out.get(key) or {}
-        for lv in (sc.get("resolved_prices") or {}).values():
+    def _shift(prices: dict) -> None:
+        for lv in (prices or {}).values():
             if "price_low" in lv and lv["price_low"] is not None:
                 lv["price_low"] = round(lv["price_low"] + value, 2)
             if "price_high" in lv and lv["price_high"] is not None:
                 lv["price_high"] = round(lv["price_high"] + value, 2)
             lv["offset_applied"] = value
+
+    for key in ("long_scenario", "short_scenario"):
+        _shift((out.get(key) or {}).get("resolved_prices"))
+    # V2 AI 交易方案的反查價位同樣校正為券商掛單價
+    _shift(((out.get("ai_strategy") or {}).get("trade_plan") or {}).get("resolved"))
     return out

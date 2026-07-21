@@ -77,11 +77,18 @@ class Settings(BaseSettings):
     data_lag_warn_minutes: int = 60         # 最新 K 棒落後現在超過此分鐘數 → WARN
     daily_summary_hour_utc: int = 22        # 每日摘要最早發送的 UTC 時(約台北 06:00)
 
-    # ── LLM(Phase 7;MVP 不呼叫)──
+    # ── LLM(V2 AI 分析層)──
     llm_provider: str = "anthropic"
     anthropic_api_key: str = ""
     openai_api_key: str = ""
     llm_daily_budget_usd: float = 3.0
+    llm_enabled: bool = True                    # 總開關;無 API Key 時自動不呼叫
+    llm_model_analyst: str = "claude-opus-4-8"  # 三位分析師用模型
+    llm_model_decision: str = "claude-opus-4-8" # 決策引擎用模型
+    llm_timeout_seconds: int = 90               # 單次呼叫逾時
+    llm_max_retries: int = 1                    # 守門失敗後重試次數(超過 → NO_TRADE_AI_INVALID)
+    llm_cache_minutes: int = 45                 # 輸入指紋相同時重用舊結果(省 token)
+    cross_market_cache_minutes: int = 15        # DXY/美債/VIX 快取時間
 
     # ── 硬性安全開關 ──
     auto_trading_enabled: bool = False          # 永遠預設 false(spec 一)

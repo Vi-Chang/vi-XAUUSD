@@ -333,6 +333,19 @@ class MarketCalendarEntry(Base):
     description: Mapped[str] = mapped_column(String(128))
 
 
+class AiAnalysis(Base):
+    """20. ai_analyses — V2 AI 策略輸出(依輸入指紋快取,省重複 token)。"""
+    __tablename__ = "ai_analyses"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    analysis_run_id: Mapped[int | None] = mapped_column(ForeignKey("analysis_runs.id"), nullable=True)
+    fingerprint: Mapped[str] = mapped_column(String(64))
+    payload: Mapped[dict] = mapped_column(JSON)            # AiStrategy 完整輸出
+    model: Mapped[str] = mapped_column(String(64))
+    cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    __table_args__ = (Index("ix_ai_fingerprint", "fingerprint", "created_at"),)
+
+
 class LlmUsage(Base):
     """19. llm_usage — 每日 Token 與費用統計(Phase 7 使用;MVP 建表)"""
     __tablename__ = "llm_usage"

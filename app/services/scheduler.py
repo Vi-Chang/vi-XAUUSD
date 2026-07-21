@@ -200,12 +200,15 @@ async def run_full_analysis(*, trigger: str, reason_zh: str | None) -> None:
         state.last_full_analysis = datetime.now(timezone.utc)
 
         action = result.decision.action
+        ai = result.ai_strategy
+        ai_line = (f"\n🤖 AI:{ai.one_liner}(信心 {ai.confidence.score}/100)"
+                   if ai and ai.available and ai.one_liner else "")
         if state.notifier:
             if trigger == "event":
                 await state.notifier.notify(
                     "TRIGGER", f"event:{(reason_zh or '')[:60]}",
                     f"⚡ 事件觸發:{reason_zh}\n"
-                    f"{result.summary_zh_tw}\n"
+                    f"{result.summary_zh_tw}{ai_line}\n"
                     f"提醒:{result.most_likely_user_mistake_now}",
                     severity="WARN")
             elif action != state.last_decision_action:
@@ -215,7 +218,7 @@ async def run_full_analysis(*, trigger: str, reason_zh: str | None) -> None:
                 await state.notifier.notify(
                     level, f"decision:{action}",
                     f"🕐 定時更新:XAUUSD {result.market_state} → {action}\n"
-                    f"{result.summary_zh_tw}\n"
+                    f"{result.summary_zh_tw}{ai_line}\n"
                     f"提醒:{result.most_likely_user_mistake_now}")
             if result.data_quality.status in ("STALE", "FAILED"):
                 await state.notifier.notify(

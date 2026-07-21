@@ -369,7 +369,105 @@ function applyAnalysis(a) {
   const offVal = a.offset_info ? a.offset_info.value : 0;
   renderScenario($("scenario-long"), a.long_scenario, "做多劇本", offVal);
   renderScenario($("scenario-short"), a.short_scenario, "做空劇本", offVal);
+  renderAiStrategy(a.ai_strategy);
   applyOverlays().catch(console.error);
+}
+
+// ═══ V2 AI 策略面板 ═══════════════════════════════════════
+const AI_ACTION_ZH = { Buy: "做多 Buy", Sell: "做空 Sell", Wait: "等待 Wait" };
+const AI_BIAS_ZH = { BULLISH: "偏多", BEARISH: "偏空", NEUTRAL: "中性" };
+
+function aiZone(resolved, id) {
+  if (!id || !resolved || !resolved[id]) return "–";
+  const z = resolved[id];
+  if (z.price_low == null) return id;
+  const lo = Number(z.price_low).toFixed(2), hi = Number(z.price_high).toFixed(2);
+  return lo === hi ? `${lo} <span class="ai-id">${id}</span>`
+                   : `${lo} – ${hi} <span class="ai-id">${id}</span>`;
+}
+
+function renderAiStrategy(ai) {
+  const box = $("ai-body");
+  if (!box) return;
+  if (!ai || (!ai.available && !ai.invalid)) {
+    box.innerHTML = `<div class="empty">AI 策略未產生:${(ai && ai.unavailable_reason) || "尚未啟用"}</div>`;
+    return;
+  }
+  if (ai.invalid) {
+    box.innerHTML = `<div class="ai-gate bad">⛔ ${ai.unavailable_reason}</div>`;
+    return;
+  }
+  const act = ai.action || {};
+  const wr = ai.win_rates || {};
+  const tp = ai.trade_plan || {};
+  const res = tp.resolved || {};
+  const conf = ai.confidence || {};
+  const cls = act.type === "Buy" ? "good" : act.type === "Sell" ? "bad" : "warn";
+
+  const analysts = ai.analysts || {};
+  const aNames = { macro: "巨集面", technical: "技術面", sentiment: "情緒面" };
+  const analystHtml = Object.entries(aNames).map(([k, name]) => {
+    const v = analysts[k];
+    if (!v) return "";
+    return `<div class="ai-analyst">
+      <div class="ai-analyst-head">${name} <span class="chip ${v.bias === "BULLISH" ? "good" : v.bias === "BEARISH" ? "bad" : "info"}">${AI_BIAS_ZH[v.bias] || v.bias} ${v.strength}</span></div>
+      <div class="ai-analyst-line">${v.one_line || ""}</div>
+    </div>`;
+  }).join("");
+
+  const scenarios = (ai.scenarios || []).map((s) => `
+    <div class="ai-scenario">
+      <div class="ai-scenario-head"><b>${s.name}</b><span class="num">${s.probability_pct}%</span></div>
+      <div class="ai-kv"><span>觸發</span><span>${s.trigger}</span></div>
+      <div class="ai-kv"><span>應對</span><span>${s.plan}</span></div>
+    </div>`).join("");
+
+  box.innerHTML = `
+    ${ai.gate_note ? `<div class="ai-gate warn">🔒 ${ai.gate_note}</div>` : ""}
+    <div class="ai-head">
+      <span class="decision-badge ${cls}">${AI_ACTION_ZH[act.type] || act.type}</span>
+      <span class="chip info">信心 ${conf.score ?? "–"}/100</span>
+      <span class="chip">${ai.market_structure ? ai.market_structure.label : ""}</span>
+      ${ai.cache_hit ? '<span class="chip">快取</span>' : ""}
+      <span class="ai-meta num">${ai.model || ""}・$${(ai.cost_usd || 0).toFixed(3)}</span>
+    </div>
+    <div class="ai-oneliner">${ai.one_liner || ""}</div>
+
+    <div class="ai-grid">
+      <div class="ai-col">
+        <div class="ai-sec-title">市場結構判定</div>
+        <p>${ai.market_structure ? ai.market_structure.reason : ""}</p>
+
+        <div class="ai-sec-title">多空評估(主觀機率,非歷史勝率)</div>
+        <div class="bias-bar"><div class="bias-bull-fill" style="width:${wr.long_pct || 0}%"></div>
+          <div class="bias-bear-fill" style="width:${wr.short_pct || 0}%"></div></div>
+        <div class="ai-kv"><span>多方 ${wr.long_pct ?? "–"}%</span><span>${wr.short_pct ?? "–"}% 空方</span></div>
+
+        <div class="ai-sec-title">行動</div>
+        ${act.type === "Wait" && act.wait_condition ? `<div class="ai-kv"><span>等什麼</span><span>${act.wait_condition}</span></div>` : ""}
+        <div class="ai-kv"><span>下一步觸發</span><span>${act.next_trigger || ""}</span></div>
+
+        <div class="ai-sec-title">交易方案(${(S.analysis && S.analysis.offset_info && S.analysis.offset_info.trading_broker) || "券商"}掛單價)</div>
+        <div class="ai-kv"><span>進場</span><span class="num">${aiZone(res, tp.entry_id)}</span></div>
+        <div class="ai-kv"><span>停損</span><span class="num">${aiZone(res, tp.stop_loss_id)}</span></div>
+        <div class="ai-kv"><span>TP1</span><span class="num">${aiZone(res, tp.tp1_id)}</span></div>
+        <div class="ai-kv"><span>TP2</span><span class="num">${aiZone(res, tp.tp2_id)}</span></div>
+        <div class="ai-kv"><span>TP3</span><span class="num">${aiZone(res, tp.tp3_id)}</span></div>
+        <div class="ai-kv"><span>失效條件</span><span>${ai.invalidation || ""}</span></div>
+      </div>
+      <div class="ai-col">
+        <div class="ai-sec-title">三情境分析(合計 100%)</div>
+        ${scenarios}
+        <div class="ai-sec-title">交易理由</div>
+        <p>${ai.rationale || ""}</p>
+        <div class="ai-sec-title">風險提醒</div>
+        <p class="ai-risk">${ai.risk_warning || ""}</p>
+        <div class="ai-sec-title">信心因素</div>
+        <ul class="ai-factors">${(conf.factors || []).map((f) => `<li>${f}</li>`).join("")}</ul>
+        <div class="ai-sec-title">三位分析師</div>
+        ${analystHtml}
+      </div>
+    </div>`;
 }
 
 const IMPACT_ZH = { HIGH: "高影響", MEDIUM: "中影響", LOW: "低影響", UNKNOWN: "未知" };
