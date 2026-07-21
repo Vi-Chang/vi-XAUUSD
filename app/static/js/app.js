@@ -373,17 +373,25 @@ function applyAnalysis(a) {
 }
 
 const IMPACT_ZH = { HIGH: "高影響", MEDIUM: "中影響", LOW: "低影響", UNKNOWN: "未知" };
+const TIME_RISK_ZH = {
+  HIGH: "事件風險:高(進入鎖定窗)", MEDIUM: "事件風險:中(接近公布)",
+  LOW: "事件風險:低(緩衝充足)", UNKNOWN: "事件風險:未知",
+};
 
 function renderEventRisk(er) {
   const nameEl = $("event-name"), detailEl = $("event-detail"),
         impactChip = $("event-impact-chip"), cd = $("event-countdown");
   if (er && er.minutes_remaining != null && er.next_event) {
     S.countdownTarget = Date.now() + er.minutes_remaining * 60000;
-    nameEl.textContent = er.next_event + (er.event_lockout ? "・鎖定中" : "");
+    // P2:固有影響力(靜態 chip)與時間風險(動態文字)分開顯示
+    const timeRisk = er.time_risk || er.level;
+    nameEl.textContent = `${er.next_event}　${TIME_RISK_ZH[timeRisk] || ""}`
+      + (er.event_lockout ? "・鎖定中" : "");
     impactChip.style.display = "";
-    impactChip.textContent = IMPACT_ZH[er.level] || er.level;
-    impactChip.className = "chip " + (er.level === "HIGH" ? "bad"
-      : er.level === "MEDIUM" ? "warn" : er.level === "UNKNOWN" ? "warn" : "good");
+    const impact = er.event_impact || "UNKNOWN";
+    impactChip.textContent = IMPACT_ZH[impact] || impact;
+    impactChip.className = "chip " + (impact === "HIGH" ? "bad"
+      : impact === "MEDIUM" ? "warn" : impact === "UNKNOWN" ? "warn" : "good");
   } else {
     S.countdownTarget = null;
     unskel(cd);

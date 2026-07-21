@@ -49,8 +49,11 @@ def translate_event_name(name: str) -> str:
 
 @dataclass
 class EventRiskState:
-    level: str = "UNKNOWN"          # LOW/MEDIUM/HIGH/UNKNOWN
-    event_lockout: bool = False
+    # P2:拆成兩個獨立維度,不再混用
+    event_impact: str = "UNKNOWN"   # 事件固有影響力(FOMC=HIGH,靜態屬性)
+    time_risk: str = "UNKNOWN"      # 當前時間風險(由倒數推導:近=HIGH 遠=LOW)
+    level: str = "UNKNOWN"          # 相容別名 = time_risk(舊欄位,勿再新增依賴)
+    event_lockout: bool = False     # 由 event_impact=HIGH 且 剩餘<=鎖定分鐘 觸發
     next_event: str = ""
     minutes_remaining: int | None = None
     source: str = "none"            # finnhub/fmp/manual/none
@@ -95,7 +98,9 @@ def evaluate_event_risk(now: datetime | None = None) -> EventRiskState:
     if stale:
         state.reason = f"manual_events.json 超過 {s.manual_events_stale_days} 天未更新,請更新本週事件"
     if not upcoming:
-        state.level = "LOW" if not stale else "UNKNOWN"
+        state.time_risk = "LOW" if not stale else "UNKNOWN"
+        state.event_impact = "UNKNOWN"
+        state.level = state.time_risk
         return state
 
     t, ev = upcoming[0]
@@ -103,20 +108,36 @@ def evaluate_event_risk(now: datetime | None = None) -> EventRiskState:
     zh = translate_event_name(ev.get("name", ""))
     state.next_event = f"{zh}({ev.get('country')})"
     state.minutes_remaining = minutes
-    impact = str(ev.get("impact", "")).upper()
-    if impact == "HIGH" and minutes <= s.event_lockout_minutes:
-        state.level = "HIGH"
-        state.event_lockout = True
+
+    # P2 兩維度分離:
+    # event_impact = 事件固有等級(靜態);time_risk = 純由倒數時間推導
+    state.event_impact = str(ev.get("impact", "")).upper() or "UNKNOWN"
+    if minutes <= s.event_lockout_minutes:
+        state.time_risk = "HIGH"
+    elif minutes <= 240:
+        state.time_risk = "MEDIUM"
+    else:
+        state.time_risk = "LOW"
+    state.level = state.time_risk   # 相容別名
+
+    # 鎖定 = 固有影響 HIGH 且 剩餘時間進入鎖定窗(組合觸發,無需特判改寫等級)
+    state.event_lockout = (state.event_impact == "HIGH"
+                           and minutes <= s.event_lockout_minutes)
+
+    if state.event_lockout:
         state.reason = (f"高影響事件「{zh}」距離公布僅 {minutes} 分鐘,已進入事件鎖定:"
                         f"禁止建立新倉;公布後需等待至少一根 15 分鐘 K 棒收線、"
                         f"點差與波動恢復正常,才恢復劇本評估")
-    elif impact == "HIGH" and minutes <= 240:
-        state.level = "MEDIUM"
+    elif state.event_impact == "HIGH" and state.time_risk == "MEDIUM":
         state.reason = (f"高影響事件「{zh}」約 {minutes // 60} 小時 {minutes % 60} 分鐘後公布;"
-                        f"事件前 {s.event_lockout_minutes} 分鐘將自動鎖定新倉,"
+                        f"進入公布前 {s.event_lockout_minutes} 分鐘將自動鎖定新倉,"
                         f"接近公布時段請避免持有過大部位")
+    elif state.event_impact == "HIGH":
+        days = minutes // 1440
+        state.reason = (f"「{zh}」屬固有高影響事件,但距離公布還有約 "
+                        f"{days} 天,目前時間風險低(緩衝充足);"
+                        f"公布前 {s.event_lockout_minutes} 分鐘系統將自動鎖定新倉")
     else:
-        state.level = "LOW"
-        state.reason = ("距離下一個已知高影響事件仍有充足緩衝,事件風險低;"
-                        "系統將於事件前自動進入鎖定")
+        state.reason = (f"下一個事件「{zh}」非高影響等級,不觸發鎖定;"
+                        f"僅高影響事件會於公布前 {s.event_lockout_minutes} 分鐘自動鎖定")
     return state

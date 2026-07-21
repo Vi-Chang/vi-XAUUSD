@@ -30,7 +30,10 @@ class DataQuality(BaseModel):
 
 
 class EventRisk(BaseModel):
-    level: Literal["LOW", "MEDIUM", "HIGH", "UNKNOWN"] = "UNKNOWN"
+    # P2:固有影響力與時間風險為兩個獨立維度
+    event_impact: Literal["LOW", "MEDIUM", "HIGH", "UNKNOWN"] = "UNKNOWN"  # 靜態屬性
+    time_risk: Literal["LOW", "MEDIUM", "HIGH", "UNKNOWN"] = "UNKNOWN"     # 由倒數推導
+    level: Literal["LOW", "MEDIUM", "HIGH", "UNKNOWN"] = "UNKNOWN"         # 相容=time_risk
     event_lockout: bool = False
     next_event: str = ""
     minutes_remaining: int | None = None

@@ -147,7 +147,7 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
     poll = max(s.live_poll_seconds, getattr(provider, "min_poll_seconds", 0) or 0)
     quality = data_quality.evaluate(
         dfs_all, tick, atr15=atr15, holidays=holidays, now=now,
-        event_window=(ev.level == "HIGH"),
+        event_window=(ev.event_impact == "HIGH" and ev.time_risk == "HIGH"),
         stale_after_seconds=max(s.stale_price_seconds, int(poll * 1.5)))
 
     # ── 5. 市場結構(只用已收線)──
@@ -170,7 +170,8 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
     state = market_state.classify(
         structures=structures, indicators_h1=ind.get("1H", {}),
         indicators_m15=ind.get("15M", {}), m15_df=dfs_all.get("15M"),
-        event_volatility=(ev.level == "HIGH" and not ev.event_lockout),
+        event_volatility=(ev.event_impact == "HIGH" and ev.time_risk == "HIGH"
+                          and not ev.event_lockout),
         price=tick.mid)
 
     # ── 8. 規則引擎 ──
@@ -194,7 +195,8 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
                                  missing_candles=quality.missing_candles[:20],
                                  source_mismatch=quality.source_mismatch,
                                  warnings=quality.warnings[:20]),
-        event_risk=EventRisk(level=ev.level, event_lockout=ev.event_lockout,
+        event_risk=EventRisk(event_impact=ev.event_impact, time_risk=ev.time_risk,
+                             level=ev.level, event_lockout=ev.event_lockout,
                              next_event=ev.next_event,
                              minutes_remaining=ev.minutes_remaining,
                              source=ev.source, reason=ev.reason),
