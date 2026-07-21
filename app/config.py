@@ -133,6 +133,7 @@ class Settings(BaseSettings):
     # Offset = TMGM Price − TwelveData Price(可於 Dashboard 即時修改,存 system_settings)。
     price_offset: float = 0.0
     offset_mode: str = "manual"                 # manual | auto(auto 需 TMGM 即時源,目前保留 UI)
+    offset_max_age_hours: int = 24              # offset 超過此時效視為未校準 → NO-SIGNAL
     analysis_source_label: str = "TwelveData"
     trading_broker_label: str = "TMGM"
 

@@ -470,10 +470,19 @@ function renderOffset(info) {
   if (!info) return;
   $("op-source").textContent = info.analysis_source;
   $("op-broker").textContent = info.trading_broker;
-  const v = info.value || 0;
-  $("op-offset").textContent = `${v > 0 ? "+" : ""}${v.toFixed(2)}`;
-  $("op-offset").style.color = v > 0 ? "var(--bull)" : v < 0 ? "var(--bear)" : "var(--text)";
-  $("op-mode").textContent = info.mode;
+  // P0:動態標籤 Offset ({broker} − {active_source}),不得寫死來源名稱
+  const lbl = document.querySelector("#op-manual-row label");
+  if (lbl) lbl.textContent = `Offset (${info.trading_broker} − ${info.analysis_source})`;
+  if (info.calibrated === false) {
+    $("op-offset").textContent = "未校準";
+    $("op-offset").style.color = "var(--danger)";
+    $("op-mode").textContent = "暫停出訊";
+  } else {
+    const v = info.value || 0;
+    $("op-offset").textContent = `${v > 0 ? "+" : ""}${v.toFixed(2)}`;
+    $("op-offset").style.color = v > 0 ? "var(--bull)" : v < 0 ? "var(--bear)" : "var(--text)";
+    $("op-mode").textContent = info.mode;
+  }
 }
 
 function setupOffsetEditor() {
@@ -486,9 +495,11 @@ function setupOffsetEditor() {
     const mode = document.querySelector('input[name="op-mode-radio"]:checked').value;
     manualRow.style.opacity = mode === "manual" ? "1" : ".45";
     input.disabled = mode !== "manual";
+    const src = $("op-source").textContent || "分析源";
+    const broker = $("op-broker").textContent || "TMGM";
     hint.textContent = mode === "auto"
-      ? "Auto 模式:未來接上 TMGM 即時價後,每 5 秒自動計算 Offset = TMGM − TwelveData。目前無即時源,暫存模式設定但仍套用手動值。"
-      : "分析永遠使用 TwelveData;此 Offset 僅校正劇本進場/停損/停利價為 TMGM 掛單價。";
+      ? `Auto 模式:未來接上 ${broker} 即時價後,自動計算 Offset = ${broker} − ${src}。目前無即時源,暫存模式設定但仍套用手動值。`
+      : `此 Offset 僅校正劇本進場/停損/停利價為 ${broker} 掛單價(依當前資料源 ${src} 各自校準,24 小時未更新會暫停出訊)。`;
   };
 
   openBtn.addEventListener("click", async () => {

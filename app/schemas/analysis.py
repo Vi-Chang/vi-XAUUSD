@@ -188,11 +188,14 @@ class MentorComparison(BaseModel):
 
 
 class OffsetInfo(BaseModel):
-    """TMGM 價格校正資訊(讀取時由 price_offset 服務填入)。"""
+    """價格校正資訊(讀取時由 price_offset 服務依當前資料源填入)。"""
     mode: str = "manual"                 # manual | auto
-    value: float = 0.0                   # TMGM − TwelveData
-    analysis_source: str = "TwelveData"
+    value: float | None = None           # broker − active_source;未校準時為 None
+    analysis_source: str = ""            # 動態:當前資料源(不寫死)
     trading_broker: str = "TMGM"
+    calibrated: bool = False             # P0 fail-safe:未校準 → NO-SIGNAL
+    calibration_warning: str = ""
+    updated_at: str | None = None
     applied_to: list[str] = Field(default_factory=lambda: ["entry", "stop_loss", "targets"])
     auto_available: bool = False
     formula: str = "TMGM = TwelveData + Offset"
