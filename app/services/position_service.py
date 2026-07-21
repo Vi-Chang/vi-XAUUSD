@@ -211,18 +211,19 @@ def close_position(position_id: int, price: float) -> tuple[Position, str | None
 
 def position_view(pos: Position, current_price: float | None) -> dict:
     """單筆持倉的完整檢視(API 回應用)。"""
+    from app.utils.formatting import fmt_price
     view = {
         "id": pos.id, "account_id": pos.account_id,
-        "side": pos.side, "entry_price": pos.entry_price,
-        "stop_loss": pos.stop_loss, "lot_size": pos.lot_size,
+        "side": pos.side, "entry_price": fmt_price(pos.entry_price),
+        "stop_loss": fmt_price(pos.stop_loss), "lot_size": pos.lot_size,
         "open_time": ensure_utc(pos.open_time).isoformat(),
         "close_time": ensure_utc(pos.close_time).isoformat() if pos.close_time else None,
         "is_open": pos.is_open,
-        "planned_targets": pos.planned_targets or [],
+        "planned_targets": [fmt_price(t) for t in (pos.planned_targets or [])],
         "partial_exit_history": pos.partial_exit_history or [],
         "stop_modification_history": pos.stop_modification_history or [],
         "remaining_percent": round(remaining_fraction(pos) * 100, 1),
-        "current_price": current_price,
+        "current_price": fmt_price(current_price),
         "r_multiple": None, "unrealized_pnl": None,
         "recommended_action": "", "prohibited_actions": [],
     }

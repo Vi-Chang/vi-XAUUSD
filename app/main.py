@@ -223,8 +223,10 @@ async def candles_api(timeframe: str = "15M", limit: int = 300) -> list[dict]:
         if t in seen:
             continue
         seen.add(t)
-        out.append({"time": int(t.timestamp()), "open": r.open, "high": r.high,
-                    "low": r.low, "close": r.close, "volume": r.volume,
+        from app.utils.formatting import fmt_price
+        out.append({"time": int(t.timestamp()), "open": fmt_price(r.open),
+                    "high": fmt_price(r.high), "low": fmt_price(r.low),
+                    "close": fmt_price(r.close), "volume": r.volume,
                     "is_closed": r.is_closed})
     out.reverse()
     return out[-limit:]
@@ -243,10 +245,11 @@ async def structure_events(timeframe: str = "15M", limit: int = 40) -> list[dict
                           .where(MarketStructure.timeframe == timeframe)
                           .order_by(MarketStructure.event_time.desc())
                           .limit(limit)).scalars().all()
+    from app.utils.formatting import fmt_price
     return [{
         "event_type": r.event_type,
         "time": int(ensure_utc(r.event_time).timestamp()),
-        "price": r.price, "still_valid": r.still_valid,
+        "price": fmt_price(r.price), "still_valid": r.still_valid,
     } for r in rows]
 
 
@@ -398,10 +401,11 @@ async def behavior_flags(limit: int = 20) -> list[dict]:
 
 @app.get("/api/price")
 async def current_price() -> dict:
+    from app.utils.formatting import fmt_price
     tick = await state.provider.get_live_price()
-    return {"symbol": tick.symbol, "bid": tick.bid, "ask": tick.ask, "mid": tick.mid,
-            "spread": tick.spread, "provider": tick.provider,
-            "quote_time": tick.quote_time.isoformat()}
+    return {"symbol": tick.symbol, "bid": fmt_price(tick.bid), "ask": fmt_price(tick.ask),
+            "mid": fmt_price(tick.mid), "spread": fmt_price(tick.spread),
+            "provider": tick.provider, "quote_time": tick.quote_time.isoformat()}
 
 
 @app.websocket("/ws")

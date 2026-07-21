@@ -102,8 +102,10 @@ async def job_quote_l1() -> None:
             db.add(LivePrice(symbol=tick.symbol, bid=tick.bid, ask=tick.ask,
                              mid=tick.mid, spread=tick.spread, provider=tick.provider,
                              quote_time=tick.quote_time, received_at=now))
-        await broadcast({"type": "tick", "bid": tick.bid, "ask": tick.ask,
-                         "mid": tick.mid, "spread": tick.spread,
+        from app.utils.formatting import fmt_price
+        await broadcast({"type": "tick", "bid": fmt_price(tick.bid),
+                         "ask": fmt_price(tick.ask), "mid": fmt_price(tick.mid),
+                         "spread": fmt_price(tick.spread),
                          "time": int(tick.quote_time.timestamp())})
     except Exception as exc:  # noqa: BLE001 — 靜默重試;連續失敗 N 次才警告一次
         state.l1_fail_count += 1

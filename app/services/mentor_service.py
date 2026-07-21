@@ -69,12 +69,13 @@ def history_block() -> dict:
         rows = list(db.execute(select(MentorSignal)
                                .where(MentorSignal.status == "CLOSED")
                                .order_by(MentorSignal.close_time.desc())).scalars().all())
+    from app.utils.formatting import fmt_price
     trades = [{
         "id": r.id, "direction": r.direction,
-        "entry_price": r.entry_price, "close_price": r.close_price,
+        "entry_price": fmt_price(r.entry_price), "close_price": fmt_price(r.close_price),
         "points": r.points, "lots": r.lots,
         "pl_usd": r.pl_usd, "swap_usd": r.swap_usd, "net_usd": r.net_usd,
-        "stop_loss": r.stop_loss,          # 歷史匯入無停損資料 → null
+        "stop_loss": fmt_price(r.stop_loss),   # 歷史匯入無停損資料 → null
         "r_multiple": r.r_multiple, "r_source": r.r_source,
         "close_time": ensure_utc(r.close_time).isoformat() if r.close_time else None,
         "import_batch": r.import_batch,
@@ -105,9 +106,12 @@ def history_block() -> dict:
 
 
 def _to_dict(sig: MentorSignal) -> dict:
+    from app.utils.formatting import fmt_price
     from app.utils.timeutils import ensure_utc
-    return {"id": sig.id, "direction": sig.direction, "entry_price": sig.entry_price,
-            "stop_loss": sig.stop_loss, "targets": sig.targets or [], "note": sig.note or "",
+    return {"id": sig.id, "direction": sig.direction,
+            "entry_price": fmt_price(sig.entry_price),
+            "stop_loss": fmt_price(sig.stop_loss),
+            "targets": [fmt_price(t) for t in (sig.targets or [])], "note": sig.note or "",
             "signal_time": ensure_utc(sig.signal_time).isoformat(), "is_active": sig.is_active}
 
 

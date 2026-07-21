@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from app import PROMPT_VERSION, STRATEGY_VERSION
 from app.config import get_settings
 from app.i18n import state_zh
+from app.utils.formatting import fmt_price
 from app.db.models import (
     AnalysisRun, CandidateLevel as CandidateLevelRow, MarketStructure,
 )
@@ -188,8 +189,9 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
         timestamp_utc=now.isoformat(),
         timestamp_taipei=to_taipei(now).isoformat(),
         symbol=symbol,
-        current_price=CurrentPrice(bid=tick.bid, ask=tick.ask, mid=tick.mid,
-                                   spread=tick.spread, provider=tick.provider,
+        current_price=CurrentPrice(bid=fmt_price(tick.bid), ask=fmt_price(tick.ask),
+                                   mid=fmt_price(tick.mid), spread=fmt_price(tick.spread),
+                                   provider=tick.provider,
                                    last_update=tick.quote_time.isoformat()),
         data_quality=DataQuality(status=quality.status,
                                  missing_candles=quality.missing_candles[:20],

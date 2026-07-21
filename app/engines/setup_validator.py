@@ -15,9 +15,7 @@ from app.config import get_settings
 logger = logging.getLogger(__name__)
 
 
-def _fmt(px: float) -> float:
-    """輸出層價格格式(黃金 2 位小數);內部計算保持全精度(P3)。"""
-    return round(px, 2)
+from app.utils.formatting import fmt_price as _fmt  # P3:全站共用 formatter
 
 
 def validate_prices_detailed(direction: str, *, entry: float | None, sl: float | None,

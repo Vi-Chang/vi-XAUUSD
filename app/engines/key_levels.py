@@ -31,8 +31,9 @@ class CandidateLevel:
         return round((self.price_low + self.price_high) / 2, 2)
 
     def to_dict(self) -> dict:
+        from app.utils.formatting import fmt_price
         return {"id": self.level_id, "kind": self.kind,
-                "price_low": round(self.price_low, 2), "price_high": round(self.price_high, 2),
+                "price_low": fmt_price(self.price_low), "price_high": fmt_price(self.price_high),
                 "strength": self.strength, "source": " + ".join(self.sources)}
 
 
