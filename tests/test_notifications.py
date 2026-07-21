@@ -117,8 +117,8 @@ class TestSilentMonitor:
         _insert_15m_candle(5)   # 5 分鐘前,正常
         _, log, push = mgr()
         st = _FakeState(NotificationManager([log, push]))
-        st.last_job_run = {"poll_price": datetime.now(timezone.utc),
-                           "m15_analysis": datetime.now(timezone.utc)}
+        now = datetime.now(timezone.utc)
+        st.last_job_run = {"quote_l1": now, "structure_l2": now, "full_analysis": now}
         await hb.run_monitor(st)
         assert len(push.sent) == 0   # 一切正常 → 不推播
 
@@ -128,8 +128,8 @@ class TestSilentMonitor:
         _insert_15m_candle(120)  # 2 小時前 → 延遲
         _, log, push = mgr()
         st = _FakeState(NotificationManager([log, push]))
-        st.last_job_run = {"poll_price": datetime.now(timezone.utc),
-                           "m15_analysis": datetime.now(timezone.utc)}
+        now = datetime.now(timezone.utc)
+        st.last_job_run = {"quote_l1": now, "structure_l2": now, "full_analysis": now}
         await hb.run_monitor(st)
         assert len(push.sent) == 1
         assert "資料延遲" in push.sent[0]

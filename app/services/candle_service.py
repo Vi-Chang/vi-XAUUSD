@@ -140,6 +140,33 @@ async def refresh_candles(provider: MarketDataProvider, timeframes: tuple[str, .
     return out
 
 
+def load_candles_from_db(timeframe: str, limit: int = 300,
+                         symbol: str = "XAUUSD") -> list[Candle]:
+    """從 DB 載入既有 K 棒(TD 軟上限降級模式:第 3 層不再打 API,用快取資料)。"""
+    from sqlalchemy import select
+    with db_session() as db:
+        rows = db.execute(select(CandleRow)
+                          .where(CandleRow.symbol == symbol,
+                                 CandleRow.timeframe == timeframe)
+                          .order_by(CandleRow.open_time.desc(),
+                                    CandleRow.received_at.desc())
+                          .limit(limit * 2)).scalars().all()
+    seen: set = set()
+    out: list[Candle] = []
+    for r in rows:
+        t = ensure_utc(r.open_time)
+        if t in seen:
+            continue
+        seen.add(t)
+        out.append(Candle(symbol=symbol, timeframe=timeframe, open_time=t,
+                          close_time=ensure_utc(r.close_time), open=r.open, high=r.high,
+                          low=r.low, close=r.close, volume=r.volume,
+                          bid_close=r.bid_close, ask_close=r.ask_close, spread=r.spread,
+                          is_closed=r.is_closed, data_provider=r.data_provider))
+    out.reverse()
+    return out[-limit:]
+
+
 def candles_to_df(candles: list[Candle], closed_only: bool = False) -> pd.DataFrame:
     """轉為分析用 DataFrame(index=open_time UTC)。
 

@@ -107,6 +107,8 @@ class TwelveDataProvider(MarketDataProvider):
 
     async def get_live_price(self, symbol: str = "XAUUSD") -> PriceTick:
         self.quota.check_and_count()
+        from app.services.api_counter import bump
+        bump(self.name)
 
         async def _call() -> PriceTick:
             r = await self._client.get("/price", params={"symbol": "XAU/USD", "apikey": self._key})
@@ -124,6 +126,8 @@ class TwelveDataProvider(MarketDataProvider):
     async def _fetch_series(self, interval: str, outputsize: int,
                             timeframe_label: str) -> list[Candle]:
         self.quota.check_and_count()
+        from app.services.api_counter import bump
+        bump(self.name)
 
         async def _call() -> list[Candle]:
             r = await self._client.get("/time_series", params={

@@ -21,9 +21,25 @@ from app.services.market_calendar import market_is_open
 logger = logging.getLogger(__name__)
 
 # job → 容忍秒數(須大於該 job 的執行間隔,避免時序抖動誤報)。
-# poll_price 對 twelve_data 每 300s 跑一次 → 容忍 700s(約 2 輪 + 緩衝)。
-# m15_analysis cron 每 900s → 容忍 1500s。
-CRITICAL_JOBS = {"poll_price": 700, "m15_analysis": 1500}
+# 三層架構:quote_l1 依實際輪詢間隔動態放寬;structure_l2 每 300s;
+# full_analysis 最遲每 tier3_max_age 分鐘由保底觸發。
+
+
+def _critical_jobs() -> dict[str, int]:
+    from app.config import get_settings
+    s = get_settings()
+    try:
+        from app.services.scheduler import l1_interval_seconds
+        l1 = l1_interval_seconds()
+    except Exception:  # noqa: BLE001
+        l1 = s.tier1_quote_seconds
+    return {
+        "quote_l1": max(l1 * 3, 300),
+        "structure_l2": s.tier2_check_seconds * 2 + 100,
+        "full_analysis": s.tier3_max_age_minutes * 60 + s.tier2_check_seconds * 2,
+    }
+
+
 
 
 def check_liveness(last_job_run: dict[str, datetime],
@@ -31,11 +47,11 @@ def check_liveness(last_job_run: dict[str, datetime],
     """回傳停止運作的元件清單。
 
     開機寬限期:started_at 提供時,尚未執行過的 job 在「開機後未滿容忍時間」內
-    不算死亡(剛重啟時 poll/m15 還沒輪到第一次,不應誤報 degraded/ERROR)。
+    不算死亡(剛重啟時各層還沒輪到第一次,不應誤報 degraded/ERROR)。
     """
     now = datetime.now(timezone.utc)
     dead = []
-    for job, tolerance in CRITICAL_JOBS.items():
+    for job, tolerance in _critical_jobs().items():
         last = last_job_run.get(job)
         if last is not None:
             if (now - last).total_seconds() > tolerance:
@@ -142,14 +158,31 @@ def health_payload(state) -> dict:
     last_t, age_min = _last_15m_candle()
     lag = get_settings().data_lag_warn_minutes
     data_lagging = age_min is not None and age_min > lag and market_is_open()
+    from app.services.api_counter import snapshot
+    s = get_settings()
+    try:
+        from app.providers.twelve_data import get_shared_quota
+        td_used = get_shared_quota().used_today
+    except Exception:  # noqa: BLE001
+        td_used = None
     return {
         "status": "degraded" if (dead or data_lagging) else "ok",
         "market_open": market_is_open(),
         "provider": state.provider.name if state.provider else None,
+        "tiered": {
+            "fast_quote_provider": (state.fast_provider.name
+                                    if getattr(state, "fast_provider", None) else None),
+            "l1_degraded": getattr(state, "fast_provider", None) is None
+                           and not s.mock_data_mode,
+            "last_full_analysis": (state.last_full_analysis.isoformat()
+                                   if getattr(state, "last_full_analysis", None) else None),
+        },
+        "api_usage_today": {**snapshot(), "twelve_data_quota": td_used,
+                            "twelve_data_soft_limit": s.twelve_data_soft_limit},
         "dead_components": dead,
         "last_15m_candle": last_t.isoformat() if last_t else None,
         "data_lag_minutes": round(age_min, 1) if age_min is not None else None,
         "last_job_run": {k: v.isoformat() for k, v in state.last_job_run.items()},
-        "notify_level": get_settings().notify_level,
+        "notify_level": s.notify_level,
         "llm_cost_usd_today": 0.0,
     }

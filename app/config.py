@@ -133,6 +133,20 @@ class Settings(BaseSettings):
     analysis_source_label: str = "TwelveData"
     trading_broker_label: str = "TMGM"
 
+    # ── 分層更新頻率(三層架構)──
+    # 第 1 層:報價層(快速報價源:Capital.com/OANDA;無 Key 時降級用 TD 300s)
+    tier1_quote_seconds: int = 60
+    tier1_fail_alert_after: int = 5          # 連續失敗 N 次才發一則系統警告
+    # 第 2 層:結構層(純程式邏輯,禁 AI)
+    tier2_check_seconds: int = 300
+    tier2_touch_pct: float = 0.0005          # 觸及候選價位:距離 ≤ 0.05%
+    tier2_anomaly_range_mult: float = 2.5    # 5 分鐘振幅 > 近 20 根 5 分桶平均 × 此倍數
+    tier2_level_cooldown_minutes: int = 60   # 同一價位觸及事件冷卻
+    # 第 3 層:完整分析(事件觸發 + 定時保底)
+    tier3_max_age_minutes: int = 60          # 距上次完整分析超過此時間 → 定時保底
+    # 頻率保護
+    twelve_data_soft_limit: int = 600        # TD 當日達此用量 → 警告 + 降級(只用快取資料)
+
     # ── 分析 ──
     candle_history_count: int = 300
     analysis_timeframes: tuple[str, ...] = ("1D", "4H", "1H", "15M")

@@ -54,3 +54,31 @@ def get_primary_provider() -> MarketDataProvider:
     logging.getLogger(__name__).warning("無可用實盤 Provider,退回 mock 模式")
     from app.providers.mock import MockProvider
     return MockProvider()
+
+
+def get_fast_quote_provider() -> MarketDataProvider | None:
+    """第 1 層報價層的快速報價源(1 分鐘級輪詢)。
+
+    優先序:Capital.com(demo REST,免費無嚴格限流)→ OANDA。
+    皆未設定時回傳 None → 第 1 層自動降級為主力 provider 的最低輪詢頻率
+    (Twelve Data = 300s),並於 /health 標示。mock 模式用 mock 本身(開發用)。
+    """
+    import logging as _logging
+
+    from app.config import get_settings
+    s = get_settings()
+    if s.mock_data_mode:
+        return None  # 主力已是 mock,L1 直接用主力
+    if s.capital_api_key and s.capital_identifier and s.capital_api_password:
+        try:
+            from app.providers.capital_com import CapitalComProvider
+            return CapitalComProvider()
+        except Exception as exc:  # noqa: BLE001
+            _logging.getLogger(__name__).warning("Capital.com 快速報價源不可用: %s", exc)
+    if s.oanda_api_token and s.oanda_account_id:
+        try:
+            from app.providers.oanda import OandaProvider
+            return OandaProvider()
+        except Exception as exc:  # noqa: BLE001
+            _logging.getLogger(__name__).warning("OANDA 快速報價源不可用: %s", exc)
+    return None

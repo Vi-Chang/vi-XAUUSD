@@ -32,6 +32,11 @@ async def lifespan(app: FastAPI):
     s = get_settings()
     init_db()
     state.provider = get_primary_provider()
+    from app.providers import get_fast_quote_provider
+    state.fast_provider = get_fast_quote_provider()
+    logger.info("tiered: fast quote provider = %s",
+                state.fast_provider.name if state.fast_provider else
+                f"none (L1 degraded to {state.provider.name})")
     state.notifier = build_notification_manager()
     # 備援交叉驗證:主力已是 Twelve Data 時跳過(自己驗自己沒有意義)
     if (s.twelve_data_api_key and not s.mock_data_mode
@@ -51,6 +56,8 @@ async def lifespan(app: FastAPI):
         scheduler.shutdown(wait=False)
     if state.provider:
         await state.provider.close()
+    if state.fast_provider:
+        await state.fast_provider.close()
     if state.secondary:
         await state.secondary.close()
 

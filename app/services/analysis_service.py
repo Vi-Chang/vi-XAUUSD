@@ -70,19 +70,29 @@ def _tf_view(rep: StructureReport | None, ind: dict) -> TimeframeView:
 
 
 async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
-                       symbol: str = "XAUUSD") -> AnalysisResult:
-    """執行一次完整分析並存入 analysis_runs。"""
+                       symbol: str = "XAUUSD", tick=None,
+                       cached_only: bool = False) -> AnalysisResult:
+    """執行一次完整分析並存入 analysis_runs。
+
+    tick:第 1 層報價快取的新鮮報價(提供時不再打 API 取價)。
+    cached_only:TD 軟上限降級模式 —— K 棒只用 DB 既有資料,不打任何行情 API。
+    """
     s = get_settings()
     now = datetime.now(timezone.utc)
     holidays = load_holidays()
 
     # ── 1. 行情(統一剔除休市時段 K 棒,含假日表)──
-    from app.services.candle_service import filter_market_hours
+    from app.services.candle_service import filter_market_hours, load_candles_from_db
     all_tfs = tuple(dict.fromkeys((*s.analysis_timeframes, *s.aux_timeframes)))
-    candles = await refresh_candles(provider, all_tfs, s.candle_history_count, symbol)
+    if cached_only:
+        candles = {tf: load_candles_from_db(tf, s.candle_history_count, symbol)
+                   for tf in all_tfs}
+    else:
+        candles = await refresh_candles(provider, all_tfs, s.candle_history_count, symbol)
     candles = {tf: (cs if tf in ("1D", "1W") else filter_market_hours(cs, holidays))
                for tf, cs in candles.items()}
-    tick = await provider.get_live_price(symbol)
+    if tick is None:
+        tick = await provider.get_live_price(symbol)
 
     dfs_all = {tf: candles_to_df(c) for tf, c in candles.items()}
     dfs_closed = {tf: candles_to_df(c, closed_only=True) for tf, c in candles.items()}
