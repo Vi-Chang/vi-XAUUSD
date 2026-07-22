@@ -68,7 +68,7 @@ docker compose up --build
 | yfinance | 開發/回測 | 免申請 | 非官方、延遲、GC=F 期貨基差 |
 | CFTC COT | 黃金持倉(Phase 6) | 官網公開下載 | 每週五更新 |
 | TradingView | 人工看圖(圖表資料源選 **OANDA:XAUUSD**) | 免費版 | Webhook 需付費 → 預設關閉 |
-| LLM API(Phase 7) | AI 分析 | https://console.anthropic.com | 唯一變動成本,受每日預算上限控管 |
+| LLM API(V2 AI 層) | AI 分析 | https://aistudio.google.com/apikey | 預設 Gemini 免費層($0);可經環境變數切換 OpenAI 相容供應商,詳見 DEPLOY.md |
 
 Provider 優先序由 `.env` 的 `PRIMARY_PROVIDER` 控制(`auto` = mock 模式用 mock,否則 MT5 → OANDA)。
 
