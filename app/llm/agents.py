@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 
-from app.config import get_settings
 from app.llm.client import call_json
 from app.schemas.ai import ANALYST_SCHEMA, DECISION_SCHEMA, AnalystView
 
@@ -55,12 +54,10 @@ DECISION_SYSTEM = (
 
 async def run_analysts(snapshot: dict) -> tuple[dict[str, AnalystView], float]:
     """三位分析師並行;單一失敗以 NEUTRAL 代替(不擋全局)。回傳 (views, 成本)。"""
-    s = get_settings()
 
     async def one(name: str, system: str):
-        return await call_json(model=s.llm_model_analyst, system=system,
-                               user_payload=snapshot, schema=ANALYST_SCHEMA,
-                               max_tokens=700)
+        return await call_json(system=system, user_payload=snapshot,
+                               schema=ANALYST_SCHEMA, max_tokens=700)
 
     tasks = {"macro": one("macro", MACRO_SYSTEM),
              "technical": one("technical", TECHNICAL_SYSTEM),
@@ -82,11 +79,9 @@ async def run_analysts(snapshot: dict) -> tuple[dict[str, AnalystView], float]:
 async def run_decision(snapshot: dict, analysts: dict[str, AnalystView],
                        feedback: str | None = None) -> tuple[dict, float]:
     """決策引擎;feedback 為守門退回原因(重試時附上)。"""
-    s = get_settings()
     payload = {"snapshot": snapshot,
                "analysts": {k: v.model_dump() for k, v in analysts.items()}}
     if feedback:
         payload["validator_feedback"] = f"上一次輸出被程式退回,原因:{feedback}。請修正後重出。"
-    return await call_json(model=s.llm_model_decision, system=DECISION_SYSTEM,
-                           user_payload=payload, schema=DECISION_SCHEMA,
-                           max_tokens=2200, thinking=True)
+    return await call_json(system=DECISION_SYSTEM, user_payload=payload,
+                           schema=DECISION_SCHEMA, max_tokens=2200)

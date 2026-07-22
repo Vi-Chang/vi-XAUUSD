@@ -60,33 +60,40 @@ def _good_decision() -> dict:
 
 
 class FakeClient:
-    """假 Anthropic 客戶端:依 schema 分辨分析師/決策呼叫。"""
+    """供應商無關的假客戶端:依 prompt 內容分辨分析師/決策呼叫。
 
-    def __init__(self, decision_payloads: list[dict] | None = None):
+    介面 = client._generate 的注入點:async generate(prompt, max_tokens)
+    → (text, input_tokens, output_tokens)。
+    """
+
+    def __init__(self, decision_payloads: list[dict] | None = None,
+                 fail_first_n: int = 0):
         self.calls = 0
         self.decision_calls = 0
         self._decisions = decision_payloads or [_good_decision()]
-        self.messages = self
+        self._fail_remaining = fail_first_n      # 模擬前 N 次回 429
 
-    async def create(self, **kwargs):
+    async def generate(self, prompt: str, max_tokens: int):
         self.calls += 1
-        schema = kwargs["output_config"]["format"]["schema"]
-        if schema is ANALYST_SCHEMA or "bias" in schema.get("properties", {}):
-            data = {"bias": "BULLISH", "strength": 62,
-                    "key_points": ["美元走弱"], "one_line": "偏多"}
-        else:
+        if self._fail_remaining > 0:
+            self._fail_remaining -= 1
+            from app.llm.client import LlmRateLimitError
+            raise LlmRateLimitError("AI 分析額度已用完,請稍後再試")
+        if "首席決策官" in prompt:
             idx = min(self.decision_calls, len(self._decisions) - 1)
             data = self._decisions[idx]
             self.decision_calls += 1
-        return SimpleNamespace(
-            content=[SimpleNamespace(type="text",
-                                     text=json.dumps(data, ensure_ascii=False))],
-            usage=SimpleNamespace(input_tokens=1000, output_tokens=300))
+        else:
+            data = {"bias": "BULLISH", "strength": 62,
+                    "key_points": ["美元走弱"], "one_line": "偏多"}
+        return json.dumps(data, ensure_ascii=False), 1000, 300
 
 
 @pytest.fixture(autouse=True)
 def _setup():
     init_db()
+    import app.llm.client as client_mod
+    client_mod._call_times.clear()      # RPM 視窗跨測試歸零,避免測試互相節流
     yield
     set_client_for_tests(None)
 
@@ -192,11 +199,57 @@ def test_fingerprint_stable_within_bucket():
 # ── 用量記帳 ────────────────────────────────────────────────
 
 def test_usage_recording():
-    assert estimate_cost("claude-opus-4-8", 1_000_000, 0) == 5.0
-    before = spent_today()
-    cost = record_usage("claude-opus-4-8", 100_000, 10_000)
-    assert cost > 0
-    assert spent_today() == pytest.approx(before + cost, abs=1e-6)
+    from app.llm.usage import calls_today
+    assert estimate_cost("gemini-2.5-flash", 1_000_000, 100_000) == 0.0   # 免費層 $0
+    assert estimate_cost("gemini-2.5-pro", 1_000_000, 0) == 1.25          # 付費模型計價
+    before_calls = calls_today()
+    cost = record_usage("gemini-2.5-flash", 100_000, 10_000, provider="gemini")
+    assert cost == 0.0
+    assert calls_today() == before_calls + 1          # 次數照計(每日額度保護依據)
+
+
+def test_429_exponential_backoff_then_success(monkeypatch):
+    """模擬前兩次 429 → 退避重試後成功(退避秒數歸零加速測試)。"""
+    import app.llm.client as client_mod
+    monkeypatch.setattr(client_mod, "_BACKOFF_SECONDS", (0.0, 0.0, 0.0))
+    fake = FakeClient(fail_first_n=2)
+    set_client_for_tests(fake)
+    data, cost = asyncio.run(client_mod.call_json(
+        system="測試", user_payload={"x": 1}, schema=ANALYST_SCHEMA, max_tokens=100))
+    assert data["bias"] == "BULLISH"
+    assert fake.calls == 3                            # 2 次失敗 + 1 次成功
+
+
+def test_429_retries_exhausted_raises_friendly(monkeypatch):
+    import app.llm.client as client_mod
+    monkeypatch.setattr(client_mod, "_BACKOFF_SECONDS", (0.0, 0.0, 0.0))
+    set_client_for_tests(FakeClient(fail_first_n=99))
+    with pytest.raises(client_mod.LlmRateLimitError) as ei:
+        asyncio.run(client_mod.call_json(
+            system="測試", user_payload={}, schema=ANALYST_SCHEMA, max_tokens=100))
+    assert "請稍後再試" in str(ei.value)
+
+
+def test_rpm_throttle_rejects_when_window_full():
+    """滑動視窗滿載且需等待過久 → 友善拒絕,不讓分析卡死。"""
+    import time as _t
+
+    import app.llm.client as client_mod
+    from app.config import get_settings
+    client_mod._call_times.clear()
+    now = _t.monotonic()
+    for _ in range(get_settings().llm_rpm_limit):
+        client_mod._call_times.append(now)
+    with pytest.raises(client_mod.LlmRateLimitError):
+        asyncio.run(client_mod._acquire_slot())
+    client_mod._call_times.clear()
+
+
+def test_json_fence_stripping():
+    from app.llm.client import _parse_json
+    assert _parse_json('{"a": 1}') == {"a": 1}
+    assert _parse_json('```json\n{"a": 1}\n```') == {"a": 1}
+    assert _parse_json('前言\n{"a": 1}\n後記') == {"a": 1}
 
 
 # ── 服務協調(假客戶端)────────────────────────────────────
@@ -218,7 +271,8 @@ def test_service_end_to_end_with_fake_client():
     assert st.available and not st.invalid
     assert st.action.type == "Buy"
     assert st.analysts["macro"].bias == "BULLISH"
-    assert st.cost_usd > 0
+    assert st.cost_usd == 0.0       # Gemini 免費層 → 零成本
+    assert st.model.startswith("gemini:")
     assert fake.calls == 4          # 3 分析師 + 1 決策
 
 
@@ -250,10 +304,35 @@ def test_service_no_signal_gate_skips_llm():
 
 
 def test_service_budget_cutoff():
+    """付費模型(價格表有價)超過每日預算 → 費用斷路器生效。"""
     from app.config import get_settings
-    record_usage("claude-opus-4-8", 0, int(get_settings().llm_daily_budget_usd / 25 * 1e6) + 100_000)
+    record_usage("gemini-2.5-pro", 0,
+                 int(get_settings().llm_daily_budget_usd / 10 * 1e6) + 100_000)
     fake = FakeClient()
     set_client_for_tests(fake)
     st = _run_service(state="STRONG_BULL_TREND")
     assert not st.available and "預算" in st.unavailable_reason
+    assert fake.calls == 0
+
+
+def test_service_daily_call_quota():
+    """免費層每日次數用完 → 友善繁中訊息,不再打 API。"""
+    from datetime import datetime, timezone
+
+    from app.config import get_settings
+    from app.db.models import LlmUsage
+    from app.db.session import db_session
+    # 先清掉付費模型列(避免上一題的預算斷路器先觸發),再灌滿當日次數
+    day = datetime.now(timezone.utc).date()
+    with db_session() as db:
+        for row in db.query(LlmUsage).filter(LlmUsage.usage_day == day).all():
+            row.cost_usd = 0.0
+        db.add(LlmUsage(usage_day=day, provider="gemini", model="quota-filler",
+                        input_tokens=0, output_tokens=0, cost_usd=0.0,
+                        calls=get_settings().llm_daily_call_limit))
+    fake = FakeClient()
+    set_client_for_tests(fake)
+    st = _run_service(state="STRONG_BEAR_TREND")
+    assert not st.available
+    assert "額度已用完" in st.unavailable_reason
     assert fake.calls == 0

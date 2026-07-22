@@ -14,7 +14,7 @@ from app.config import get_settings
 from app.db.models import AiAnalysis
 from app.db.session import db_session
 from app.llm.agents import run_analysts, run_decision
-from app.llm.client import llm_available
+from app.llm.client import LlmQuotaError, LlmRateLimitError, llm_available
 from app.llm.guardrails import validate_and_build
 from app.llm.snapshot import build_snapshot, fingerprint_of
 from app.llm.usage import budget_exceeded
@@ -97,6 +97,8 @@ async def generate_ai_strategy(*, price: float, atr15: float, state: str,
             st = AiStrategy(**cached)
             st.cache_hit = True
             st.fingerprint = fp
+            logger.info("AI_CACHE_HIT fingerprint=%s (age<%dmin, no API call)",
+                        fp[:12], s.llm_cache_minutes)
             return st
         except Exception:  # noqa: BLE001 — 舊格式不相容就重算
             pass
@@ -128,12 +130,17 @@ async def generate_ai_strategy(*, price: float, atr15: float, state: str,
                                                   f"程式驗證({';'.join(errors[:3])})"))
 
         strategy.analysts = analysts
-        strategy.model = s.llm_model_decision
+        strategy.model = f"{s.llm_provider}:{s.llm_model}"
         strategy.cost_usd = round(cost, 4)
         strategy.fingerprint = fp
         strategy.generated_at = now_iso
         _persist(fp, strategy, run_id)
         return strategy
+    except (LlmQuotaError, LlmRateLimitError) as exc:
+        # 額度/頻率上限:訊息本身已是友善繁中,直接顯示
+        logger.warning("AI quota/rate limited: %s", exc)
+        return AiStrategy(unavailable_reason=str(exc), generated_at=now_iso)
     except Exception as exc:  # noqa: BLE001
         logger.exception("AI strategy generation failed: %s", exc)
-        return AiStrategy(unavailable_reason=f"AI 呼叫失敗:{exc}", generated_at=now_iso)
+        return AiStrategy(unavailable_reason="AI 分析暫時無法使用,請稍後再試",
+                          generated_at=now_iso)

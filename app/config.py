@@ -77,17 +77,20 @@ class Settings(BaseSettings):
     data_lag_warn_minutes: int = 60         # 最新 K 棒落後現在超過此分鐘數 → WARN
     daily_summary_hour_utc: int = 22        # 每日摘要最早發送的 UTC 時(約台北 06:00)
 
-    # ── LLM(V2 AI 分析層)──
-    llm_provider: str = "anthropic"
-    anthropic_api_key: str = ""
-    openai_api_key: str = ""
-    llm_daily_budget_usd: float = 3.0
+    # ── LLM(V2 AI 分析層;供應商可切換,預設 Gemini 免費層)──
     llm_enabled: bool = True                    # 總開關;無 API Key 時自動不呼叫
-    llm_model_analyst: str = "claude-opus-4-8"  # 三位分析師用模型
-    llm_model_decision: str = "claude-opus-4-8" # 決策引擎用模型
-    llm_timeout_seconds: int = 90               # 單次呼叫逾時
+    llm_provider: str = "gemini"                # gemini | openai_compatible
+    llm_model: str = "gemini-2.5-flash"
+    gemini_api_key: str = ""                    # 模式 A:Gemini(Google AI Studio 免費申請)
+    llm_base_url: str = ""                      # 模式 B:OpenAI 相容端點(OpenAI/Groq/DeepSeek…)
+    llm_api_key: str = ""                       # 模式 B 的 Bearer key
+    # 免費層保護(Gemini 免費層:10 RPM / 250 次每日)
+    llm_rpm_limit: int = 8                      # 每分鐘上限(超過即排隊,排太久就拒絕)
+    llm_daily_call_limit: int = 200             # 每日呼叫上限(預留餘裕),超過當日停用 AI
+    llm_daily_budget_usd: float = 3.0           # 付費模型時的費用斷路器(免費層恆為 $0)
+    llm_timeout_seconds: int = 60               # 單次呼叫逾時
     llm_max_retries: int = 1                    # 守門失敗後重試次數(超過 → NO_TRADE_AI_INVALID)
-    llm_cache_minutes: int = 45                 # 輸入指紋相同時重用舊結果(省 token)
+    llm_cache_minutes: int = 45                 # 輸入指紋相同時重用舊結果(不重打 API)
     cross_market_cache_minutes: int = 15        # DXY/美債/VIX 快取時間
 
     # ── 硬性安全開關 ──
