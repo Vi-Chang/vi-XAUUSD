@@ -67,11 +67,12 @@ class FakeClient:
     """
 
     def __init__(self, decision_payloads: list[dict] | None = None,
-                 fail_first_n: int = 0):
+                 fail_first_n: int = 0, truncated_first_n: int = 0):
         self.calls = 0
         self.decision_calls = 0
         self._decisions = decision_payloads or [_good_decision()]
-        self._fail_remaining = fail_first_n      # 模擬前 N 次回 429
+        self._fail_remaining = fail_first_n           # 模擬前 N 次回 429
+        self._truncated_remaining = truncated_first_n  # 模擬前 N 次回截斷的壞 JSON
 
     async def generate(self, prompt: str, max_tokens: int):
         self.calls += 1
@@ -79,6 +80,9 @@ class FakeClient:
             self._fail_remaining -= 1
             from app.llm.client import LlmRateLimitError
             raise LlmRateLimitError("AI 分析額度已用完,請稍後再試")
+        if self._truncated_remaining > 0:
+            self._truncated_remaining -= 1
+            return '{"bias": "BULLISH", "strength": 62, "key_po', 1000, 300
         if "首席決策官" in prompt:
             idx = min(self.decision_calls, len(self._decisions) - 1)
             data = self._decisions[idx]
@@ -243,6 +247,18 @@ def test_rpm_throttle_rejects_when_window_full():
     with pytest.raises(client_mod.LlmRateLimitError):
         asyncio.run(client_mod._acquire_slot())
     client_mod._call_times.clear()
+
+
+def test_truncated_json_retried_then_success(monkeypatch):
+    """截斷的壞 JSON(如 maxOutputTokens 切斷)→ 重生成一次即恢復。"""
+    import app.llm.client as client_mod
+    monkeypatch.setattr(client_mod, "_BACKOFF_SECONDS", (0.0, 0.0, 0.0))
+    fake = FakeClient(truncated_first_n=1)
+    set_client_for_tests(fake)
+    data, _ = asyncio.run(client_mod.call_json(
+        system="測試", user_payload={}, schema=ANALYST_SCHEMA, max_tokens=100))
+    assert data["bias"] == "BULLISH"
+    assert fake.calls == 2
 
 
 def test_json_fence_stripping():

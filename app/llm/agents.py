@@ -57,7 +57,7 @@ async def run_analysts(snapshot: dict) -> tuple[dict[str, AnalystView], float]:
 
     async def one(name: str, system: str):
         return await call_json(system=system, user_payload=snapshot,
-                               schema=ANALYST_SCHEMA, max_tokens=700)
+                               schema=ANALYST_SCHEMA, max_tokens=2000)
 
     tasks = {"macro": one("macro", MACRO_SYSTEM),
              "technical": one("technical", TECHNICAL_SYSTEM),
@@ -83,5 +83,6 @@ async def run_decision(snapshot: dict, analysts: dict[str, AnalystView],
                "analysts": {k: v.model_dump() for k, v in analysts.items()}}
     if feedback:
         payload["validator_feedback"] = f"上一次輸出被程式退回,原因:{feedback}。請修正後重出。"
+    # 中文 JSON 的 token 密度高,輸出上限給足(免費層不計費,截斷才是風險)
     return await call_json(system=DECISION_SYSTEM, user_payload=payload,
-                           schema=DECISION_SCHEMA, max_tokens=2200)
+                           schema=DECISION_SCHEMA, max_tokens=8000)
