@@ -13,7 +13,7 @@
 |---|---|---|
 | `LLM_ENABLED` | `true` | AI 層總開關 |
 | `LLM_PROVIDER` | `gemini` | 預設值,可不設 |
-| `LLM_MODEL` | `gemini-2.5-flash` | 預設值,可不設 |
+| `LLM_MODEL` | `gemini-3.5-flash` | 預設值,可不設(`gemini-2.5-flash` 已對新 Key 停供) |
 | `GEMINI_API_KEY` | `AIza...` | **必填**。到 [Google AI Studio](https://aistudio.google.com/apikey) 免費申請 |
 
 Gemini 免費層限制:**10 RPM / 250 次每日**。系統內建保護(超限自動退回純規則引擎,不會報錯白屏):

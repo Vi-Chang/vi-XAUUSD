@@ -14,7 +14,9 @@ logger = logging.getLogger(__name__)
 # 每百萬 token 價格(input, output)。免費層為 0;未知模型當 0
 # (免費層以「每日次數上限」保護;付費模型請把價格加進此表,費用斷路器才會生效)
 PRICING_PER_M: dict[str, tuple[float, float]] = {
-    "gemini-2.5-flash": (0.0, 0.0),        # 免費層
+    "gemini-3.5-flash": (0.0, 0.0),        # 免費層(新 Key 預設)
+    "gemini-flash-latest": (0.0, 0.0),     # 免費層(滾動別名)
+    "gemini-2.5-flash": (0.0, 0.0),        # 免費層(舊 Key)
     "gemini-2.0-flash": (0.0, 0.0),        # 免費層
     "gemini-2.5-pro": (1.25, 10.0),
     "gpt-4o-mini": (0.15, 0.6),

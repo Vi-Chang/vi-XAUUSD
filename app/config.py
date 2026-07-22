@@ -80,7 +80,8 @@ class Settings(BaseSettings):
     # ── LLM(V2 AI 分析層;供應商可切換,預設 Gemini 免費層)──
     llm_enabled: bool = True                    # 總開關;無 API Key 時自動不呼叫
     llm_provider: str = "gemini"                # gemini | openai_compatible
-    llm_model: str = "gemini-2.5-flash"
+    # 注意:gemini-2.5-flash 已對新申請的 Key 停供,新 Key 請用 gemini-3.5-flash
+    llm_model: str = "gemini-3.5-flash"
     gemini_api_key: str = ""                    # 模式 A:Gemini(Google AI Studio 免費申請)
     llm_base_url: str = ""                      # 模式 B:OpenAI 相容端點(OpenAI/Groq/DeepSeek…)
     llm_api_key: str = ""                       # 模式 B 的 Bearer key

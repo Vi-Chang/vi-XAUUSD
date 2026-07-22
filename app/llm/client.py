@@ -92,10 +92,15 @@ async def _generate_gemini(prompt: str, max_tokens: int) -> tuple[str, int, int]
     s = get_settings()
     url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
            f"{s.llm_model}:generateContent?key={s.gemini_api_key}")
+    gen_cfg: dict = {"maxOutputTokens": max_tokens,
+                     "responseMimeType": "application/json"}
+    if s.llm_model.startswith("gemini-"):
+        # 關閉思考(gemini-2.5+ 支援):思考 token 會吃輸出額度,
+        # 本系統的推理由確定性引擎完成,AI 只需整合輸出
+        gen_cfg["thinkingConfig"] = {"thinkingBudget": 0}
     body = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"maxOutputTokens": max_tokens,
-                             "responseMimeType": "application/json"},
+        "generationConfig": gen_cfg,
     }
     async with httpx.AsyncClient(timeout=float(s.llm_timeout_seconds)) as client:
         r = await client.post(url, json=body)
