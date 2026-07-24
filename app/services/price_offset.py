@@ -39,20 +39,21 @@ def _source_key(source: str) -> str:
 
 
 def active_source() -> str:
-    """當前分析使用的報價源(= 面板顯示的資料源)。"""
-    try:
-        from app.services.scheduler import state
-        latest = state.latest_result or {}
-        src = (latest.get("current_price") or {}).get("provider")
-        if src:
-            return src
-        if state.provider is not None:
-            return state.provider.name
-    except Exception:  # noqa: BLE001
-        pass
+    """校準對象 = 產生劇本價位的「K 棒/分析主力 provider」,而非即時報價顯示源。
+
+    劇本的進場/停損/停利都由主力 provider 的 K 棒(候選價位)推導;offset 必須
+    對齊該來源。若改用即時報價源(如 Capital.com 快速報價),會在切換報價源時
+    誤判「未校準」而觸發 NO-SIGNAL —— 這正是劇本價位莫名消失的成因。
+    """
     s = get_settings()
     if s.mock_data_mode:
         return "mock"
+    try:
+        from app.services.scheduler import state
+        if state.provider is not None:        # 分析主力 provider = K 棒來源
+            return state.provider.name
+    except Exception:  # noqa: BLE001
+        pass
     return s.primary_provider if s.primary_provider not in ("auto", "") else "twelve_data"
 
 

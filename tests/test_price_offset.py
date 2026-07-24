@@ -139,6 +139,25 @@ class TestSourceSwitchLog:
                    for r in caplog.records)
 
 
+class TestActiveSource:
+    def test_active_source_follows_analysis_provider_not_tick(self, monkeypatch):
+        """回歸:offset 對齊 K 棒/分析主力 provider,不跟即時報價顯示源跑。
+
+        情境:主力(K 棒)= twelve_data,即時報價顯示源 = capital_com。
+        active_source 必須回 twelve_data,否則切換快速報價源時會誤判未校準
+        → 劇本價位被 NO-SIGNAL 清空(使用者回報「多空劇本沒更新」的成因)。
+        """
+        from types import SimpleNamespace
+
+        import app.services.scheduler as sched
+        monkeypatch.setattr(sched.state, "provider",
+                            SimpleNamespace(name="twelve_data"))
+        monkeypatch.setattr(sched.state, "latest_result",
+                            {"current_price": {"provider": "capital_com"}})
+        monkeypatch.setattr(po.get_settings(), "mock_data_mode", False, raising=False)
+        assert po.active_source() == "twelve_data"
+
+
 class TestOffsetApi:
     def test_api_roundtrip_active_source(self):
         from fastapi.testclient import TestClient
