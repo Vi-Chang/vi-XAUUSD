@@ -248,6 +248,15 @@ class TestFreshness:
         assert out["decision"]["action"] == "WATCH"
         assert "暫無有效方案" in out["decision"]["reason"]
 
+    def test_render_low_rr_kept_not_stripped(self):
+        """R5 回歸:賺賠比不足但價位正確的 setup,渲染層只認 FATAL,
+        不得把 REJECT 當自相矛盾剝除價位(做空劇本消失的第二現場)。"""
+        low = _payload(entry=4037.0, sl=4027.0, tps=(4041.0,), rr=(0.4,))
+        out = annotate_freshness(low, current_mid=4037.5)   # 幾乎無偏離
+        sc = out["long_scenario"]
+        assert sc["status"] != "INVALID"
+        assert sc["entry_zone_id"] == "E" and sc["resolved_prices"]
+
 
 # ═══ TC-10 / TC-11 / TC-12 ═══
 

@@ -97,20 +97,20 @@ def annotate_freshness(result: dict, current_mid: float | None = None,
         entry, sl, tps = _scenario_prices(sc)
 
         # R5:渲染前再驗一次 Invariant(以顯示中的價位;含 TMGM offset 後數字)
+        # 只有 FATAL(方向次序矛盾/幻覺價位)才在渲染層剝價;REJECT(賺賠比不足)
+        # 是「沒有優勢就等待」的正常狀況,價位正確,維持顯示、不誤判為自相矛盾。
         if entry is not None or sl is not None or tps:
             from app.engines.setup_validator import has_fatal, validate_prices_detailed
             ref_price = current_mid or entry or 0.0
             detailed = validate_prices_detailed(direction, entry=entry, sl=sl, tps=tps,
                                                 current_price=ref_price)
-            if detailed:
-                reasons = [r["msg"] for r in detailed]
-                fatal = has_fatal(detailed)
+            if has_fatal(detailed):
+                reasons = [r["msg"] for r in detailed if r["severity"] == "FATAL"]
                 # FATAL 到達渲染層 = 上游已出錯 → ERROR log 附完整 setup(P1)
-                log_fn = logger.error if fatal else logger.warning
-                log_fn("SETUP_INVALID_AT_RENDER dir=%s fatal=%s reasons=%s setup=%s",
-                       direction, fatal, reasons, sc)
+                logger.error("SETUP_INVALID_AT_RENDER dir=%s reasons=%s setup=%s",
+                             direction, reasons, sc)
                 _strip_prices(sc, "INVALID", reasons)
-                sc["invalid_fatal"] = fatal
+                sc["invalid_fatal"] = True
                 if direction == dominant_dir:
                     dominant_bad_reason = "暫無有效方案:偵測到自相矛盾的價位組合,已攔截,等待重算。"
                 continue
