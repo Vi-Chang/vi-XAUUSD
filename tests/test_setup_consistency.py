@@ -106,6 +106,27 @@ class TestRuleEngineInvalidPath:
                 # 有完整價位就必須通過不變式(由 validator 保證)
                 assert sc.status in ("WATCH", "PREPARE")
 
+    def test_low_rr_kept_as_watch_not_invalid(self):
+        """回歸:賺賠比不足的做空(價位正確、次序對)不得判 INVALID/『自相矛盾』;
+        應保留價位、狀態壓為 WATCH(REJECT ≠ FATAL,沒有優勢就等待)。"""
+        from app.engines.key_levels import CandidateLevel
+        from app.engines.rule_engine import _build_scenario
+        price = 4032.0
+        levels = [
+            CandidateLevel("RES_ZONE_01", "RES_ZONE", 4039.0, 4041.0, "STRONG", ["t"]),
+            CandidateLevel("SWING_HIGH_15M_01", "SWING_HIGH_15M", 4048.0, 4048.0, "INFO", ["t"]),
+            CandidateLevel("SUP_ZONE_01", "SUP_ZONE", 4031.0, 4033.0, "STRONG", ["t"]),
+        ]
+        sc, rr = _build_scenario("SHORT", ["STRUCT:x", "LEVEL:y", "MOMO:z"],
+                                 price=price, levels=levels, atr15=3.0, structures={})
+        assert sc.status == "WATCH"                       # 不是 INVALID
+        assert sc.invalid_reasons == [] and sc.invalid_fatal is False
+        assert sc.entry_zone_id == "RES_ZONE_01"          # 價位完整保留
+        assert sc.stop_loss_id == "SWING_HIGH_15M_01"
+        assert sc.target_ids == ["SUP_ZONE_01"]
+        assert rr and rr[0] < 1.5                         # 確為低賺賠比情境
+        assert any("賺賠比不足" in c for c in sc.required_confirmations)
+
     def test_invalid_dominant_downgrades_decision(self, monkeypatch):
         """主方向 setup INVALID → 決策=暫無有效方案、證據分數歸零(TC-01 決策卡部分)。"""
         import app.engines.rule_engine as re_mod

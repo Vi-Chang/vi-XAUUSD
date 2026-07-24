@@ -225,25 +225,31 @@ def _build_scenario(direction: str, conditions: list[str], *, price: float,
     # ── BUGFIX R2:Invariant 驗證(進 UI/決策評分之前;防禦縱深)──
     detailed = validate_prices_detailed(direction, entry=entry_px, sl=stop_px,
                                         tps=tp_mids, current_price=price)
-    reasons = [r["msg"] for r in detailed]
     fatal = has_fatal(detailed)
     event_id = _latest_structure_event_id(direction, structures)
 
-    if reasons:
-        # 攔截器接到 FATAL = 上游產生端已出錯 → ERROR log 附完整 setup(P1)
+    # 只有 FATAL(方向次序矛盾/非正數/幻覺價位)才是「自相矛盾」→ 攔截並剝除價位。
+    if fatal:
+        fatal_reasons = [r["msg"] for r in detailed if r["severity"] == "FATAL"]
         log_invalid(direction, {
             "entry": entry_px, "sl": stop_px, "tps": tp_mids, "rr": rr,
             "price": price, "structure_event_id": event_id,
-        }, reasons, fatal=fatal)
+        }, fatal_reasons, fatal=True)
         scenario = Scenario(
             status="INVALID",
             setup=("偵測到自相矛盾的價位組合,已攔截;"
                    "等待下一次結構更新後重新計算"),
-            invalid_reasons=reasons,
-            invalid_fatal=fatal,
+            invalid_reasons=fatal_reasons,
+            invalid_fatal=True,
             structure_event_id=event_id,
         )
         return scenario, []
+
+    # REJECT(賺賠比未達下限)不是矛盾,是「沒有優勢就等待」的正常狀況:
+    # 保留正確價位供顯示、狀態壓為 WATCH(不可執行),原因交由決策層白話說明。
+    reject = [r["msg"] for r in detailed if r["severity"] == "REJECT"]
+    if reject:
+        status = "WATCH"
 
     scenario = Scenario(
         status=status,
@@ -254,7 +260,9 @@ def _build_scenario(direction: str, conditions: list[str], *, price: float,
              [f"等待 15M 已收線{'突破局部高點/形成 HL' if up else '跌破局部低點/形成 LH'}",
               "等待價格回到理想進場區(非追價位置)"])
             + (["結構停損點位於進場區錯誤一側,暫無法定位合法停損,等待結構更新"]
-               if stop_dropped else [])),
+               if stop_dropped else [])
+            + (["此處進場賺賠比不足(第一目標未達 1.5 倍),等待回到更有優勢的進場位置"]
+               if reject else [])),
         stop_loss_id=stop_ref.level_id if stop_ref else None,
         target_ids=[t.level_id for t in targets],
         risk_reward=rr,
@@ -325,9 +333,10 @@ def decide(*, quality: DataQualityReport, structures: dict[str, StructureReport]
                 + (10 if quality.status == "GOOD" else 0)
                 + (10 if not chase else 0))
 
-    # R/R 檢核(spec 十六:主要目標原則上 >= 2R,否則等待)
+    # R/R 檢核(spec 十六:第一目標須達下限 setup_min_rr1、主要目標原則上 >= 2R)
+    # 門檻與 setup_validator 一致,避免「validator 判不划算但決策仍 PREPARE」的矛盾。
     rr = long_rr if dominant == "LONG" else short_rr if dominant == "SHORT" else []
-    rr_ok = bool(rr) and (rr[0] >= 1.0) and (max(rr) >= 2.0)
+    rr_ok = bool(rr) and (rr[0] >= s.setup_min_rr1) and (max(rr) >= 2.0)
 
     # BUGFIX R2:主方向 setup 被攔截 → 決策卡「暫無有效方案」,證據分數不得沿用
     dominant_sc = long_sc if dominant == "LONG" else short_sc if dominant == "SHORT" else None
@@ -354,7 +363,8 @@ def decide(*, quality: DataQualityReport, structures: dict[str, StructureReport]
             grade = "A" if score >= 60 else "B"
             reason = (f"{d_zh}的條件湊齊了(含關鍵的順勢突破),賺賠比最高 {max(rr)} 倍、划算;"
                       f"等最後一個進場訊號出現就可以動手。")
-        elif sc.status == "PREPARE" and not rr_ok:
+        elif rr and not rr_ok:
+            # 方向對但賺賠比不划算(不論 setup 為 PREPARE 或已壓為 WATCH)
             action, grade = "WATCH", "C"
             worst = rr[0] if rr else 0
             reason = (f"{d_zh}方向對,但這裡進場賺賠比只有 {worst} 倍,"
