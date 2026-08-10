@@ -151,8 +151,114 @@ async def run_monitor(state) -> None:
 send_heartbeat = run_monitor
 
 
+def _age_minutes(ts: datetime | None) -> float | None:
+    if ts is None:
+        return None
+    return round((datetime.now(timezone.utc) - ts).total_seconds() / 60.0, 1)
+
+
+def _startup_grace_seconds() -> int:
+    """開機寬限:給各層第一次執行的緩衝(取 quote_l1 容忍值,至少 120s)。"""
+    return max(_critical_jobs().get("quote_l1", 300), 120)
+
+
+def liveness_payload(state) -> dict:
+    """Liveness:行程是否存活。外部 provider 暫時失敗不影響此判定。
+
+    不做任何昂貴外部呼叫;不暴露帳號/token/DB URL/完整例外。
+    """
+    started = getattr(state, "started_at", None)
+    now = datetime.now(timezone.utc)
+    return {
+        "status": "alive",
+        "started_at": started.isoformat() if started else None,
+        "uptime_seconds": (round((now - started).total_seconds()) if started else None),
+        "scheduler_started": bool(getattr(state, "scheduler_started", False)),
+    }
+
+
+def compute_readiness(state) -> dict:
+    """就緒判定(純本地狀態,不呼叫外部 API)。
+
+    - 休市:視為就緒(reason=market_closed),不把正常休市誤判成 stale failure。
+    - 開機寬限內尚無資料:warming_up。
+    - 資料落後超過門檻:data_stale。關鍵元件停擺:component_down。
+    - 排程停用(正式環境):scheduler_disabled。
+    """
+    from app.security import production_auth_misconfigured
+    s = get_settings()
+    now = datetime.now(timezone.utc)
+    started = getattr(state, "started_at", None)
+    open_market = market_is_open()
+    last_t, age_min = _last_15m_candle()
+    lag = s.data_lag_warn_minutes
+    in_grace = (started is not None
+                and (now - started).total_seconds() <= _startup_grace_seconds())
+
+    # 關鍵組態問題優先(即使休市也不得被 market_closed 掩蓋):
+    auth_bad, auth_reason = production_auth_misconfigured()
+    if auth_bad:
+        ready, reason = False, auth_reason               # admin_token_missing/_too_short/flag 誤設
+    elif s.disable_scheduler and not s.api_only_mode:
+        # 排程被關但非刻意 API-only → 誤設,任何時段都判 not-ready
+        ready, reason = False, "scheduler_disabled"
+    elif not open_market:
+        # 休市:視為就緒(正常),但區分「刻意 API-only」
+        ready, reason = True, ("api_only" if s.api_only_mode else "market_closed")
+    elif s.api_only_mode:
+        ready, reason = True, "api_only"
+    elif not getattr(state, "scheduler_started", False):
+        ready, reason = False, "scheduler_not_started"
+    elif last_t is None:
+        ready, reason = (False, "warming_up") if in_grace else (False, "no_data")
+    elif age_min is not None and age_min > lag:
+        ready, reason = False, "data_stale"
+    elif check_liveness(state.last_job_run, started):
+        ready, reason = False, "component_down"
+    else:
+        ready, reason = True, "ok"
+
+    return {
+        "ready": ready,
+        "reason": reason,
+        "market_open": open_market,
+        "last_15m_candle": last_t.isoformat() if last_t else None,
+        "data_age_minutes": age_min,
+        "data_lag_threshold_minutes": lag,
+        "last_quote_ok_at": (state.last_quote_ok_at.isoformat()
+                             if getattr(state, "last_quote_ok_at", None) else None),
+        "quote_age_minutes": _age_minutes(getattr(state, "last_quote_ok_at", None)),
+        "last_full_analysis": (state.last_full_analysis.isoformat()
+                               if getattr(state, "last_full_analysis", None) else None),
+        "analysis_age_minutes": _age_minutes(getattr(state, "last_full_analysis", None)),
+        "scheduler_started": bool(getattr(state, "scheduler_started", False)),
+    }
+
+
+# 對匿名訪客最小化:auth 組態原因不細分(missing/too_short/flag),一律回 configuration_error。
+# 詳細原因只寫入啟動時的 CRITICAL log(不對外揭露 token 缺失/過短/旗標細節)。
+_SENSITIVE_READINESS_REASONS = frozenset({
+    "admin_token_missing", "admin_token_too_short",
+    "allow_unauthenticated_mutations_set_in_production",
+})
+
+
+def _public_reason(reason: str) -> str:
+    return "configuration_error" if reason in _SENSITIVE_READINESS_REASONS else reason
+
+
+def readiness_payload(state) -> dict:
+    """公開 /health/ready:狀態 + 一般化原因(不洩露 auth 組態細節)。"""
+    r = compute_readiness(state)
+    r["reason"] = _public_reason(r["reason"])
+    return r
+
+
 def health_payload(state) -> dict:
-    """GET /health 回應(供 UptimeRobot 等外部監控)。"""
+    """GET /health 綜合監控回應(保留原有欄位 + readiness/監控摘要)。
+
+    僅暴露監控所需的非敏感資訊:不含帳號、token、DB URL、內部檔案路徑或完整例外。
+    """
     dead = (check_liveness(state.last_job_run, getattr(state, "started_at", None))
             if market_is_open() else [])
     last_t, age_min = _last_15m_candle()
@@ -165,10 +271,18 @@ def health_payload(state) -> dict:
         td_used = get_shared_quota().used_today
     except Exception:  # noqa: BLE001
         td_used = None
+    from app.llm import health as llm_health
+    readiness = compute_readiness(state)
+    started = getattr(state, "started_at", None)
     return {
         "status": "degraded" if (dead or data_lagging) else "ok",
+        "ready": readiness["ready"],
+        "readiness_reason": _public_reason(readiness["reason"]),
         "market_open": market_is_open(),
         "provider": state.provider.name if state.provider else None,
+        "provider_consecutive_failures": getattr(state, "l1_fail_count", 0),
+        "started_at": started.isoformat() if started else None,
+        "scheduler_started": bool(getattr(state, "scheduler_started", False)),
         "tiered": {
             "fast_quote_provider": (state.fast_provider.name
                                     if getattr(state, "fast_provider", None) else None),
@@ -176,7 +290,13 @@ def health_payload(state) -> dict:
                            and not s.mock_data_mode,
             "last_full_analysis": (state.last_full_analysis.isoformat()
                                    if getattr(state, "last_full_analysis", None) else None),
+            "last_full_analysis_age_minutes": _age_minutes(
+                getattr(state, "last_full_analysis", None)),
+            "last_quote_ok_at": (state.last_quote_ok_at.isoformat()
+                                 if getattr(state, "last_quote_ok_at", None) else None),
+            "quote_age_minutes": _age_minutes(getattr(state, "last_quote_ok_at", None)),
         },
+        "llm": llm_health.snapshot(),
         "api_usage_today": {**snapshot(), "twelve_data_quota": td_used,
                             "twelve_data_soft_limit": s.twelve_data_soft_limit},
         "dead_components": dead,

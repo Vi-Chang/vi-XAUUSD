@@ -37,7 +37,9 @@ class AppState:
         self.last_decision_action: str | None = None
         self.last_daily_date = None
         self.started_at: datetime | None = None
-        self.ws_clients: set = set()
+        # WebSocket 分流:公開頻道只收公開投影;私人頻道須有效 session,收完整 payload。
+        self.ws_public: set = set()
+        self.ws_private: dict = {}     # ws -> session_id(broadcast 時檢查過期)
         # 三層架構狀態
         self.quote_cache = QuoteCache()
         self.event_cooldown = EventCooldown()
@@ -45,6 +47,9 @@ class AppState:
         self.l1_fail_count = 0
         self.l1_alerted = False
         self.td_degraded_alerted = False
+        # ── 監控用(readiness/health)──
+        self.last_quote_ok_at: datetime | None = None   # 最後一次成功取得報價
+        self.scheduler_started = False                  # 排程是否已啟動
 
     def mark(self, job: str) -> None:
         self.last_job_run[job] = datetime.now(timezone.utc)
@@ -53,17 +58,48 @@ class AppState:
 state = AppState()
 
 
-async def broadcast(payload: dict) -> None:
-    """向所有 WebSocket 客戶端推送 JSON 訊息(壞連線自動清除)。"""
+def _dump(payload: dict) -> str:
     import json
-    msg = json.dumps(payload, ensure_ascii=False, default=str)
+    return json.dumps(payload, ensure_ascii=False, default=str)
+
+
+async def broadcast_public(payload: dict) -> None:
+    """推送給公開頻道(壞連線自動清除)。"""
+    msg = _dump(payload)
     dead = set()
-    for ws in state.ws_clients:
+    for ws in state.ws_public:
         try:
             await ws.send_text(msg)
         except Exception:  # noqa: BLE001
             dead.add(ws)
-    state.ws_clients -= dead
+    state.ws_public -= dead
+
+
+async def broadcast_private(payload: dict) -> None:
+    """推送給私人頻道;送出前檢查 session 是否仍有效,過期則關閉並移除。"""
+    from app.security import session_valid
+    msg = _dump(payload)
+    dead = []
+    for ws, sid in list(state.ws_private.items()):
+        if not session_valid(sid):
+            try:
+                await ws.close(code=1008)   # session 過期 → 不再傳私人資料
+            except Exception:  # noqa: BLE001
+                pass
+            dead.append(ws)
+            continue
+        try:
+            await ws.send_text(msg)
+        except Exception:  # noqa: BLE001
+            dead.append(ws)
+    for ws in dead:
+        state.ws_private.pop(ws, None)
+
+
+async def broadcast_all(payload: dict) -> None:
+    """公開安全訊息(tick、candle_closed)→ 公開與私人頻道皆送。"""
+    await broadcast_public(payload)
+    await broadcast_private(payload)
 
 
 # ═══ 第 1 層:報價層 ═══════════════════════════════════════
@@ -94,6 +130,7 @@ async def job_quote_l1() -> None:
         state.quote_cache.add(tick)
         state.l1_fail_count = 0
         state.l1_alerted = False
+        state.last_quote_ok_at = datetime.now(timezone.utc)
 
         from app.db.models import LivePrice
         from app.db.session import db_session
@@ -103,10 +140,10 @@ async def job_quote_l1() -> None:
                              mid=tick.mid, spread=tick.spread, provider=tick.provider,
                              quote_time=tick.quote_time, received_at=now))
         from app.utils.formatting import fmt_price
-        await broadcast({"type": "tick", "bid": fmt_price(tick.bid),
-                         "ask": fmt_price(tick.ask), "mid": fmt_price(tick.mid),
-                         "spread": fmt_price(tick.spread),
-                         "time": int(tick.quote_time.timestamp())})
+        await broadcast_all({"type": "tick", "bid": fmt_price(tick.bid),
+                             "ask": fmt_price(tick.ask), "mid": fmt_price(tick.mid),
+                             "spread": fmt_price(tick.spread),
+                             "time": int(tick.quote_time.timestamp())})
     except Exception as exc:  # noqa: BLE001 — 靜默重試;連續失敗 N 次才警告一次
         state.l1_fail_count += 1
         logger.warning("quote_l1 failed (%d consecutive): %s", state.l1_fail_count, exc)
@@ -192,10 +229,11 @@ async def run_full_analysis(*, trigger: str, reason_zh: str | None) -> None:
                 f"Twelve Data 今日用量已達 {s.twelve_data_soft_limit} 次,"
                 f"完整分析自動降級:改用既有快取 K 棒,不再打行情 API", severity="WARN")
 
-        from app.services.analysis_service import run_analysis
+        from app.services.single_flight import run_analysis_shared
         tick = state.quote_cache.fresh_tick(max_age_seconds=l1_interval_seconds() * 3)
-        result = await run_analysis(state.provider, trigger=trigger,
-                                    tick=tick, cached_only=degraded)
+        # single-flight:與手動 API / 首載共用同一道鎖,並發只實際跑一次
+        result = await run_analysis_shared(state.provider, trigger=trigger,
+                                           tick=tick, cached_only=degraded)
         state.latest_result = result.model_dump()
         state.last_full_analysis = datetime.now(timezone.utc)
 
@@ -229,12 +267,15 @@ async def run_full_analysis(*, trigger: str, reason_zh: str | None) -> None:
 
         from app.services.freshness import annotate_freshness
         from app.services.price_offset import apply_offset_to_result
+        from app.services.public_view import public_analysis
         fresh_tick = state.quote_cache.fresh_tick(max_age_seconds=600)
-        await broadcast({"type": "candle_closed", "timeframe": "15M"})
-        await broadcast({"type": "analysis",
-                         "data": annotate_freshness(
-                             apply_offset_to_result(state.latest_result),
-                             current_mid=fresh_tick.mid if fresh_tick else None)})
+        cm = fresh_tick.mid if fresh_tick else None
+        await broadcast_all({"type": "candle_closed", "timeframe": "15M"})
+        # 公開頻道:公開投影(不含個人 offset/持倉/老師);私人頻道:完整 payload
+        full = annotate_freshness(apply_offset_to_result(state.latest_result), current_mid=cm)
+        pub = public_analysis(annotate_freshness(state.latest_result, current_mid=cm))
+        await broadcast_public({"type": "analysis", "data": pub})
+        await broadcast_private({"type": "analysis", "data": full})
     except Exception as exc:  # noqa: BLE001
         logger.exception("full_analysis failed: %s", exc)
         if state.notifier:

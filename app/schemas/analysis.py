@@ -218,6 +218,8 @@ class Meta(BaseModel):
 class AnalysisResult(BaseModel):
     """spec 二十二之完整固定輸出。"""
     version: int = 0                # BUGFIX R6:遞增版本號(=analysis_runs.id)
+    # 隱私邊界戳記:標記本結果由 position-free / public-safe pipeline 產生(0 = 舊資料,不可公開自由文字)
+    privacy_boundary_version: int = 0
     snapshot_ts: str = ""           # 本次分析使用的價格數據時間戳
     timestamp_utc: str = ""
     timestamp_taipei: str = ""
@@ -237,6 +239,8 @@ class AnalysisResult(BaseModel):
     mentor_comparison: MentorComparison = MentorComparison()
     trading_coach: TradingCoachView = TradingCoachView()
     decision: Decision = Decision()
+    # 市場層決策(未被「持倉管理 MANAGE 覆寫」污染);公開投影以此為 decision,避免洩露持倉。
+    market_decision: Decision = Decision()
     ai_strategy: AiStrategy = Field(default_factory=AiStrategy)   # V2 AI 分析層
     offset_info: OffsetInfo = OffsetInfo()
     meta: Meta = Meta()

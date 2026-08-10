@@ -18,6 +18,13 @@ class Settings(BaseSettings):
         """.env 中留空的選填數值欄位(如 MT5_LOGIN=)視為未設定。"""
         return None if v == "" else v
 
+    @field_validator("app_env", mode="before")
+    @classmethod
+    def _normalize_app_env(cls, v):
+        """未知/空值一律視為 production(安全預設,fail-closed)。"""
+        val = str(v or "").strip().lower()
+        return val if val in ("development", "test", "production") else "production"
+
     # ── 執行模式 ──
     mock_data_mode: bool = True
     disable_scheduler: bool = False
@@ -97,6 +104,32 @@ class Settings(BaseSettings):
     # ── 硬性安全開關 ──
     auto_trading_enabled: bool = False          # 永遠預設 false(spec 一)
     tradingview_webhook_enabled: bool = False   # Webhook 為付費選配(spec 二之4)
+
+    # ── 執行環境(決定 fail-open/closed;不靠 mock/hostname/provider 推測)──
+    # development|test|production;未知/空值 → production(安全預設)。
+    app_env: str = "production"
+    # 顯式逃生門:僅在 development/test 具意義。**production 一律忽略此旗標且不放行**;
+    # 若 production 誤設為 true,視為組態錯誤(startup + readiness 報錯),寫入仍拒絕未授權。
+    allow_unauthenticated_mutations: bool = False
+    # production 下 ADMIN_TOKEN 最低長度(不足視為弱憑證,readiness 失敗)。建議 ≥32。
+    min_admin_token_length: int = 32
+    # API-only 模式:刻意關閉排程(例如純手動觸發部署)。readiness 據此區分「刻意」與「誤設」。
+    api_only_mode: bool = False
+
+    # ── 管理權限 / 存取控制(Phase 1 安全性)──
+    # 保護會改狀態或產生成本的寫入端點。fail-closed:
+    #   token 已設 → 一律強制;token 未設 → 僅 development/test(或顯式旗標)放行,production 拒絕。
+    admin_token: str = ""                       # 管理 token(走環境變數,禁止硬編碼)
+    admin_session_ttl_minutes: int = 720        # 瀏覽器登入 session 有效時間(12h)
+    admin_session_cookie: str = "xau_admin"     # session cookie 名稱
+    max_admin_sessions: int = 200               # session 上限(防記憶體 DoS,超過淘汰最舊)
+    # 登入端點暴力破解保護:每個時間窗最多嘗試次數
+    admin_login_max_attempts: int = 5
+    admin_login_window_seconds: int = 60
+    # /api/analysis/run 節流:同一時間窗內只受理一次手動觸發(防濫用/防重跑)
+    analysis_run_cooldown_seconds: int = 20
+    # 完整分析 single-flight 等鎖逾時(秒):等待進行中分析的最長時間,逾時回 503
+    analysis_lock_timeout_seconds: int = 120
 
     # ── 資料品質 ──
     live_poll_seconds: int = 15                 # 即時價輪詢間隔(provider 可強制放大)

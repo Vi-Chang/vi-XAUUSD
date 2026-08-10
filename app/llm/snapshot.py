@@ -51,7 +51,7 @@ def build_snapshot(*, price: float, atr15: float, state: str, quality_status: st
     fvg_rows = [{"id": z.fvg_id, "tf": z.timeframe, "d": z.direction,
                  "lo": round(z.price_low, 2), "hi": round(z.price_high, 2)} for z in fvgs]
 
-    return {
+    snap = {
         "sym": "XAUUSD",
         "price": round(price, 2),
         "atr15": round(atr15, 2),
@@ -67,10 +67,14 @@ def build_snapshot(*, price: float, atr15: float, state: str, quality_status: st
                  "bull_ev": bias.bull_evidence[:3], "bear_ev": bias.bear_evidence[:3],
                  "chase": bias.chase_flags},
         "cross": cross,
-        "position": position or {"has": False},
         "gates": {"no_signal": bool(no_signal), "event_lockout": bool(event_lockout),
                   "quality": quality_status},
     }
+    # 隱私邊界:AI 為公開市場分析,不餵入個人持倉。只有明確提供 position 時才納入
+    # (目前一律 None → 快照完全不含 position/account/持倉欄位)。
+    if position:
+        snap["position"] = position
+    return snap
 
 
 def fingerprint_of(snapshot: dict) -> str:

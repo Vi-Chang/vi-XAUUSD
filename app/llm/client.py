@@ -197,13 +197,16 @@ async def call_json(*, system: str, user_payload: dict, schema: dict,
     await _acquire_slot()
 
     total_cost = 0.0
+    from app.llm import health
     last_exc: Exception | None = None
     for attempt in range(1 + len(_BACKOFF_SECONDS)):
         try:
             text, in_tok, out_tok = await _generate(prompt, max_tokens)
             total_cost += record_usage(s.llm_model, in_tok, out_tok,
                                        provider=s.llm_provider)
-            return _parse_json(text), total_cost
+            parsed = _parse_json(text)
+            health.record_success()
+            return parsed, total_cost
         except (LlmRateLimitError, httpx.HTTPError, json.JSONDecodeError) as exc:
             # JSONDecodeError = 回應非合法 JSON(常見於截斷/圍欄),重生成一次通常可解
             last_exc = exc
@@ -212,6 +215,7 @@ async def call_json(*, system: str, user_payload: dict, schema: dict,
                 logger.warning("LLM call failed (attempt %d: %s), retrying in %.0fs",
                                attempt + 1, exc, delay)
                 await asyncio.sleep(delay)
+    health.record_error(last_exc or RuntimeError("unknown"))
     if isinstance(last_exc, LlmRateLimitError):
         raise last_exc
     raise LlmRateLimitError("AI 服務暫時無法使用,請稍後再試") from last_exc

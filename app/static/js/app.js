@@ -4,6 +4,11 @@
  */
 "use strict";
 
+// 共用 HTML escaping(防 XSS,單一來源):
+// - h`` 預設跳脫每個 ${},回傳 SafeHtml;巢狀 h`` 片段原樣放行(不需 bypass)。
+// - joinSafe(arr) 合成片段陣列;trusted() 僅供程式碼內固定 HTML 字面值。
+const { esc, h, joinSafe, trusted } = window.XSS;
+
 const TF_SEC = { "15M": 900, "1H": 3600, "4H": 14400, "1D": 86400 };
 const C = {
   bull: "#26A69A", bear: "#EF5350", info: "#58A6FF",
@@ -17,7 +22,12 @@ const S = {
   zonePrims: [], priceLines: [], eventPrims: [],
   analysis: null, events: [],
   prevBid: null, countdownTarget: null,
+  authed: false, privWs: null,   // 管理登入狀態 + 私人 WebSocket
 };
+
+// 私人面板(登入後才載入;登出/過期時清空 DOM)
+const PRIVATE_PANELS = ["position-list", "mentor-body", "mentor-history",
+                        "coach-body", "compare-body"];
 
 const $ = (id) => document.getElementById(id);
 const unskel = (el) => el && el.classList.remove("skel");
@@ -290,6 +300,15 @@ function updateFreshnessUI() {
 setInterval(updateFreshnessUI, 30000);
 
 function applyAnalysis(a) {
+  // 尚無可公開分析(例如隱私邊界版本升級後,等待下一次新版分析)→ 友善等待訊息。
+  // 不顯示內部版本或安全細節。
+  if (!a || a.available === false) {
+    const badge = $("decision-badge");
+    if (badge) { unskel(badge); badge.textContent = "分析更新中"; badge.className = "decision-badge"; }
+    const reason = $("decision-reason");
+    if (reason) { unskel(reason); reason.textContent = "分析格式已更新,等待下一次排程產生最新市場分析。"; }
+    return;
+  }
   S.analysis = a;
   S.analysisMeta = {
     version: a.version || 0,
@@ -380,21 +399,21 @@ const AI_BIAS_ZH = { BULLISH: "偏多", BEARISH: "偏空", NEUTRAL: "中性" };
 function aiZone(resolved, id) {
   if (!id || !resolved || !resolved[id]) return "–";
   const z = resolved[id];
-  if (z.price_low == null) return id;
+  if (z.price_low == null) return h`${id}`;
   const lo = Number(z.price_low).toFixed(2), hi = Number(z.price_high).toFixed(2);
-  return lo === hi ? `${lo} <span class="ai-id">${id}</span>`
-                   : `${lo} – ${hi} <span class="ai-id">${id}</span>`;
+  return lo === hi ? h`${lo} <span class="ai-id">${id}</span>`
+                   : h`${lo} – ${hi} <span class="ai-id">${id}</span>`;
 }
 
 function renderAiStrategy(ai) {
   const box = $("ai-body");
   if (!box) return;
   if (!ai || (!ai.available && !ai.invalid)) {
-    box.innerHTML = `<div class="empty">AI 策略未產生:${(ai && ai.unavailable_reason) || "尚未啟用"}</div>`;
+    box.innerHTML = h`<div class="empty">AI 策略未產生:${(ai && ai.unavailable_reason) || "尚未啟用"}</div>`;
     return;
   }
   if (ai.invalid) {
-    box.innerHTML = `<div class="ai-gate bad">⛔ ${ai.unavailable_reason}</div>`;
+    box.innerHTML = h`<div class="ai-gate bad">⛔ ${ai.unavailable_reason}</div>`;
     return;
   }
   const act = ai.action || {};
@@ -406,29 +425,32 @@ function renderAiStrategy(ai) {
 
   const analysts = ai.analysts || {};
   const aNames = { macro: "巨集面", technical: "技術面", sentiment: "情緒面" };
-  const analystHtml = Object.entries(aNames).map(([k, name]) => {
+  const analystHtml = joinSafe(Object.entries(aNames).map(([k, name]) => {
     const v = analysts[k];
     if (!v) return "";
-    return `<div class="ai-analyst">
-      <div class="ai-analyst-head">${name} <span class="chip ${v.bias === "BULLISH" ? "good" : v.bias === "BEARISH" ? "bad" : "info"}">${AI_BIAS_ZH[v.bias] || v.bias} ${v.strength}</span></div>
+    const biasCls = v.bias === "BULLISH" ? "good" : v.bias === "BEARISH" ? "bad" : "info";
+    return h`<div class="ai-analyst">
+      <div class="ai-analyst-head">${name} <span class="chip ${biasCls}">${AI_BIAS_ZH[v.bias] || v.bias} ${v.strength}</span></div>
       <div class="ai-analyst-line">${v.one_line || ""}</div>
     </div>`;
-  }).join("");
+  }));
 
-  const scenarios = (ai.scenarios || []).map((s) => `
+  const scenarios = joinSafe((ai.scenarios || []).map((s) => h`
     <div class="ai-scenario">
       <div class="ai-scenario-head"><b>${s.name}</b><span class="num">${s.probability_pct}%</span></div>
       <div class="ai-kv"><span>觸發</span><span>${s.trigger}</span></div>
       <div class="ai-kv"><span>應對</span><span>${s.plan}</span></div>
-    </div>`).join("");
+    </div>`));
+  const factors = joinSafe((conf.factors || []).map((f) => h`<li>${f}</li>`));
+  const broker = (S.analysis && S.analysis.offset_info && S.analysis.offset_info.trading_broker) || "券商";
 
-  box.innerHTML = `
-    ${ai.gate_note ? `<div class="ai-gate warn">🔒 ${ai.gate_note}</div>` : ""}
+  box.innerHTML = h`
+    ${ai.gate_note ? h`<div class="ai-gate warn">🔒 ${ai.gate_note}</div>` : ""}
     <div class="ai-head">
       <span class="decision-badge ${cls}">${AI_ACTION_ZH[act.type] || act.type}</span>
       <span class="chip info">信心 ${conf.score ?? "–"}/100</span>
       <span class="chip">${ai.market_structure ? ai.market_structure.label : ""}</span>
-      ${ai.cache_hit ? '<span class="chip">快取</span>' : ""}
+      ${ai.cache_hit ? trusted('<span class="chip">快取</span>') : ""}
       <span class="ai-meta num">${ai.model || ""}・$${(ai.cost_usd || 0).toFixed(3)}</span>
     </div>
     <div class="ai-oneliner">${ai.one_liner || ""}</div>
@@ -439,15 +461,15 @@ function renderAiStrategy(ai) {
         <p>${ai.market_structure ? ai.market_structure.reason : ""}</p>
 
         <div class="ai-sec-title">多空評估(主觀機率,非歷史勝率)</div>
-        <div class="bias-bar"><div class="bias-bull-fill" style="width:${wr.long_pct || 0}%"></div>
-          <div class="bias-bear-fill" style="width:${wr.short_pct || 0}%"></div></div>
+        <div class="bias-bar"><div class="bias-bull-fill" style="width:${(wr.long_pct || 0) + "%"}"></div>
+          <div class="bias-bear-fill" style="width:${(wr.short_pct || 0) + "%"}"></div></div>
         <div class="ai-kv"><span>多方 ${wr.long_pct ?? "–"}%</span><span>${wr.short_pct ?? "–"}% 空方</span></div>
 
         <div class="ai-sec-title">行動</div>
-        ${act.type === "Wait" && act.wait_condition ? `<div class="ai-kv"><span>等什麼</span><span>${act.wait_condition}</span></div>` : ""}
+        ${act.type === "Wait" && act.wait_condition ? h`<div class="ai-kv"><span>等什麼</span><span>${act.wait_condition}</span></div>` : ""}
         <div class="ai-kv"><span>下一步觸發</span><span>${act.next_trigger || ""}</span></div>
 
-        <div class="ai-sec-title">交易方案(${(S.analysis && S.analysis.offset_info && S.analysis.offset_info.trading_broker) || "券商"}掛單價)</div>
+        <div class="ai-sec-title">交易方案(${broker}掛單價)</div>
         <div class="ai-kv"><span>進場</span><span class="num">${aiZone(res, tp.entry_id)}</span></div>
         <div class="ai-kv"><span>停損</span><span class="num">${aiZone(res, tp.stop_loss_id)}</span></div>
         <div class="ai-kv"><span>TP1</span><span class="num">${aiZone(res, tp.tp1_id)}</span></div>
@@ -463,7 +485,7 @@ function renderAiStrategy(ai) {
         <div class="ai-sec-title">風險提醒</div>
         <p class="ai-risk">${ai.risk_warning || ""}</p>
         <div class="ai-sec-title">信心因素</div>
-        <ul class="ai-factors">${(conf.factors || []).map((f) => `<li>${f}</li>`).join("")}</ul>
+        <ul class="ai-factors">${factors}</ul>
         <div class="ai-sec-title">三位分析師</div>
         ${analystHtml}
       </div>
@@ -512,7 +534,7 @@ function renderBias(b) {
   const fill = (listId, countId, items) => {
     $(countId).textContent = items.length;
     $(listId).innerHTML = items.length
-      ? items.map((x) => `<li>${strip(x)}</li>`).join("")
+      ? items.map((x) => h`<li>${strip(x)}</li>`).join("")
       : "<li>目前無已成立條件</li>";
   };
   fill("bias-bull-list", "bias-bull-count", b.bull_evidence || []);
@@ -526,8 +548,11 @@ function renderBias(b) {
     flagBox.className = "bias-flags";
     $("bias-disclaimer").before(flagBox);
   }
-  flagBox.innerHTML = flags.map((f) =>
-    `<span class="chip warn" title="${f.split(":").slice(1).join(":")}">${MSG.chase[f.split(":")[0]] || f.split(":")[0]}</span>`).join("");
+  flagBox.innerHTML = flags.map((f) => {
+    const key = f.split(":")[0];
+    const title = f.split(":").slice(1).join(":");
+    return h`<span class="chip warn" title="${title}">${MSG.chase[key] || key}</span>`;
+  }).join("");
 }
 
 function renderScenario(el, sc, title, offset) {
@@ -540,10 +565,10 @@ function renderScenario(el, sc, title, offset) {
     const reasons = (sc.invalid_reasons || []);
     const shown = (fatal ? reasons.filter((r) => !r.startsWith("rr1")) : reasons)
       .slice(0, 3).join(";") || "偵測到自相矛盾的價位組合";
-    el.innerHTML = `
+    el.innerHTML = h`
       <div class="sc-head"><span class="sc-dir">${title}</span>
         <span class="sc-status INVALIDATED">${fatal ? "計算錯誤" : "條件不足"}</span>
-        ${createdAge ? `<span class="sc-meta-age">${createdAge}</span>` : ""}</div>
+        ${createdAge ? h`<span class="sc-meta-age">${createdAge}</span>` : ""}</div>
       <div class="${fatal ? "sc-invalid-fatal" : "sc-invalid"}">
         ${fatal ? "⛔ 停損計算錯誤,已攔截(系統將自動重算)" : "⚠️ 條件不足,等待更好的機會"}<br>
         <small>${shown}</small></div>`;
@@ -551,30 +576,29 @@ function renderScenario(el, sc, title, offset) {
   }
   const rp = sc.resolved_prices || {};
   const staleTag = sc.stale
-    ? `<span class="sc-stale-tag" title="${sc.stale_reason || ""}">已過時,等待重算</span>` : "";
-  const tag = offset ? `<span class="tmgm-tag">TMGM 校正 ${offset > 0 ? "+" : ""}${offset}</span>` : "";
+    ? h`<span class="sc-stale-tag" title="${sc.stale_reason || ""}">已過時,等待重算</span>` : "";
+  const tag = offset ? h`<span class="tmgm-tag">TMGM 校正 ${offset > 0 ? "+" : ""}${offset}</span>` : "";
   const lv = (id) => {
     const z = rp[id];
     return z ? `${fmt(z.price_low)} – ${fmt(z.price_high)}` : "–";
   };
-  const rrPills = (sc.risk_reward || []).map((r) => `<span class="rr-pill">賺賠比 ${r} 倍</span>`).join("");
-  const confirms = (sc.required_confirmations || [])
-    .map((c) => `<li>${c}</li>`).join("");
-  el.innerHTML = `
+  const rrList = (sc.risk_reward || []).map((r) => h`<span class="rr-pill">賺賠比 ${r} 倍</span>`);
+  const confirmList = (sc.required_confirmations || []).map((c) => h`<li>${c}</li>`);
+  const targets = (sc.target_ids || []).map((t) => lv(t)).filter((x) => x !== "–").join(" / ") || "–";
+  el.innerHTML = h`
     <div class="sc-head"><span class="sc-dir">${title}</span>
       <span class="sc-status ${sc.status}">${SC_STATUS_ZH[sc.status] || sc.status}</span>${staleTag}${tag}
-      ${createdAge ? `<span class="sc-meta-age">建立於 ${createdAge}</span>` : ""}</div>
+      ${createdAge ? h`<span class="sc-meta-age">建立於 ${createdAge}</span>` : ""}</div>
     <div class="${sc.stale ? "sc-body-stale" : ""}">
     <div class="sc-levels">
       <div class="kv"><span>進場區</span><span class="num">${lv(sc.entry_zone_id)}</span></div>
       <div class="kv"><span>賠錢出場價</span><span class="num">${lv(sc.stop_loss_id)}</span></div>
-      <div class="kv"><span>目標價</span><span class="num">${
-        (sc.target_ids || []).map((t) => lv(t)).filter((x) => x !== "–").join(" / ") || "–"}</span></div>
+      <div class="kv"><span>目標價</span><span class="num">${targets}</span></div>
     </div>
-    ${(rrPills && !sc.stale) ? `<div class="sc-rr">${rrPills}</div>` : ""}
+    ${(rrList.length && !sc.stale) ? h`<div class="sc-rr">${joinSafe(rrList)}</div>` : ""}
     </div>
-    ${sc.setup ? `<div class="sc-confirm">${sc.setup}</div>` : ""}
-    ${confirms ? `<div class="sc-confirm">還要等這些條件:<ul>${confirms}</ul></div>` : ""}`;
+    ${sc.setup ? h`<div class="sc-confirm">${sc.setup}</div>` : ""}
+    ${confirmList.length ? h`<div class="sc-confirm">還要等這些條件:<ul>${joinSafe(confirmList)}</ul></div>` : ""}`;
 }
 
 /* ═══ TMGM 價格校正(Price Offset)═══ */
@@ -658,25 +682,26 @@ const accountName = (id) => {
 
 async function loadAccounts() {
   try {
-    S.accounts = await (await fetch("/api/accounts")).json();
+    S.accounts = (await getPrivate("/api/accounts", null)) || [];
     const sel = $("pf-account");
     sel.innerHTML = S.accounts.map((a) =>
-      `<option value="${a.id}"${a.strategy_source === "SELF" ? " selected" : ""}>${a.name}</option>`).join("");
+      h`<option value="${a.id}"${a.strategy_source === "SELF" ? trusted(" selected") : ""}>${a.name}</option>`).join("");
   } catch (e) { console.warn("accounts load failed", e); }
 }
 
 async function loadComparison() {
   const body = $("compare-body");
   try {
-    const data = await (await fetch("/api/accounts/comparison")).json();
+    const data = await getPrivate("/api/accounts/comparison", "compare-body");
+    if (data === null) return;
     const accs = data.accounts || [];
     if (!accs.length) {
       body.innerHTML = '<div class="empty">尚無帳戶。</div>';
       return;
     }
     const f = (v, suffix = "") => (v == null ? "–" : `${v}${suffix}`);
-    const pnlCell = (v) => v == null ? "–"
-      : `<span class="${v >= 0 ? "cmp-pos" : "cmp-neg"}">${v >= 0 ? "+" : ""}${v}</span>`;
+    const pnlCell = (v) => v == null ? trusted("–")
+      : h`<span class="${v >= 0 ? "cmp-pos" : "cmp-neg"}">${v >= 0 ? "+" : ""}${v}</span>`;
     const rows = [
       ["已平倉筆數", (s) => f(s.total_trades)],
       ["勝 / 敗", (s) => `${s.wins} / ${s.losses}`],
@@ -688,13 +713,16 @@ async function loadComparison() {
       ["總損益(USD)", (s) => pnlCell(s.total_pnl_usd)],
       ["行為標籤數(紀律)", (s) => f(s.behavior_flags)],
     ];
-    body.innerHTML = `
+    const heads = joinSafe(accs.map((a) =>
+      h`<th>${a.name}<div class="cmp-src">${a.strategy_source}</div></th>`));
+    const bodyRows = joinSafe(rows.map(([label, fn]) =>
+      h`<tr><td>${label}</td>${joinSafe(accs.map((a) =>
+        h`<td class="num">${fn(a.stats)}</td>`))}</tr>`));
+    body.innerHTML = h`
       <table class="hist-table cmp-table"><thead><tr>
-        <th>指標</th>${accs.map((a) =>
-          `<th>${a.name}<div class="cmp-src">${a.strategy_source}</div></th>`).join("")}
+        <th>指標</th>${heads}
       </tr></thead><tbody>
-        ${rows.map(([label, fn]) => `<tr><td>${label}</td>${
-          accs.map((a) => `<td class="num">${fn(a.stats)}</td>`).join("")}</tr>`).join("")}
+        ${bodyRows}
       </tbody></table>
       <div class="bias-disclaimer" style="margin-top:10px">${data.note || ""}</div>`;
   } catch (e) {
@@ -706,31 +734,32 @@ async function loadComparison() {
 async function loadMentor() {
   const body = $("mentor-body");
   try {
-    const data = await (await fetch("/api/mentor/signals")).json();
+    const data = await getPrivate("/api/mentor/signals", "mentor-body");
+    if (data === null) return;
     if (!data.has_signals) {
       body.innerHTML = '<div class="empty">目前沒有老師帶單。新增後這裡會顯示老師方向與系統方向的比對。</div>';
       return;
     }
     const alignChip = (a, text) => {
       const cls = a === "ALIGNED" ? "good" : a === "OPPOSITE" ? "bad" : "warn";
-      return `<span class="chip ${cls}">${text}</span>`;
+      return h`<span class="chip ${cls}">${text}</span>`;
     };
-    body.innerHTML = data.signals.map((s) => `
+    const sysDir = (d) => d === "LONG" ? "做多" : d === "SHORT" ? "做空" : "無明確方向";
+    body.innerHTML = data.signals.map((s) => h`
       <div class="mentor-card">
         <div class="mentor-head">
           <span class="pos-side">${s.direction === "LONG" ? "老師做多" : "老師做空"}</span>
           ${alignChip(s.alignment, s.alignment_text)}
-          <button class="btn btn-sm" onclick="dismissMentor(${s.id})">移除</button>
+          <button class="btn btn-sm" data-act="mentor-dismiss" data-id="${s.id}">移除</button>
         </div>
         <div class="kv"><span>老師進場價</span><span class="num">${fmt(s.entry_price)}</span></div>
-        ${s.stop_loss != null ? `<div class="kv"><span>老師停損(賠錢出場)</span><span class="num">${fmt(s.stop_loss)}</span></div>` : ""}
-        ${(s.targets || []).length ? `<div class="kv"><span>老師停利(目標價)</span><span class="num">${s.targets.map((t) => fmt(t)).join(" / ")}</span></div>` : ""}
-        <div class="kv"><span>系統目前方向</span><span>${
-          s.system_direction === "LONG" ? "做多" : s.system_direction === "SHORT" ? "做空" : "無明確方向"}</span></div>
+        ${s.stop_loss != null ? h`<div class="kv"><span>老師停損(賠錢出場)</span><span class="num">${fmt(s.stop_loss)}</span></div>` : ""}
+        ${(s.targets || []).length ? h`<div class="kv"><span>老師停利(目標價)</span><span class="num">${(s.targets || []).map((t) => fmt(t)).join(" / ")}</span></div>` : ""}
+        <div class="kv"><span>系統目前方向</span><span>${sysDir(s.system_direction)}</span></div>
         <div class="kv"><span>與現價差</span><span class="num">${s.entry_vs_current_text || "–"}</span></div>
-        ${s.note ? `<div class="mentor-memo">老師備註:${s.note}</div>` : ""}
+        ${s.note ? h`<div class="mentor-memo">老師備註:${s.note}</div>` : ""}
       </div>`).join("") +
-      `<div class="bias-disclaimer">${data.note}</div>`;
+      h`<div class="bias-disclaimer">${data.note}</div>`;
   } catch (e) {
     body.innerHTML = '<div class="empty">老師帶單載入失敗。</div>';
   }
@@ -739,16 +768,26 @@ async function loadMentor() {
 async function loadMentorHistory() {
   const body = $("mentor-history");
   try {
-    const h = await (await fetch("/api/mentor/history")).json();
-    if (!h.trades.length) {
+    const data = await getPrivate("/api/mentor/history", "mentor-history");
+    if (data === null) return;
+    if (!data.trades.length) {
       body.innerHTML = '<div class="empty">尚無歷史紀錄。</div>';
       return;
     }
-    const s = h.summary;
+    const s = data.summary;
     const pnlCls = (v) => (v >= 0 ? "cmp-pos" : "cmp-neg");
-    const gapNote = (h.known_gaps || []).map((g) =>
-      `<div class="mentor-gap">⚠ 已知資料缺口:${g} —— 這段期間「沒有紀錄」,不代表老師空手</div>`).join("");
-    body.innerHTML = `
+    const gapNote = joinSafe((data.known_gaps || []).map((g) =>
+      h`<div class="mentor-gap">⚠ 已知資料缺口:${g} —— 這段期間「沒有紀錄」,不代表老師空手</div>`));
+    const tradeRows = joinSafe(data.trades.map((t) => h`<tr>
+          <td class="${t.direction === "LONG" ? "cmp-pos" : "cmp-neg"}">${t.direction === "LONG" ? "做多" : "做空"}</td>
+          <td class="num">${fmt(t.entry_price)} → ${fmt(t.close_price)}</td>
+          <td class="num">${fmt(t.points)}</td>
+          <td class="num">${fmt(t.lots)}</td>
+          <td class="num ${pnlCls(t.pl_usd)}">${t.pl_usd >= 0 ? "+" : ""}${fmt(t.pl_usd)}</td>
+          <td class="num mentor-nodata" title="歷史匯入,無停損資料">${t.stop_loss != null ? fmt(t.stop_loss) : "—"}</td>
+          <td class="num">${(t.close_time || "").slice(0, 16).replace("T", " ")}</td>
+        </tr>`));
+    body.innerHTML = h`
       <div class="mentor-summary">
         <span class="chip info">共 ${s.count} 筆</span>
         <span class="chip good">勝 ${s.wins}</span>
@@ -761,17 +800,9 @@ async function loadMentorHistory() {
       <div style="overflow-x:auto"><table class="hist-table"><thead><tr>
         <th>方向</th><th>進場 → 出場</th><th>點數</th><th>手數</th><th>損益</th>
         <th>賠錢出場價</th><th>平倉時間</th></tr></thead><tbody>
-        ${h.trades.map((t) => `<tr>
-          <td class="${t.direction === "LONG" ? "cmp-pos" : "cmp-neg"}">${t.direction === "LONG" ? "做多" : "做空"}</td>
-          <td class="num">${fmt(t.entry_price)} → ${fmt(t.close_price)}</td>
-          <td class="num">${fmt(t.points)}</td>
-          <td class="num">${fmt(t.lots)}</td>
-          <td class="num ${pnlCls(t.pl_usd)}">${t.pl_usd >= 0 ? "+" : ""}${fmt(t.pl_usd)}</td>
-          <td class="num mentor-nodata" title="歷史匯入,無停損資料">${t.stop_loss != null ? fmt(t.stop_loss) : "—"}</td>
-          <td class="num">${(t.close_time || "").slice(0, 16).replace("T", " ")}</td>
-        </tr>`).join("")}
+        ${tradeRows}
       </tbody></table></div>
-      <div class="bias-disclaimer">${h.note}</div>`;
+      <div class="bias-disclaimer">${data.note}</div>`;
   } catch (e) {
     body.innerHTML = '<div class="empty">歷史紀錄載入失敗。</div>';
   }
@@ -789,7 +820,8 @@ window.dismissMentor = dismissMentor;
 async function loadPositions() {
   const list = $("position-list");
   try {
-    const rows = await (await fetch("/api/positions")).json();
+    const rows = await getPrivate("/api/positions", "position-list");
+    if (rows === null) return;
     if (!rows.length) {
       list.innerHTML = '<div class="empty">尚無持倉紀錄。用上方表單輸入你在券商實際建立的部位,系統會追蹤 R 倍數並依規則給出管理建議。</div>';
       return;
@@ -804,47 +836,157 @@ function posCard(p) {
   const r = p.r_multiple;
   const rPct = r == null ? 0 : Math.max(0, Math.min(100, (r / 3) * 100));
   const pnl = p.unrealized_pnl;
-  const hist = [
-    ...(p.stop_modification_history || []).map((h) =>
-      `<li>${h.time.slice(5, 16).replace("T", " ")} 停損 ${fmt(h.old_stop)} → ${fmt(h.new_stop)}${h.widening ? "(⚠ 擴大)" : ""}</li>`),
-    ...(p.partial_exit_history || []).map((h) =>
-      `<li>${h.time.slice(5, 16).replace("T", " ")} 平倉 ${h.percent}% @ ${fmt(h.price)}(R=${h.r_at_exit ?? "–"})</li>`),
-  ].join("");
-  return `
+  const histList = [
+    ...(p.stop_modification_history || []).map((x) =>
+      h`<li>${x.time.slice(5, 16).replace("T", " ")} 停損 ${fmt(x.old_stop)} → ${fmt(x.new_stop)}${x.widening ? "(⚠ 擴大)" : ""}</li>`),
+    ...(p.partial_exit_history || []).map((x) =>
+      h`<li>${x.time.slice(5, 16).replace("T", " ")} 平倉 ${x.percent}% @ ${fmt(x.price)}(R=${x.r_at_exit ?? "–"})</li>`),
+  ];
+  const targets = (p.planned_targets || []).map((t) => fmt(t)).join(" / ") || "–";
+  const actions = h`
+    <div class="pos-actions">
+      <button class="btn btn-sm btn-warn" data-act="pos-stop" data-id="${p.id}">改出場價</button>
+      <button class="btn btn-sm" data-act="pos-partial" data-id="${p.id}">分批平倉</button>
+      <button class="btn btn-sm btn-danger" data-act="pos-close" data-id="${p.id}">全部平倉</button>
+    </div>`;
+  return h`
   <div class="pos-card ${p.side.toLowerCase()}" data-id="${p.id}">
     <div class="pos-head">
       <span class="pos-side">${p.side === "LONG" ? "做多" : "做空"}</span>
       <span class="chip info">${accountName(p.account_id)}</span>
       <span class="num">${fmt(p.lot_size)} 手・剩餘 ${p.remaining_percent}%</span>
-      ${p.is_open ? "" : '<span class="pos-closed-tag">已平倉</span>'}
-      ${pnl != null ? `<span class="pos-pnl ${pnl >= 0 ? "pos" : "neg"}">${pnl >= 0 ? "+" : ""}${fmt(pnl)} USD</span>` : ""}
+      ${p.is_open ? "" : trusted('<span class="pos-closed-tag">已平倉</span>')}
+      ${pnl != null ? h`<span class="pos-pnl ${pnl >= 0 ? "pos" : "neg"}">${pnl >= 0 ? "+" : ""}${fmt(pnl)} USD</span>` : ""}
     </div>
     <div class="pos-meta">
       <span>進場 <span class="num">${fmt(p.entry_price)}</span></span>
       <span>賠錢出場價 <span class="num">${fmt(p.stop_loss)}</span></span>
-      <span>目標價 <span class="num">${(p.planned_targets || []).map((t) => fmt(t)).join(" / ") || "–"}</span></span>
+      <span>目標價 <span class="num">${targets}</span></span>
       <span>開倉 <span class="num">${p.open_time.slice(5, 16).replace("T", " ")}</span></span>
     </div>
-    ${p.is_open ? `
+    ${p.is_open ? h`
     <div class="pos-row"><div class="lbl"><span>賺賠比進度(回本 → 3 倍)</span>
       <span class="num">${r == null ? "沒設出場價" : fmt(r, 2) + " 倍"}</span></div>
-      <div class="progress"><div class="fill" style="width:${rPct}%"></div></div></div>
-    ${p.recommended_action ? `<div class="pos-advice">${p.recommended_action}</div>` : ""}
-    <div class="pos-actions">
-      <button class="btn btn-sm btn-warn" onclick="actStop(${p.id})">改出場價</button>
-      <button class="btn btn-sm" onclick="actPartial(${p.id})">分批平倉</button>
-      <button class="btn btn-sm btn-danger" onclick="actClose(${p.id})">全部平倉</button>
-    </div>` : ""}
-    ${hist ? `<details class="pos-hist"><summary>操作歷史</summary><ul>${hist}</ul></details>` : ""}
+      <div class="progress"><div class="fill" style="width:${rPct + "%"}"></div></div></div>
+    ${p.recommended_action ? h`<div class="pos-advice">${p.recommended_action}</div>` : ""}
+    ${actions}` : ""}
+    ${histList.length ? h`<details class="pos-hist"><summary>操作歷史</summary><ul>${joinSafe(histList)}</ul></details>` : ""}
   </div>`;
 }
 
+// ═══ 管理登入 / 私人資料存取 ═══════════════════════════════
+// 單一共享登入流程:多個私人請求同時 401 時只跳一次輸入框。token 不寫入任何儲存。
+let _loginInflight = null;
+function ensureLogin() {
+  if (_loginInflight) return _loginInflight;
+  _loginInflight = (async () => {
+    const token = prompt("請輸入管理 token 以檢視/操作個人資料(登入後不再重複詢問):");
+    if (!token) return false;
+    try {
+      const r = await fetch("/api/admin/login", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token }), credentials: "same-origin",
+      });
+      if (r.ok) { await onLoggedIn(); return true; }
+      return false;
+    } catch (e) { return false; }
+  })().finally(() => { _loginInflight = null; });
+  return _loginInflight;
+}
+
+async function refreshAuthState() {
+  try {
+    const s = await (await fetch("/api/admin/status", { credentials: "same-origin" })).json();
+    S.authed = !!s.authenticated;
+  } catch (e) { S.authed = false; }
+  updateAuthUI();
+}
+
+function updateAuthUI() {
+  const inBtn = $("admin-login-btn"), outBtn = $("admin-logout-btn");
+  if (inBtn) inBtn.hidden = S.authed;
+  if (outBtn) outBtn.hidden = !S.authed;
+}
+
+// 登入成功:更新 UI、重載私人面板、連上私人 WS
+async function onLoggedIn() {
+  S.authed = true;
+  updateAuthUI();
+  connectPrivateWS();
+  reloadPrivatePanels();
+}
+
+// 登出或 session 過期:清空私人 DOM、關閉私人 WS、回到未登入狀態
+function clearPrivate(reason) {
+  S.authed = false;
+  updateAuthUI();
+  if (S.privWs) { try { S.privWs.close(); } catch (e) { /* noop */ } S.privWs = null; }
+  for (const id of PRIVATE_PANELS) lockPanel(id, reason);
+}
+
+async function doLogout() {
+  try { await fetch("/api/admin/logout", { method: "POST", credentials: "same-origin" }); }
+  catch (e) { /* noop */ }
+  clearPrivate();
+}
+
+// 私人面板未登入時的佔位(不殘留舊資料)
+function lockPanel(id, reason) {
+  const el = $(id);
+  if (!el) return;
+  el.innerHTML = h`<div class="empty locked">🔒 私人資料,登入後查看${reason ? "(" + reason + ")" : ""}
+    <button class="btn btn-sm" data-act="admin-login">登入</button></div>`;
+}
+
+function reloadPrivatePanels() {
+  const active = document.querySelector(".tab.active");
+  const tab = active ? active.dataset.tab : "";
+  loadAccounts();
+  if (tab === "position") loadPositions();
+  else if (tab === "mentor") { loadMentor(); loadMentorHistory(); }
+  else if (tab === "coach") loadCoach();
+  else if (tab === "compare") loadComparison();
+}
+
+// 私人資料 GET:帶 cookie;未登入 → 鎖定面板(不自動跳登入,由使用者按登入鈕觸發共享流程)。
+// 回傳 null 表示未授權(呼叫端顯示鎖定佔位)。
+async function getPrivate(url, panelId) {
+  if (!S.authed) { if (panelId) lockPanel(panelId); return null; }
+  const r = await fetch(url, { credentials: "same-origin" });
+  if (r.status === 401 || r.status === 403) { clearPrivate("登入已失效"); return null; }
+  if (!r.ok) return null;
+  return r.json();
+}
+
 async function postJSON(url, body) {
-  const r = await fetch(url, { method: "POST",
-    headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-  const data = await r.json();
+  const send = () => fetch(url, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body), credentials: "same-origin",
+  });
+  let r = await send();
+  if ((r.status === 401 || r.status === 403) && await ensureLogin()) {
+    r = await send();   // 登入成功後重試一次(共享流程)
+  }
+  const data = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(data.detail || r.status);
   return data;
+}
+
+// 私人 WebSocket:登入後連線;收到分析更新即重載開啟中的私人面板;斷線視為過期。
+function connectPrivateWS() {
+  if (S.privWs) return;
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  const ws = new WebSocket(`${proto}://${location.host}/ws/private`);
+  S.privWs = ws;
+  ws.onmessage = (e) => {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg.type === "analysis") reloadPrivatePanels();
+    } catch (err) { /* noop */ }
+  };
+  ws.onclose = () => {
+    if (S.privWs === ws) { S.privWs = null; if (S.authed) clearPrivate("連線已中斷,請重新登入"); }
+  };
 }
 
 async function actStop(id) {
@@ -883,12 +1025,13 @@ async function actClose(id) {
 async function loadCoach() {
   const body = $("coach-body");
   try {
-    const flags = await (await fetch("/api/behavior/flags")).json();
+    const flags = await getPrivate("/api/behavior/flags", "coach-body");
+    if (flags === null) return;
     if (!flags.length) {
       body.innerHTML = '<div class="empty">尚無行為標籤。當持倉操作觸發紀律問題(擴大停損、過早平倉…)時會顯示於此。</div>';
       return;
     }
-    body.innerHTML = flags.map((f) => `
+    body.innerHTML = flags.map((f) => h`
       <div class="coach-flag">
         <span class="cf-name">${f.flag}</span>
         <span class="cf-time">${f.detected_at.slice(0, 16).replace("T", " ")} UTC</span>
@@ -907,15 +1050,16 @@ async function loadHistory() {
       body.innerHTML = '<div class="empty">尚無歷史分析紀錄。</div>';
       return;
     }
-    body.innerHTML = `<table class="hist-table"><thead><tr>
-      <th>時間 (UTC)</th><th>市場狀態</th><th>決策</th><th>信心</th><th>證據</th><th>品質</th>
-      </tr></thead><tbody>${rows.map((r) => `<tr>
+    const histRows = joinSafe(rows.map((r) => h`<tr>
         <td class="num">${r.run_time.slice(5, 16).replace("T", " ")}</td>
         <td>${stateZh(r.market_state)}</td>
         <td><span class="act-pill ${decisionClass(r.action)}">${r.action}</span></td>
         <td><span class="grade-badge g-${r.grade}" style="width:26px;height:26px;font-size:.85rem">${r.grade}</span></td>
         <td class="num">${r.evidence_score}</td>
-        <td>${r.quality}</td></tr>`).join("")}</tbody></table>`;
+        <td>${r.quality}</td></tr>`));
+    body.innerHTML = h`<table class="hist-table"><thead><tr>
+      <th>時間 (UTC)</th><th>市場狀態</th><th>決策</th><th>信心</th><th>證據</th><th>品質</th>
+      </tr></thead><tbody>${histRows}</tbody></table>`;
   } catch (e) {
     body.innerHTML = '<div class="empty">歷史紀錄載入失敗。</div>';
   }
@@ -1006,8 +1150,26 @@ async function boot() {
     } catch (err) { alert("新增失敗:" + err.message); }
   });
 
+  // 事件委派:動態產生的按鈕改用 data-act(取代 inline onclick,配合嚴格 CSP)
+  document.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-act]");
+    if (!btn) return;
+    const id = parseInt(btn.dataset.id, 10);
+    const act = btn.dataset.act;
+    if (act === "mentor-dismiss") dismissMentor(id);
+    else if (act === "pos-stop") actStop(id);
+    else if (act === "pos-partial") actPartial(id);
+    else if (act === "pos-close") actClose(id);
+    else if (act === "admin-login") ensureLogin();
+  });
+
+  $("admin-login-btn").addEventListener("click", () => ensureLogin());
+  $("admin-logout-btn").addEventListener("click", () => doLogout());
+
   connectWS();
-  loadAccounts();
+  await refreshAuthState();          // 判斷是否已登入(session cookie),更新 UI
+  if (S.authed) { connectPrivateWS(); loadAccounts(); }
+  else { for (const id of PRIVATE_PANELS) lockPanel(id); }
   setupOffsetEditor();
   try { renderOffset(await (await fetch("/api/offset")).json()); } catch (e) { /* noop */ }
 

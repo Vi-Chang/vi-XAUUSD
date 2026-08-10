@@ -5,6 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 os.environ["MOCK_DATA_MODE"] = "true"
+os.environ.setdefault("APP_ENV", "development")   # 本機開發:未設 ADMIN_TOKEN 時放行寫入
 os.environ["DATABASE_URL"] = "sqlite:///./xauusd_dev.db"
 os.environ["TELEGRAM_BOT_TOKEN"] = ""
 os.environ["TELEGRAM_CHAT_ID"] = ""
