@@ -185,6 +185,7 @@ def compute_readiness(state) -> dict:
     - 資料落後超過門檻:data_stale。關鍵元件停擺:component_down。
     - 排程停用(正式環境):scheduler_disabled。
     """
+    from app.security import is_production, production_token_missing
     s = get_settings()
     now = datetime.now(timezone.utc)
     started = getattr(state, "started_at", None)
@@ -194,12 +195,19 @@ def compute_readiness(state) -> dict:
     in_grace = (started is not None
                 and (now - started).total_seconds() <= _startup_grace_seconds())
 
-    if not open_market:
-        ready, reason = True, "market_closed"
-    elif not getattr(state, "scheduler_started", False) and not s.disable_scheduler:
-        ready, reason = False, "scheduler_not_started"
-    elif s.disable_scheduler:
+    # 關鍵組態問題優先(即使休市也不得被 market_closed 掩蓋):
+    if production_token_missing():
+        ready, reason = False, "admin_token_missing"     # production 缺 ADMIN_TOKEN
+    elif s.disable_scheduler and not s.api_only_mode:
+        # 排程被關但非刻意 API-only → 誤設,任何時段都判 not-ready
         ready, reason = False, "scheduler_disabled"
+    elif not open_market:
+        # 休市:視為就緒(正常),但區分「刻意 API-only」
+        ready, reason = True, ("api_only" if s.api_only_mode else "market_closed")
+    elif s.api_only_mode:
+        ready, reason = True, "api_only"
+    elif not getattr(state, "scheduler_started", False):
+        ready, reason = False, "scheduler_not_started"
     elif last_t is None:
         ready, reason = (False, "warming_up") if in_grace else (False, "no_data")
     elif age_min is not None and age_min > lag:

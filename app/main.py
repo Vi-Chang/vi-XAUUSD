@@ -17,8 +17,9 @@ from app.logging_config import setup_logging
 from app.notifications.telegram import build_notification_manager
 from app.providers import get_primary_provider
 from app.security import (
-    admin_status, clear_session_cookie, create_session, destroy_session, rate_limit,
-    require_admin, set_session_cookie, token_matches,
+    admin_status, clear_session_cookie, create_session, destroy_session,
+    production_token_missing, rate_limit, rate_limit_window, require_admin,
+    set_session_cookie, token_matches,
 )
 from app.services.heartbeat import health_payload, liveness_payload, readiness_payload
 from app.services.scheduler import build_scheduler, state
@@ -49,6 +50,12 @@ async def lifespan(app: FastAPI):
         state.secondary = TwelveDataProvider()
     from datetime import datetime, timezone
     state.started_at = datetime.now(timezone.utc)
+    # 組態安全檢查:production 缺 ADMIN_TOKEN → 明確在啟動時失敗(不等到 mutation 才發現)。
+    # 不中止行程(讓公開 dashboard/health 仍可服務),但 readiness 會回報 not-ready。
+    if production_token_missing():
+        logger.critical("SECURITY: APP_ENV=production 但未設定 ADMIN_TOKEN —— "
+                        "所有寫入端點已停用(fail-closed),/health/ready 將回報 not-ready。"
+                        "請設定 ADMIN_TOKEN 後重啟。")
     scheduler = None
     if not s.disable_scheduler:
         scheduler = build_scheduler()
@@ -67,8 +74,15 @@ async def lifespan(app: FastAPI):
         await state.secondary.close()
 
 
-app = FastAPI(title="XAUUSD Multi-Timeframe Analysis (MVP)", version=__version__,
-              lifespan=lifespan)
+# production 關閉互動式 API 文件(/docs、/redoc、/openapi.json),縮小管理端點的可探測面。
+# 單人正式產品不需要公開 API explorer;開發/測試環境保留以便除錯。
+_docs_off = get_settings().app_env == "production"
+app = FastAPI(
+    title="XAUUSD Multi-Timeframe Analysis (MVP)", version=__version__, lifespan=lifespan,
+    docs_url=None if _docs_off else "/docs",
+    redoc_url=None if _docs_off else "/redoc",
+    openapi_url=None if _docs_off else "/openapi.json",
+)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 # script-src 'self':所有腳本皆同源外部檔(圖表庫/messages/escape/app),不用 inline。
@@ -105,12 +119,15 @@ async def admin_login(request: Request, response: Response,
                       req: AdminLoginReq | None = None) -> dict:
     """以管理 token 換取 HttpOnly session cookie。token 可走 header 或 body。
 
-    回應只表明成功與否,不回傳 token 或任何 secret。
+    - 獨立的登入頻率限制(滑動視窗)防暴力猜 token。
+    - 失敗一律相同固定訊息,不洩露 token 是否接近/長度/其他差異(constant-time 比對)。
+    - 回應與 log 不含 token。
     """
+    s = get_settings()
+    rate_limit_window("admin_login", s.admin_login_max_attempts, s.admin_login_window_seconds)
     from app.security import HEADER_NAME
     provided = request.headers.get(HEADER_NAME) or (req.token if req else None)
     if not token_matches(provided):
-        # 未設定 token 或 token 不符 → 一律相同訊息,不洩露何者為真
         raise HTTPException(status_code=401, detail="管理憑證無效。")
     sid, ttl = create_session()
     set_session_cookie(response, sid, ttl)
@@ -496,9 +513,25 @@ async def current_price() -> dict:
             "provider": tick.provider, "quote_time": tick.quote_time.isoformat()}
 
 
+def _ws_origin_ok(ws: WebSocket) -> bool:
+    """WebSocket 同源檢查:有 Origin 時須與 Host 相符;無 Origin(非瀏覽器)放行。"""
+    origin = ws.headers.get("origin")
+    if not origin:
+        return True
+    host = (ws.headers.get("host") or "").split(",")[0].strip().lower()
+    from urllib.parse import urlsplit
+    try:
+        return bool(host) and urlsplit(origin).netloc.lower() == host
+    except ValueError:
+        return False
+
+
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket) -> None:
     """即時推送:tick(未收線 K 棒跳動)、candle_closed、analysis。"""
+    if not _ws_origin_ok(ws):
+        await ws.close(code=1008)   # policy violation:跨站 Origin 拒絕
+        return
     await ws.accept()
     state.ws_clients.add(ws)
     try:

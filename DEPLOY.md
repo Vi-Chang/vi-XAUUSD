@@ -47,18 +47,27 @@ Gemini 免費層限制:**10 RPM / 250 次每日**。系統內建保護(超限自
 
 | 變數 | 說明 |
 |---|---|
+| `APP_ENV` | `development`/`test`/`production`;未知/空 → `production`。**決定 fail-open/closed,不靠 mock 判斷** |
 | `ADMIN_TOKEN` | 管理 token(走環境變數,勿硬編碼)。產生方式:`openssl rand -hex 32` |
-| `ADMIN_SESSION_TTL_MINUTES` | 瀏覽器登入 session 有效時間(預設 720 = 12h) |
+| `ALLOW_UNAUTHENTICATED_MUTATIONS` | 顯式逃生門(預設 false);production 也放行未認證寫入,僅特例使用 |
+| `ADMIN_SESSION_TTL_MINUTES` / `MAX_ADMIN_SESSIONS` | session 有效時間 / 上限(防記憶體 DoS) |
+| `ADMIN_LOGIN_MAX_ATTEMPTS` / `ADMIN_LOGIN_WINDOW_SECONDS` | 登入防暴力(滑動視窗) |
 | `ANALYSIS_RUN_COOLDOWN_SECONDS` | `/api/analysis/run` 手動觸發冷卻(預設 20s) |
 
 行為:
-- **正式環境(`MOCK_DATA_MODE=false`)未設定 `ADMIN_TOKEN` → 所有寫入端點回 503**(fail-closed,不默認放行)。**部署前務必在 Zeabur 設定 `ADMIN_TOKEN`**,否則儀表板的新增/修改功能會全部停用。
-- 自動化 / curl:在 header 帶 `X-Admin-Token: <token>`(constant-time 比對)。
-- 瀏覽器:第一次點寫入操作時會提示輸入 token → 換取 HttpOnly + SameSite=Strict session cookie(永久 token 不進 HTML/JS/URL/localStorage)。
-- 讀取端點(dashboard 顯示、health、K 棒、分析結果)維持公開。
-- 回應與 log 不含 token、環境變數或內部例外。
+- **`APP_ENV=production` 未設 `ADMIN_TOKEN` → 所有寫入端點回 503,`/health/ready` 回 not-ready(reason `admin_token_missing`),啟動時記 CRITICAL log。** 即使 `MOCK_DATA_MODE=true` 也不放行。**部署前務必設定 `ADMIN_TOKEN`**,否則儀表板新增/修改全部停用。
+- 未設 token 只在 `development`/`test`(或顯式 `ALLOW_UNAUTHENTICATED_MUTATIONS=true`)才放行。
+- 自動化 / curl:header 帶 `X-Admin-Token: <token>`(constant-time 比對;不受 Origin 檢查限制)。
+- 瀏覽器:提示輸入 token → 換取 HttpOnly + SameSite=Strict(+ production `Secure`)+ `Path=/` + `Max-Age` 的 session cookie(永久 token 不進 HTML/JS/URL/localStorage、不回傳、不寫 log)。
+- **CSRF**:session-cookie 認證的 mutation 額外驗證 `Origin`/`Referer` 同源(跨站或缺失 → 403);header-token 路徑不受此限(保留 curl 用法)。WebSocket 同源檢查(跨站 Origin 拒絕)。未加寬鬆 CORS。
+- 讀取端點(dashboard、health、K 棒、分析結果)維持公開。
+- **`production` 關閉 `/docs`、`/redoc`、`/openapi.json`**(縮小管理端點可探測面);dev/test 保留。
 
-另已加入安全標頭:`Content-Security-Policy`(script-src 'self')、`X-Content-Type-Options: nosniff`、`X-Frame-Options: DENY`、`Referrer-Policy: no-referrer`。
+安全標頭:`Content-Security-Policy`(`script-src 'self'`,無 inline script;inline 事件已改事件委派)、`X-Content-Type-Options: nosniff`、`X-Frame-Options: DENY`、`Referrer-Policy: no-referrer`。
+
+> ⚠️ **多 worker 警告**:session、rate-limit、single-flight 皆為**單一行程內記憶體**。若未來以多 worker(如 `uvicorn --workers N` / gunicorn)部署,這些狀態不跨 worker 共享 —— session 會因 worker 不同而失效、rate-limit 與 single-flight 去重會失準。多 worker 需改用共享儲存(Redis 等)。目前部署維持**單 worker**。
+
+> 前端 XSS 防護:所有動態 HTML 經單一 `escape.js`(`h`` 預設跳脫、`SafeHtml` 型別、`joinSafe`;`trusted()` 僅限程式碼內字面值)。本機開發 `scripts/dev_server.py` 已設 `APP_ENV=development`。
 
 ## 健康檢查端點
 
@@ -67,6 +76,8 @@ Gemini 免費層限制:**10 RPM / 250 次每日**。系統內建保護(超限自
 | `GET /health` | 綜合監控(保留原有欄位 + readiness/監控摘要),供 UptimeRobot 等 |
 | `GET /health/live` | Liveness:行程存活即 200(外部 provider 暫時失敗不影響) |
 | `GET /health/ready` | Readiness:能否提供新鮮分析;未就緒回 503。**週末休市視為就緒**(不誤判 stale) |
+
+Readiness `reason` 值:`ok` / `market_closed` / `api_only`(刻意關排程)/ `warming_up` / `no_data` / `data_stale` / `component_down` / `scheduler_disabled`(誤設)/ `admin_token_missing`(production 缺 token,優先於休市,不被 market_closed 掩蓋)。所有 readiness 判定只讀本地狀態,不同步呼叫外部 API;timestamps 一律 UTC-aware;不輸出帳號/token/DB URL/例外訊息/內部路徑。
 
 ## Zeabur 更新環境變數的注意事項
 

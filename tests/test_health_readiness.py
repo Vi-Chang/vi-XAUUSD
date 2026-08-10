@@ -26,10 +26,14 @@ def _state(**over):
 @pytest.fixture(autouse=True)
 def _settings():
     s = get_settings()
-    orig = (s.disable_scheduler, s.data_lag_warn_minutes)
+    orig = (s.disable_scheduler, s.data_lag_warn_minutes, s.app_env,
+            s.admin_token, s.api_only_mode, s.allow_unauthenticated_mutations)
     s.disable_scheduler = False        # 預設當作有排程,個別測試再覆寫
+    s.api_only_mode = False
+    s.app_env = "test"                 # 預設非 production,不觸發 admin_token_missing
     yield
-    s.disable_scheduler, s.data_lag_warn_minutes = orig
+    (s.disable_scheduler, s.data_lag_warn_minutes, s.app_env,
+     s.admin_token, s.api_only_mode, s.allow_unauthenticated_mutations) = orig
 
 
 def _fresh_candle(minutes_old):
@@ -68,6 +72,28 @@ def test_scheduler_disabled_reason(monkeypatch):
     get_settings().disable_scheduler = True
     out = heartbeat.compute_readiness(_state(scheduler_started=False))
     assert out["ready"] is False and out["reason"] == "scheduler_disabled"
+
+
+def test_api_only_mode_is_ready(monkeypatch):
+    """刻意 API-only(關排程但明確設定)→ 就緒,reason=api_only(區分誤設)。"""
+    monkeypatch.setattr(heartbeat, "market_is_open", lambda: True)
+    monkeypatch.setattr(heartbeat, "_last_15m_candle", lambda: (None, None))
+    s = get_settings()
+    s.disable_scheduler = True
+    s.api_only_mode = True
+    out = heartbeat.compute_readiness(_state(scheduler_started=False))
+    assert out["ready"] is True and out["reason"] == "api_only"
+
+
+def test_production_missing_token_not_ready_even_on_weekend(monkeypatch):
+    """production 缺 ADMIN_TOKEN → not-ready,且不被 market_closed 掩蓋。"""
+    monkeypatch.setattr(heartbeat, "market_is_open", lambda: False)   # 週末休市
+    monkeypatch.setattr(heartbeat, "_last_15m_candle", lambda: (None, None))
+    s = get_settings()
+    s.app_env = "production"
+    s.admin_token = ""
+    out = heartbeat.compute_readiness(_state())
+    assert out["ready"] is False and out["reason"] == "admin_token_missing"
 
 
 def test_provider_failure_no_data_past_grace(monkeypatch):

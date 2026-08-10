@@ -35,7 +35,22 @@ def test_escape_module_exists_and_loaded():
 
 
 def test_single_shared_escaper_imported():
-    assert "const { esc, raw, h } = window.XSS;" in APP_JS
+    assert "window.XSS;" in APP_JS
+    assert "joinSafe" in APP_JS and "trusted" in APP_JS
+
+
+def test_no_generic_raw_bypass_in_app_js():
+    """不得再有通用 raw() bypass;僅允許窄化的 trusted()(且只包字串字面值)。"""
+    import re
+    code = "\n".join(l for l in APP_JS.splitlines() if not l.strip().startswith("//"))
+    # app.js 不得呼叫 raw((escape.js 內的別名不算)
+    assert not re.search(r'[^A-Za-z_]raw\s*\(', code), "app.js 仍有通用 raw() bypass"
+    # 每個 trusted(...) 的引數必須是非空字串字面值('...' 或 "...")
+    hits = re.findall(r'trusted\(\s*(.+?)\s*\)', code)
+    assert hits, "預期 app.js 有 trusted() 使用"
+    for arg in hits:
+        assert (len(arg) >= 2 and arg[0] in "'\"" and arg[-1] == arg[0]), \
+            f"trusted() 只能包字串字面值,發現:{arg!r}"
 
 
 def test_no_inline_event_handlers_in_app_js():

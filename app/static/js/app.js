@@ -4,9 +4,10 @@
  */
 "use strict";
 
-// 共用 HTML escaping(防 XSS,單一來源):h`` 預設跳脫每個 ${};
-// 已知安全的 HTML 片段(巢狀 template/.map 產物)以 raw() 包住才不被二次跳脫。
-const { esc, raw, h } = window.XSS;
+// 共用 HTML escaping(防 XSS,單一來源):
+// - h`` 預設跳脫每個 ${},回傳 SafeHtml;巢狀 h`` 片段原樣放行(不需 bypass)。
+// - joinSafe(arr) 合成片段陣列;trusted() 僅供程式碼內固定 HTML 字面值。
+const { esc, h, joinSafe, trusted } = window.XSS;
 
 const TF_SEC = { "15M": 900, "1H": 3600, "4H": 14400, "1D": 86400 };
 const C = {
@@ -410,7 +411,7 @@ function renderAiStrategy(ai) {
 
   const analysts = ai.analysts || {};
   const aNames = { macro: "巨集面", technical: "技術面", sentiment: "情緒面" };
-  const analystHtml = Object.entries(aNames).map(([k, name]) => {
+  const analystHtml = joinSafe(Object.entries(aNames).map(([k, name]) => {
     const v = analysts[k];
     if (!v) return "";
     const biasCls = v.bias === "BULLISH" ? "good" : v.bias === "BEARISH" ? "bad" : "info";
@@ -418,24 +419,24 @@ function renderAiStrategy(ai) {
       <div class="ai-analyst-head">${name} <span class="chip ${biasCls}">${AI_BIAS_ZH[v.bias] || v.bias} ${v.strength}</span></div>
       <div class="ai-analyst-line">${v.one_line || ""}</div>
     </div>`;
-  }).join("");
+  }));
 
-  const scenarios = (ai.scenarios || []).map((s) => h`
+  const scenarios = joinSafe((ai.scenarios || []).map((s) => h`
     <div class="ai-scenario">
       <div class="ai-scenario-head"><b>${s.name}</b><span class="num">${s.probability_pct}%</span></div>
       <div class="ai-kv"><span>觸發</span><span>${s.trigger}</span></div>
       <div class="ai-kv"><span>應對</span><span>${s.plan}</span></div>
-    </div>`).join("");
-  const factors = (conf.factors || []).map((f) => h`<li>${f}</li>`).join("");
+    </div>`));
+  const factors = joinSafe((conf.factors || []).map((f) => h`<li>${f}</li>`));
   const broker = (S.analysis && S.analysis.offset_info && S.analysis.offset_info.trading_broker) || "券商";
 
   box.innerHTML = h`
-    ${ai.gate_note ? raw(h`<div class="ai-gate warn">🔒 ${ai.gate_note}</div>`) : ""}
+    ${ai.gate_note ? h`<div class="ai-gate warn">🔒 ${ai.gate_note}</div>` : ""}
     <div class="ai-head">
       <span class="decision-badge ${cls}">${AI_ACTION_ZH[act.type] || act.type}</span>
       <span class="chip info">信心 ${conf.score ?? "–"}/100</span>
       <span class="chip">${ai.market_structure ? ai.market_structure.label : ""}</span>
-      ${ai.cache_hit ? raw('<span class="chip">快取</span>') : ""}
+      ${ai.cache_hit ? trusted('<span class="chip">快取</span>') : ""}
       <span class="ai-meta num">${ai.model || ""}・$${(ai.cost_usd || 0).toFixed(3)}</span>
     </div>
     <div class="ai-oneliner">${ai.one_liner || ""}</div>
@@ -451,28 +452,28 @@ function renderAiStrategy(ai) {
         <div class="ai-kv"><span>多方 ${wr.long_pct ?? "–"}%</span><span>${wr.short_pct ?? "–"}% 空方</span></div>
 
         <div class="ai-sec-title">行動</div>
-        ${act.type === "Wait" && act.wait_condition ? raw(h`<div class="ai-kv"><span>等什麼</span><span>${act.wait_condition}</span></div>`) : ""}
+        ${act.type === "Wait" && act.wait_condition ? h`<div class="ai-kv"><span>等什麼</span><span>${act.wait_condition}</span></div>` : ""}
         <div class="ai-kv"><span>下一步觸發</span><span>${act.next_trigger || ""}</span></div>
 
         <div class="ai-sec-title">交易方案(${broker}掛單價)</div>
-        <div class="ai-kv"><span>進場</span><span class="num">${raw(aiZone(res, tp.entry_id))}</span></div>
-        <div class="ai-kv"><span>停損</span><span class="num">${raw(aiZone(res, tp.stop_loss_id))}</span></div>
-        <div class="ai-kv"><span>TP1</span><span class="num">${raw(aiZone(res, tp.tp1_id))}</span></div>
-        <div class="ai-kv"><span>TP2</span><span class="num">${raw(aiZone(res, tp.tp2_id))}</span></div>
-        <div class="ai-kv"><span>TP3</span><span class="num">${raw(aiZone(res, tp.tp3_id))}</span></div>
+        <div class="ai-kv"><span>進場</span><span class="num">${aiZone(res, tp.entry_id)}</span></div>
+        <div class="ai-kv"><span>停損</span><span class="num">${aiZone(res, tp.stop_loss_id)}</span></div>
+        <div class="ai-kv"><span>TP1</span><span class="num">${aiZone(res, tp.tp1_id)}</span></div>
+        <div class="ai-kv"><span>TP2</span><span class="num">${aiZone(res, tp.tp2_id)}</span></div>
+        <div class="ai-kv"><span>TP3</span><span class="num">${aiZone(res, tp.tp3_id)}</span></div>
         <div class="ai-kv"><span>失效條件</span><span>${ai.invalidation || ""}</span></div>
       </div>
       <div class="ai-col">
         <div class="ai-sec-title">三情境分析(合計 100%)</div>
-        ${raw(scenarios)}
+        ${scenarios}
         <div class="ai-sec-title">交易理由</div>
         <p>${ai.rationale || ""}</p>
         <div class="ai-sec-title">風險提醒</div>
         <p class="ai-risk">${ai.risk_warning || ""}</p>
         <div class="ai-sec-title">信心因素</div>
-        <ul class="ai-factors">${raw(factors)}</ul>
+        <ul class="ai-factors">${factors}</ul>
         <div class="ai-sec-title">三位分析師</div>
-        ${raw(analystHtml)}
+        ${analystHtml}
       </div>
     </div>`;
 }
@@ -553,7 +554,7 @@ function renderScenario(el, sc, title, offset) {
     el.innerHTML = h`
       <div class="sc-head"><span class="sc-dir">${title}</span>
         <span class="sc-status INVALIDATED">${fatal ? "計算錯誤" : "條件不足"}</span>
-        ${createdAge ? raw(h`<span class="sc-meta-age">${createdAge}</span>`) : ""}</div>
+        ${createdAge ? h`<span class="sc-meta-age">${createdAge}</span>` : ""}</div>
       <div class="${fatal ? "sc-invalid-fatal" : "sc-invalid"}">
         ${fatal ? "⛔ 停損計算錯誤,已攔截(系統將自動重算)" : "⚠️ 條件不足,等待更好的機會"}<br>
         <small>${shown}</small></div>`;
@@ -567,24 +568,23 @@ function renderScenario(el, sc, title, offset) {
     const z = rp[id];
     return z ? `${fmt(z.price_low)} – ${fmt(z.price_high)}` : "–";
   };
-  const rrPills = (sc.risk_reward || []).map((r) => h`<span class="rr-pill">賺賠比 ${r} 倍</span>`).join("");
-  const confirms = (sc.required_confirmations || [])
-    .map((c) => h`<li>${c}</li>`).join("");
+  const rrList = (sc.risk_reward || []).map((r) => h`<span class="rr-pill">賺賠比 ${r} 倍</span>`);
+  const confirmList = (sc.required_confirmations || []).map((c) => h`<li>${c}</li>`);
   const targets = (sc.target_ids || []).map((t) => lv(t)).filter((x) => x !== "–").join(" / ") || "–";
   el.innerHTML = h`
     <div class="sc-head"><span class="sc-dir">${title}</span>
-      <span class="sc-status ${sc.status}">${SC_STATUS_ZH[sc.status] || sc.status}</span>${raw(staleTag)}${raw(tag)}
-      ${createdAge ? raw(h`<span class="sc-meta-age">建立於 ${createdAge}</span>`) : ""}</div>
+      <span class="sc-status ${sc.status}">${SC_STATUS_ZH[sc.status] || sc.status}</span>${staleTag}${tag}
+      ${createdAge ? h`<span class="sc-meta-age">建立於 ${createdAge}</span>` : ""}</div>
     <div class="${sc.stale ? "sc-body-stale" : ""}">
     <div class="sc-levels">
       <div class="kv"><span>進場區</span><span class="num">${lv(sc.entry_zone_id)}</span></div>
       <div class="kv"><span>賠錢出場價</span><span class="num">${lv(sc.stop_loss_id)}</span></div>
       <div class="kv"><span>目標價</span><span class="num">${targets}</span></div>
     </div>
-    ${(rrPills && !sc.stale) ? raw(h`<div class="sc-rr">${raw(rrPills)}</div>`) : ""}
+    ${(rrList.length && !sc.stale) ? h`<div class="sc-rr">${joinSafe(rrList)}</div>` : ""}
     </div>
-    ${sc.setup ? raw(h`<div class="sc-confirm">${sc.setup}</div>`) : ""}
-    ${confirms ? raw(h`<div class="sc-confirm">還要等這些條件:<ul>${raw(confirms)}</ul></div>`) : ""}`;
+    ${sc.setup ? h`<div class="sc-confirm">${sc.setup}</div>` : ""}
+    ${confirmList.length ? h`<div class="sc-confirm">還要等這些條件:<ul>${joinSafe(confirmList)}</ul></div>` : ""}`;
 }
 
 /* ═══ TMGM 價格校正(Price Offset)═══ */
@@ -671,7 +671,7 @@ async function loadAccounts() {
     S.accounts = await (await fetch("/api/accounts")).json();
     const sel = $("pf-account");
     sel.innerHTML = S.accounts.map((a) =>
-      h`<option value="${a.id}"${a.strategy_source === "SELF" ? raw(" selected") : ""}>${a.name}</option>`).join("");
+      h`<option value="${a.id}"${a.strategy_source === "SELF" ? trusted(" selected") : ""}>${a.name}</option>`).join("");
   } catch (e) { console.warn("accounts load failed", e); }
 }
 
@@ -685,8 +685,8 @@ async function loadComparison() {
       return;
     }
     const f = (v, suffix = "") => (v == null ? "–" : `${v}${suffix}`);
-    const pnlCell = (v) => v == null ? raw("–")
-      : raw(h`<span class="${v >= 0 ? "cmp-pos" : "cmp-neg"}">${v >= 0 ? "+" : ""}${v}</span>`);
+    const pnlCell = (v) => v == null ? trusted("–")
+      : h`<span class="${v >= 0 ? "cmp-pos" : "cmp-neg"}">${v >= 0 ? "+" : ""}${v}</span>`;
     const rows = [
       ["已平倉筆數", (s) => f(s.total_trades)],
       ["勝 / 敗", (s) => `${s.wins} / ${s.losses}`],
@@ -698,16 +698,16 @@ async function loadComparison() {
       ["總損益(USD)", (s) => pnlCell(s.total_pnl_usd)],
       ["行為標籤數(紀律)", (s) => f(s.behavior_flags)],
     ];
-    const heads = accs.map((a) =>
-      h`<th>${a.name}<div class="cmp-src">${a.strategy_source}</div></th>`).join("");
-    const bodyRows = rows.map(([label, fn]) =>
-      h`<tr><td>${label}</td>${raw(accs.map((a) =>
-        h`<td class="num">${fn(a.stats)}</td>`).join(""))}</tr>`).join("");
+    const heads = joinSafe(accs.map((a) =>
+      h`<th>${a.name}<div class="cmp-src">${a.strategy_source}</div></th>`));
+    const bodyRows = joinSafe(rows.map(([label, fn]) =>
+      h`<tr><td>${label}</td>${joinSafe(accs.map((a) =>
+        h`<td class="num">${fn(a.stats)}</td>`))}</tr>`));
     body.innerHTML = h`
       <table class="hist-table cmp-table"><thead><tr>
-        <th>指標</th>${raw(heads)}
+        <th>指標</th>${heads}
       </tr></thead><tbody>
-        ${raw(bodyRows)}
+        ${bodyRows}
       </tbody></table>
       <div class="bias-disclaimer" style="margin-top:10px">${data.note || ""}</div>`;
   } catch (e) {
@@ -733,15 +733,15 @@ async function loadMentor() {
       <div class="mentor-card">
         <div class="mentor-head">
           <span class="pos-side">${s.direction === "LONG" ? "老師做多" : "老師做空"}</span>
-          ${raw(alignChip(s.alignment, s.alignment_text))}
+          ${alignChip(s.alignment, s.alignment_text)}
           <button class="btn btn-sm" data-act="mentor-dismiss" data-id="${s.id}">移除</button>
         </div>
         <div class="kv"><span>老師進場價</span><span class="num">${fmt(s.entry_price)}</span></div>
-        ${s.stop_loss != null ? raw(h`<div class="kv"><span>老師停損(賠錢出場)</span><span class="num">${fmt(s.stop_loss)}</span></div>`) : ""}
-        ${(s.targets || []).length ? raw(h`<div class="kv"><span>老師停利(目標價)</span><span class="num">${(s.targets || []).map((t) => fmt(t)).join(" / ")}</span></div>`) : ""}
+        ${s.stop_loss != null ? h`<div class="kv"><span>老師停損(賠錢出場)</span><span class="num">${fmt(s.stop_loss)}</span></div>` : ""}
+        ${(s.targets || []).length ? h`<div class="kv"><span>老師停利(目標價)</span><span class="num">${(s.targets || []).map((t) => fmt(t)).join(" / ")}</span></div>` : ""}
         <div class="kv"><span>系統目前方向</span><span>${sysDir(s.system_direction)}</span></div>
         <div class="kv"><span>與現價差</span><span class="num">${s.entry_vs_current_text || "–"}</span></div>
-        ${s.note ? raw(h`<div class="mentor-memo">老師備註:${s.note}</div>`) : ""}
+        ${s.note ? h`<div class="mentor-memo">老師備註:${s.note}</div>` : ""}
       </div>`).join("") +
       h`<div class="bias-disclaimer">${data.note}</div>`;
   } catch (e) {
@@ -759,9 +759,9 @@ async function loadMentorHistory() {
     }
     const s = data.summary;
     const pnlCls = (v) => (v >= 0 ? "cmp-pos" : "cmp-neg");
-    const gapNote = (data.known_gaps || []).map((g) =>
-      h`<div class="mentor-gap">⚠ 已知資料缺口:${g} —— 這段期間「沒有紀錄」,不代表老師空手</div>`).join("");
-    const tradeRows = data.trades.map((t) => h`<tr>
+    const gapNote = joinSafe((data.known_gaps || []).map((g) =>
+      h`<div class="mentor-gap">⚠ 已知資料缺口:${g} —— 這段期間「沒有紀錄」,不代表老師空手</div>`));
+    const tradeRows = joinSafe(data.trades.map((t) => h`<tr>
           <td class="${t.direction === "LONG" ? "cmp-pos" : "cmp-neg"}">${t.direction === "LONG" ? "做多" : "做空"}</td>
           <td class="num">${fmt(t.entry_price)} → ${fmt(t.close_price)}</td>
           <td class="num">${fmt(t.points)}</td>
@@ -769,7 +769,7 @@ async function loadMentorHistory() {
           <td class="num ${pnlCls(t.pl_usd)}">${t.pl_usd >= 0 ? "+" : ""}${fmt(t.pl_usd)}</td>
           <td class="num mentor-nodata" title="歷史匯入,無停損資料">${t.stop_loss != null ? fmt(t.stop_loss) : "—"}</td>
           <td class="num">${(t.close_time || "").slice(0, 16).replace("T", " ")}</td>
-        </tr>`).join("");
+        </tr>`));
     body.innerHTML = h`
       <div class="mentor-summary">
         <span class="chip info">共 ${s.count} 筆</span>
@@ -779,11 +779,11 @@ async function loadMentorHistory() {
         <span class="chip">扣費後 <b class="num ${pnlCls(s.net_after_fees_usd)}">${s.net_after_fees_usd >= 0 ? "+" : ""}${s.net_after_fees_usd}</b></span>
         <span class="chip">獲利因子 <b class="num">${s.profit_factor ?? "–"}</b></span>
       </div>
-      ${raw(gapNote)}
+      ${gapNote}
       <div style="overflow-x:auto"><table class="hist-table"><thead><tr>
         <th>方向</th><th>進場 → 出場</th><th>點數</th><th>手數</th><th>損益</th>
         <th>賠錢出場價</th><th>平倉時間</th></tr></thead><tbody>
-        ${raw(tradeRows)}
+        ${tradeRows}
       </tbody></table></div>
       <div class="bias-disclaimer">${data.note}</div>`;
   } catch (e) {
@@ -818,12 +818,12 @@ function posCard(p) {
   const r = p.r_multiple;
   const rPct = r == null ? 0 : Math.max(0, Math.min(100, (r / 3) * 100));
   const pnl = p.unrealized_pnl;
-  const hist = [
+  const histList = [
     ...(p.stop_modification_history || []).map((x) =>
       h`<li>${x.time.slice(5, 16).replace("T", " ")} 停損 ${fmt(x.old_stop)} → ${fmt(x.new_stop)}${x.widening ? "(⚠ 擴大)" : ""}</li>`),
     ...(p.partial_exit_history || []).map((x) =>
       h`<li>${x.time.slice(5, 16).replace("T", " ")} 平倉 ${x.percent}% @ ${fmt(x.price)}(R=${x.r_at_exit ?? "–"})</li>`),
-  ].join("");
+  ];
   const targets = (p.planned_targets || []).map((t) => fmt(t)).join(" / ") || "–";
   const actions = h`
     <div class="pos-actions">
@@ -837,8 +837,8 @@ function posCard(p) {
       <span class="pos-side">${p.side === "LONG" ? "做多" : "做空"}</span>
       <span class="chip info">${accountName(p.account_id)}</span>
       <span class="num">${fmt(p.lot_size)} 手・剩餘 ${p.remaining_percent}%</span>
-      ${p.is_open ? "" : raw('<span class="pos-closed-tag">已平倉</span>')}
-      ${pnl != null ? raw(h`<span class="pos-pnl ${pnl >= 0 ? "pos" : "neg"}">${pnl >= 0 ? "+" : ""}${fmt(pnl)} USD</span>`) : ""}
+      ${p.is_open ? "" : trusted('<span class="pos-closed-tag">已平倉</span>')}
+      ${pnl != null ? h`<span class="pos-pnl ${pnl >= 0 ? "pos" : "neg"}">${pnl >= 0 ? "+" : ""}${fmt(pnl)} USD</span>` : ""}
     </div>
     <div class="pos-meta">
       <span>進場 <span class="num">${fmt(p.entry_price)}</span></span>
@@ -846,13 +846,13 @@ function posCard(p) {
       <span>目標價 <span class="num">${targets}</span></span>
       <span>開倉 <span class="num">${p.open_time.slice(5, 16).replace("T", " ")}</span></span>
     </div>
-    ${p.is_open ? raw(h`
+    ${p.is_open ? h`
     <div class="pos-row"><div class="lbl"><span>賺賠比進度(回本 → 3 倍)</span>
       <span class="num">${r == null ? "沒設出場價" : fmt(r, 2) + " 倍"}</span></div>
       <div class="progress"><div class="fill" style="width:${rPct + "%"}"></div></div></div>
-    ${p.recommended_action ? raw(h`<div class="pos-advice">${p.recommended_action}</div>`) : ""}
-    ${raw(actions)}`) : ""}
-    ${hist ? raw(h`<details class="pos-hist"><summary>操作歷史</summary><ul>${raw(hist)}</ul></details>`) : ""}
+    ${p.recommended_action ? h`<div class="pos-advice">${p.recommended_action}</div>` : ""}
+    ${actions}` : ""}
+    ${histList.length ? h`<details class="pos-hist"><summary>操作歷史</summary><ul>${joinSafe(histList)}</ul></details>` : ""}
   </div>`;
 }
 
@@ -943,16 +943,16 @@ async function loadHistory() {
       body.innerHTML = '<div class="empty">尚無歷史分析紀錄。</div>';
       return;
     }
-    const histRows = rows.map((r) => h`<tr>
+    const histRows = joinSafe(rows.map((r) => h`<tr>
         <td class="num">${r.run_time.slice(5, 16).replace("T", " ")}</td>
         <td>${stateZh(r.market_state)}</td>
         <td><span class="act-pill ${decisionClass(r.action)}">${r.action}</span></td>
         <td><span class="grade-badge g-${r.grade}" style="width:26px;height:26px;font-size:.85rem">${r.grade}</span></td>
         <td class="num">${r.evidence_score}</td>
-        <td>${r.quality}</td></tr>`).join("");
+        <td>${r.quality}</td></tr>`));
     body.innerHTML = h`<table class="hist-table"><thead><tr>
       <th>時間 (UTC)</th><th>市場狀態</th><th>決策</th><th>信心</th><th>證據</th><th>品質</th>
-      </tr></thead><tbody>${raw(histRows)}</tbody></table>`;
+      </tr></thead><tbody>${histRows}</tbody></table>`;
   } catch (e) {
     body.innerHTML = '<div class="empty">歷史紀錄載入失敗。</div>';
   }

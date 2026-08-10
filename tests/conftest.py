@@ -8,6 +8,7 @@ sys.path.insert(0, str(ROOT))
 
 os.environ["MOCK_DATA_MODE"] = "true"
 os.environ["DISABLE_SCHEDULER"] = "true"
+os.environ["APP_ENV"] = "test"          # 認可的測試環境:未設 token 時放行寫入(fail-open 僅限此)
 os.environ["DATABASE_URL"] = "sqlite:///./test_xauusd.db"
 os.environ["TELEGRAM_BOT_TOKEN"] = ""
 os.environ["TELEGRAM_CHAT_ID"] = ""
