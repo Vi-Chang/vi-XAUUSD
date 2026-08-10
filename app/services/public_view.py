@@ -17,6 +17,17 @@ logger = logging.getLogger(__name__)
 
 # 隱私邊界版本:只有此版(position-free / public-safe pipeline)產生的分析才可公開自由文字。
 # 舊資料(缺此戳記或戳記不符)一律不公開 AI/summary/mistake 等自由文字 → fail-closed。
+#
+# 語意:此戳記代表「公開自由文字的資料來源與 AI snapshot 已通過隱私審查」。
+# ⚠️ 升版規則(下列任一改變都必須重新審查隱私邊界並 +1,舊戳記資料即自動不公開):
+#   1. AI snapshot / input fields(app/llm/snapshot.py 或餵給 generate_ai_strategy 的欄位)
+#   2. public allowlist(PUBLIC_ALLOWLIST)
+#   3. market_decision 生成位置/時機(analysis_service 的捕捉點)
+#   4. summary_zh_tw / most_likely_user_mistake_now 的資料來源
+#   5. private/public projection 邏輯(public_analysis)
+#   6. legacy fallback 政策(_unavailable / 版本閘門)
+# 此常數為唯一真實來源(single source of truth):analysis_service 蓋章時 import 本常數,
+# 不得各處硬編碼數字(見 tests/test_privacy_boundary.py 的 invariant test)。
 PRIVACY_BOUNDARY_VERSION = 1
 
 # 公開允許的頂層欄位(白名單)。決策另由 market_decision 映射為 decision。

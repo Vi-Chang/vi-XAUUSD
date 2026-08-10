@@ -82,6 +82,7 @@ Gemini 免費層限制:**10 RPM / 250 次每日**。系統內建保護(超限自
 - **隱私不變式**:公開 payload 以 allowlist 建構(新增欄位預設不公開),並有遞迴 key 斷言禁止 `position_management`/`mentor_comparison`/`trading_coach`/`lot_size`/`pnl`/`account`/`behavior_flags`/`note` 等私人 key。公開 AI 文字為市場分析(生成時未餵入個人持倉/老師資料);決策以「市場層 `market_decision`」呈現,不洩露持倉 MANAGE 覆寫。
 - **舊資料(text-level leakage)防線**:公開投影有版本戳記 `privacy_boundary_version`。只有此版 position-free pipeline 產生的分析才可公開 AI/summary/mistake 等**自由文字**;舊資料(無戳記或缺 `market_decision`)一律回 `{available:false, reason:"analysis_refresh_required"}`,**不** fallback 舊 decision、不做關鍵字清洗。投影任何例外/型別錯誤一律 fail-closed(回安全 envelope,絕不外送原始 full payload;log 只含錯誤類別 + version/id)。
 - **首次部署**:privacy 版本上線後,舊分析不公開;排程產生第一筆新版分析後公開 dashboard 自動恢復。匿名 GET 不會為刷新而觸發分析;admin 可經受保護 `POST /api/analysis/run` 立即刷新。UI 顯示「分析格式已更新,等待下一次排程」(不揭露內部版本/安全細節)。
+- **`privacy_boundary_version` 升版規則**:此戳記(`app/services/public_view.py`,單一真實來源)代表「公開自由文字的資料來源與 AI snapshot 已通過隱私審查」。**下列任一改變都必須重新審查並 +1**:(1) AI snapshot/input fields、(2) public allowlist、(3) `market_decision` 生成位置、(4) summary/mistake 資料來源、(5) private/public projection、(6) legacy fallback 政策。升版後,舊戳記的既有分析自動停止公開(fail-closed),直到排程/管理員產生新版。`tests/test_privacy_boundary.py` 的 invariant test 會確認常數、pipeline 蓋章、schema 欄位同源(禁止硬編碼三份數字)。
 
 ## 健康檢查端點
 

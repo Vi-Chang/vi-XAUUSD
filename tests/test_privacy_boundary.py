@@ -338,6 +338,42 @@ def test_public_ws_legacy_unavailable(client):
         assert "老師私人筆記" not in str(msg)
 
 
+# ── privacy_boundary_version invariant(單一真實來源)──────────
+
+def test_privacy_version_single_source_of_truth():
+    """常數、pipeline 蓋章、schema 欄位同源;不得硬編碼三份 magic number。"""
+    import inspect
+    import re
+    import app.services.analysis_service as asvc
+    from app.schemas.analysis import AnalysisResult
+
+    src = inspect.getsource(asvc)
+    # pipeline 蓋章必須 import 並使用常數,不得硬編碼數字賦值(如 = 1)
+    assert "from app.services.public_view import PRIVACY_BOUNDARY_VERSION" in src
+    assert "result.privacy_boundary_version = PRIVACY_BOUNDARY_VERSION" in src
+    assert not re.search(r"privacy_boundary_version\s*=\s*\d", src), "不得硬編碼版本數字"
+    # schema 預設為 0(legacy sentinel),與 current 常數不同義
+    assert AnalysisResult().privacy_boundary_version == 0
+    assert pv.PRIVACY_BOUNDARY_VERSION >= 1
+    # 只有 current 戳記能公開;current± 或 0 皆被閘門擋下
+    base = _full_result_with_private(stamped=True)
+    assert pv.public_analysis(base)["available"] is True
+    for bad in (0, pv.PRIVACY_BOUNDARY_VERSION + 1):
+        base["privacy_boundary_version"] = bad
+        assert pv.public_analysis(base)["available"] is False, bad
+
+
+def test_privacy_version_stamped_end_to_end():
+    """實際 pipeline 產生的分析,戳記 == public_view 常數(端到端同源)。"""
+    import asyncio
+    from app.providers.mock import MockProvider
+    from app.services.analysis_service import run_analysis
+    r = asyncio.run(run_analysis(MockProvider(), trigger="manual"))
+    assert r.privacy_boundary_version == pv.PRIVACY_BOUNDARY_VERSION
+    # 且經公開投影可正常公開(available:True)
+    assert pv.public_analysis(r.model_dump())["available"] is True
+
+
 # ── AI 送出的 user_payload 遞迴無私人 key(position-free 完整性)──
 
 def test_ai_user_payload_has_no_private_keys(monkeypatch):
