@@ -235,8 +235,23 @@ def compute_readiness(state) -> dict:
     }
 
 
+# 對匿名訪客最小化:auth 組態原因不細分(missing/too_short/flag),一律回 configuration_error。
+# 詳細原因只寫入啟動時的 CRITICAL log(不對外揭露 token 缺失/過短/旗標細節)。
+_SENSITIVE_READINESS_REASONS = frozenset({
+    "admin_token_missing", "admin_token_too_short",
+    "allow_unauthenticated_mutations_set_in_production",
+})
+
+
+def _public_reason(reason: str) -> str:
+    return "configuration_error" if reason in _SENSITIVE_READINESS_REASONS else reason
+
+
 def readiness_payload(state) -> dict:
-    return compute_readiness(state)
+    """公開 /health/ready:狀態 + 一般化原因(不洩露 auth 組態細節)。"""
+    r = compute_readiness(state)
+    r["reason"] = _public_reason(r["reason"])
+    return r
 
 
 def health_payload(state) -> dict:
@@ -262,7 +277,7 @@ def health_payload(state) -> dict:
     return {
         "status": "degraded" if (dead or data_lagging) else "ok",
         "ready": readiness["ready"],
-        "readiness_reason": readiness["reason"],
+        "readiness_reason": _public_reason(readiness["reason"]),
         "market_open": market_is_open(),
         "provider": state.provider.name if state.provider else None,
         "provider_consecutive_failures": getattr(state, "l1_fail_count", 0),

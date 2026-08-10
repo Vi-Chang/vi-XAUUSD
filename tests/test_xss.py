@@ -74,6 +74,15 @@ def test_dangerous_fields_go_through_h_template():
 
 
 def test_mutation_calls_use_credentials():
-    """postJSON 需帶 same-origin 憑證(session cookie),並在 401 時走登入重試。"""
+    """postJSON 需帶 same-origin 憑證(session cookie),並在 401 時走共享登入重試。"""
     assert 'credentials: "same-origin"' in APP_JS
-    assert "adminLogin" in APP_JS and "/api/admin/login" in APP_JS
+    assert "ensureLogin" in APP_JS and "/api/admin/login" in APP_JS
+
+
+def test_no_permanent_token_persisted_in_frontend():
+    """永久 token 不得寫入 localStorage/sessionStorage/URL/cookie。"""
+    assert "localStorage" not in APP_JS and "sessionStorage" not in APP_JS
+    # 不得把 token 放進 document.cookie 或 URL query
+    import re
+    assert not re.search(r'document\.cookie\s*=', APP_JS)
+    assert "token=" not in APP_JS.replace('{ token }', '').replace('"token"', '')

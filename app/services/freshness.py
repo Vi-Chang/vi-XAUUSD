@@ -50,12 +50,15 @@ def _strip_prices(sc: dict, status: str, reasons: list[str]) -> None:
 
 
 def _downgrade_decision(result: dict, reason: str) -> None:
-    d = result.get("decision") or {}
-    d["action"] = "WATCH"
-    d["confidence_grade"] = "X"
-    d["evidence_score"] = 0          # 證據分數不得沿用舊值
-    d["reason"] = reason
-    result["decision"] = d
+    for key in ("decision", "market_decision"):   # 市場層決策同步降級,公開投影才一致
+        d = result.get(key)
+        if not isinstance(d, dict):
+            continue
+        d["action"] = "WATCH"
+        d["confidence_grade"] = "X"
+        d["evidence_score"] = 0      # 證據分數不得沿用舊值
+        d["reason"] = reason
+        result[key] = d
     result["decision_downgraded"] = True
 
 

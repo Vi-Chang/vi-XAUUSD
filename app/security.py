@@ -204,8 +204,11 @@ async def require_admin(request: Request) -> None:
         ok, via = is_authorized(request)
         if not ok:
             raise HTTPException(status_code=401, detail="需要管理權限:請提供有效的管理憑證。")
-        # session-cookie 路徑:額外 CSRF 檢查(header-token 路徑不受影響,保留 curl 用法)
-        if via == "session" and not _same_site(request):
+        # CSRF:僅對「會改狀態的方法」+ session-cookie 路徑檢查 Origin 同源。
+        # GET/HEAD 為安全且 idempotent,且 SameSite=Strict cookie 已防跨站送出,
+        # 故不對一般 GET 要求 Origin(避免誤擋同源 GET fetch,其不帶 Origin header)。
+        unsafe = request.method not in ("GET", "HEAD", "OPTIONS")
+        if via == "session" and unsafe and not _same_site(request):
             raise HTTPException(status_code=403, detail="來源驗證失敗:請從本站操作。")
         return
     # 未設 token

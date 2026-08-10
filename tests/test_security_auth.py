@@ -13,9 +13,10 @@ from app import security
 
 
 class FakeReq:
-    def __init__(self, headers=None, cookies=None):
+    def __init__(self, headers=None, cookies=None, method="POST"):
         self.headers = headers or {}
         self.cookies = cookies or {}
+        self.method = method
 
 
 @pytest.fixture(autouse=True)
@@ -179,6 +180,19 @@ def test_header_token_not_subject_to_origin_check():
     # 即使帶跨站 Origin,header-token 路徑不受 CSRF 檢查(非 cookie,無法被 CSRF 濫用)
     _run(security.require_admin(FakeReq(
         headers={"host": "h", "origin": "https://evil.com", "X-Admin-Token": "tok"})))
+
+
+def test_get_with_session_skips_origin_check():
+    """安全方法(GET)+ session cookie:不要求 Origin(SameSite=Strict 已防跨站送 cookie)。"""
+    _set(token="tok", env="production")
+    sid, _ = security.create_session()
+    cookie = {get_settings().admin_session_cookie: sid}
+    # GET 無 Origin(同源 fetch 不帶 Origin)→ 仍放行
+    _run(security.require_admin(FakeReq(headers={"host": "h"}, cookies=cookie, method="GET")))
+    # 但 POST 無 Origin → 403(維持 CSRF 防護)
+    with pytest.raises(Exception) as ei:
+        _run(security.require_admin(FakeReq(headers={"host": "h"}, cookies=cookie, method="POST")))
+    assert ei.value.status_code == 403
 
 
 # ── session 生命週期 / 上限 / 過期 ─────────────────────────

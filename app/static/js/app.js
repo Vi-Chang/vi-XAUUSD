@@ -22,7 +22,12 @@ const S = {
   zonePrims: [], priceLines: [], eventPrims: [],
   analysis: null, events: [],
   prevBid: null, countdownTarget: null,
+  authed: false, privWs: null,   // 管理登入狀態 + 私人 WebSocket
 };
+
+// 私人面板(登入後才載入;登出/過期時清空 DOM)
+const PRIVATE_PANELS = ["position-list", "mentor-body", "mentor-history",
+                        "coach-body", "compare-body"];
 
 const $ = (id) => document.getElementById(id);
 const unskel = (el) => el && el.classList.remove("skel");
@@ -668,7 +673,7 @@ const accountName = (id) => {
 
 async function loadAccounts() {
   try {
-    S.accounts = await (await fetch("/api/accounts")).json();
+    S.accounts = (await getPrivate("/api/accounts", null)) || [];
     const sel = $("pf-account");
     sel.innerHTML = S.accounts.map((a) =>
       h`<option value="${a.id}"${a.strategy_source === "SELF" ? trusted(" selected") : ""}>${a.name}</option>`).join("");
@@ -678,7 +683,8 @@ async function loadAccounts() {
 async function loadComparison() {
   const body = $("compare-body");
   try {
-    const data = await (await fetch("/api/accounts/comparison")).json();
+    const data = await getPrivate("/api/accounts/comparison", "compare-body");
+    if (data === null) return;
     const accs = data.accounts || [];
     if (!accs.length) {
       body.innerHTML = '<div class="empty">尚無帳戶。</div>';
@@ -719,7 +725,8 @@ async function loadComparison() {
 async function loadMentor() {
   const body = $("mentor-body");
   try {
-    const data = await (await fetch("/api/mentor/signals")).json();
+    const data = await getPrivate("/api/mentor/signals", "mentor-body");
+    if (data === null) return;
     if (!data.has_signals) {
       body.innerHTML = '<div class="empty">目前沒有老師帶單。新增後這裡會顯示老師方向與系統方向的比對。</div>';
       return;
@@ -752,7 +759,8 @@ async function loadMentor() {
 async function loadMentorHistory() {
   const body = $("mentor-history");
   try {
-    const data = await (await fetch("/api/mentor/history")).json();
+    const data = await getPrivate("/api/mentor/history", "mentor-history");
+    if (data === null) return;
     if (!data.trades.length) {
       body.innerHTML = '<div class="empty">尚無歷史紀錄。</div>';
       return;
@@ -803,7 +811,8 @@ window.dismissMentor = dismissMentor;
 async function loadPositions() {
   const list = $("position-list");
   try {
-    const rows = await (await fetch("/api/positions")).json();
+    const rows = await getPrivate("/api/positions", "position-list");
+    if (rows === null) return;
     if (!rows.length) {
       list.innerHTML = '<div class="empty">尚無持倉紀錄。用上方表單輸入你在券商實際建立的部位,系統會追蹤 R 倍數並依規則給出管理建議。</div>';
       return;
@@ -856,17 +865,88 @@ function posCard(p) {
   </div>`;
 }
 
-// 需要管理權限時:提示輸入 token → 換取 HttpOnly session cookie(不儲存 token)。
-async function adminLogin() {
-  const token = prompt("此操作需要管理權限,請輸入管理 token:");
-  if (!token) return false;
+// ═══ 管理登入 / 私人資料存取 ═══════════════════════════════
+// 單一共享登入流程:多個私人請求同時 401 時只跳一次輸入框。token 不寫入任何儲存。
+let _loginInflight = null;
+function ensureLogin() {
+  if (_loginInflight) return _loginInflight;
+  _loginInflight = (async () => {
+    const token = prompt("請輸入管理 token 以檢視/操作個人資料(登入後不再重複詢問):");
+    if (!token) return false;
+    try {
+      const r = await fetch("/api/admin/login", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token }), credentials: "same-origin",
+      });
+      if (r.ok) { await onLoggedIn(); return true; }
+      return false;
+    } catch (e) { return false; }
+  })().finally(() => { _loginInflight = null; });
+  return _loginInflight;
+}
+
+async function refreshAuthState() {
   try {
-    const r = await fetch("/api/admin/login", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token }), credentials: "same-origin",
-    });
-    return r.ok;
-  } catch (e) { return false; }
+    const s = await (await fetch("/api/admin/status", { credentials: "same-origin" })).json();
+    S.authed = !!s.authenticated;
+  } catch (e) { S.authed = false; }
+  updateAuthUI();
+}
+
+function updateAuthUI() {
+  const inBtn = $("admin-login-btn"), outBtn = $("admin-logout-btn");
+  if (inBtn) inBtn.hidden = S.authed;
+  if (outBtn) outBtn.hidden = !S.authed;
+}
+
+// 登入成功:更新 UI、重載私人面板、連上私人 WS
+async function onLoggedIn() {
+  S.authed = true;
+  updateAuthUI();
+  connectPrivateWS();
+  reloadPrivatePanels();
+}
+
+// 登出或 session 過期:清空私人 DOM、關閉私人 WS、回到未登入狀態
+function clearPrivate(reason) {
+  S.authed = false;
+  updateAuthUI();
+  if (S.privWs) { try { S.privWs.close(); } catch (e) { /* noop */ } S.privWs = null; }
+  for (const id of PRIVATE_PANELS) lockPanel(id, reason);
+}
+
+async function doLogout() {
+  try { await fetch("/api/admin/logout", { method: "POST", credentials: "same-origin" }); }
+  catch (e) { /* noop */ }
+  clearPrivate();
+}
+
+// 私人面板未登入時的佔位(不殘留舊資料)
+function lockPanel(id, reason) {
+  const el = $(id);
+  if (!el) return;
+  el.innerHTML = h`<div class="empty locked">🔒 私人資料,登入後查看${reason ? "(" + reason + ")" : ""}
+    <button class="btn btn-sm" data-act="admin-login">登入</button></div>`;
+}
+
+function reloadPrivatePanels() {
+  const active = document.querySelector(".tab.active");
+  const tab = active ? active.dataset.tab : "";
+  loadAccounts();
+  if (tab === "position") loadPositions();
+  else if (tab === "mentor") { loadMentor(); loadMentorHistory(); }
+  else if (tab === "coach") loadCoach();
+  else if (tab === "compare") loadComparison();
+}
+
+// 私人資料 GET:帶 cookie;未登入 → 鎖定面板(不自動跳登入,由使用者按登入鈕觸發共享流程)。
+// 回傳 null 表示未授權(呼叫端顯示鎖定佔位)。
+async function getPrivate(url, panelId) {
+  if (!S.authed) { if (panelId) lockPanel(panelId); return null; }
+  const r = await fetch(url, { credentials: "same-origin" });
+  if (r.status === 401 || r.status === 403) { clearPrivate("登入已失效"); return null; }
+  if (!r.ok) return null;
+  return r.json();
 }
 
 async function postJSON(url, body) {
@@ -875,12 +955,29 @@ async function postJSON(url, body) {
     body: JSON.stringify(body), credentials: "same-origin",
   });
   let r = await send();
-  if (r.status === 401 && await adminLogin()) {
-    r = await send();   // 登入成功後重試一次
+  if ((r.status === 401 || r.status === 403) && await ensureLogin()) {
+    r = await send();   // 登入成功後重試一次(共享流程)
   }
   const data = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(data.detail || r.status);
   return data;
+}
+
+// 私人 WebSocket:登入後連線;收到分析更新即重載開啟中的私人面板;斷線視為過期。
+function connectPrivateWS() {
+  if (S.privWs) return;
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  const ws = new WebSocket(`${proto}://${location.host}/ws/private`);
+  S.privWs = ws;
+  ws.onmessage = (e) => {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg.type === "analysis") reloadPrivatePanels();
+    } catch (err) { /* noop */ }
+  };
+  ws.onclose = () => {
+    if (S.privWs === ws) { S.privWs = null; if (S.authed) clearPrivate("連線已中斷,請重新登入"); }
+  };
 }
 
 async function actStop(id) {
@@ -919,7 +1016,8 @@ async function actClose(id) {
 async function loadCoach() {
   const body = $("coach-body");
   try {
-    const flags = await (await fetch("/api/behavior/flags")).json();
+    const flags = await getPrivate("/api/behavior/flags", "coach-body");
+    if (flags === null) return;
     if (!flags.length) {
       body.innerHTML = '<div class="empty">尚無行為標籤。當持倉操作觸發紀律問題(擴大停損、過早平倉…)時會顯示於此。</div>';
       return;
@@ -1053,10 +1151,16 @@ async function boot() {
     else if (act === "pos-stop") actStop(id);
     else if (act === "pos-partial") actPartial(id);
     else if (act === "pos-close") actClose(id);
+    else if (act === "admin-login") ensureLogin();
   });
 
+  $("admin-login-btn").addEventListener("click", () => ensureLogin());
+  $("admin-logout-btn").addEventListener("click", () => doLogout());
+
   connectWS();
-  loadAccounts();
+  await refreshAuthState();          // 判斷是否已登入(session cookie),更新 UI
+  if (S.authed) { connectPrivateWS(); loadAccounts(); }
+  else { for (const id of PRIVATE_PANELS) lockPanel(id); }
   setupOffsetEditor();
   try { renderOffset(await (await fetch("/api/offset")).json()); } catch (e) { /* noop */ }
 

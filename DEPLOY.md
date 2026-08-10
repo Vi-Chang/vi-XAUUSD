@@ -69,6 +69,18 @@ Gemini 免費層限制:**10 RPM / 250 次每日**。系統內建保護(超限自
 
 > 前端 XSS 防護:所有動態 HTML 經單一 `escape.js`(`h`` 預設跳脫、`SafeHtml` 型別、`joinSafe`;`trusted()` 僅限程式碼內字面值)。本機開發 `scripts/dev_server.py` 已設 `APP_ENV=development`。
 
+## 公開 / 私人資料邊界(隱私 A+B)
+
+公開黃金市場分析維持開放;個人資料受保護。
+
+- **公開(免登入)**:市場分析 dashboard —— 價格、圖表、市場狀態、技術指標、市場結構、關鍵價位/FVG、事件風險、規則引擎與 AI **市場分析**、公開多空劇本。
+  - `GET /api/analysis/latest` 回傳**公開投影**(單一集中 allowlist:`app/services/public_view.py`),移除所有私人欄位;**無副作用**(匿名或已登入的 GET 都不觸發 LLM/provider/新分析/Telegram;無快取時唯讀 DB,再無則回「尚無分析」)。只有受保護的 `POST /api/analysis/run` 或排程可產生新分析。
+  - 公開 WebSocket:`/ws`(public alias)—— 只傳公開投影。
+- **私人(需 admin session/header)**:`GET /api/accounts`、`/api/accounts/comparison`、`/api/positions`、`/api/behavior/flags`、`/api/mentor/history`、`/api/mentor/signals`,以及私人 WebSocket `/ws/private`(須有效 session cookie + 同源;session 過期即停止傳送)。
+  - 未登入回固定 401,不洩露私人欄位是否存在。
+  - 前端:未登入時私人面板顯示「🔒 私人資料,登入後查看」(不殘留舊 DOM);單一共享登入流程(多個 401 只跳一次);登入後重載私人面板 + 連 `/ws/private`;登出/過期清除私人 DOM 並關閉私人 WS。永久 token 不進 localStorage/sessionStorage/URL/HTML/cookie。
+- **隱私不變式**:公開 payload 以 allowlist 建構(新增欄位預設不公開),並有遞迴 key 斷言禁止 `position_management`/`mentor_comparison`/`trading_coach`/`lot_size`/`pnl`/`account`/`behavior_flags`/`note` 等私人 key。公開 AI 文字為市場分析(生成時未餵入個人持倉/老師資料);決策以「市場層 `market_decision`」呈現,不洩露持倉 MANAGE 覆寫。
+
 ## 健康檢查端點
 
 | 端點 | 用途 |

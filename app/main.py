@@ -171,13 +171,41 @@ async def health_ready() -> JSONResponse:
     return JSONResponse(payload, status_code=code)
 
 
+def _current_mid() -> float | None:
+    tick = state.quote_cache.fresh_tick(max_age_seconds=600) if state.quote_cache else None
+    return tick.mid if tick else None
+
+
 def _serve_result(raw: dict) -> dict:
-    """統一讀取邊界:TMGM Offset 校正 → 時效/一致性標記(BUGFIX R2/R4/R6)。"""
+    """私人/完整讀取邊界:TMGM Offset 校正 → 時效/一致性標記(BUGFIX R2/R4/R6)。"""
     from app.services.freshness import annotate_freshness
     from app.services.price_offset import apply_offset_to_result
-    tick = state.quote_cache.fresh_tick(max_age_seconds=600) if state.quote_cache else None
-    return annotate_freshness(apply_offset_to_result(raw),
-                              current_mid=tick.mid if tick else None)
+    return annotate_freshness(apply_offset_to_result(raw), current_mid=_current_mid())
+
+
+def _serve_public(raw: dict) -> dict:
+    """公開讀取邊界:不套用個人 offset(用分析原始價位)→ 時效標記 → 公開投影(allowlist)。"""
+    from app.services.freshness import annotate_freshness
+    from app.services.public_view import public_analysis
+    annotated = annotate_freshness(raw, current_mid=_current_mid())
+    return public_analysis(annotated)
+
+
+def _load_last_analysis_from_db() -> dict | None:
+    """讀取 DB 最後一筆成功分析(唯讀,無副作用);供匿名首載使用,不觸發新分析。"""
+    from sqlalchemy import select
+
+    from app.db.models import AnalysisRun
+    from app.db.session import db_session
+    try:
+        with db_session() as db:
+            row = db.execute(select(AnalysisRun)
+                             .order_by(AnalysisRun.run_time.desc())
+                             .limit(1)).scalars().first()
+            return dict(row.result_json) if row and row.result_json else None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("load last analysis failed: %s", exc)
+        return None
 
 
 async def _run_full_analysis_shared(trigger: str) -> dict:
@@ -197,12 +225,25 @@ async def _run_full_analysis_shared(trigger: str) -> dict:
 
 
 @app.get("/api/analysis/latest")
-async def latest_analysis() -> dict:
-    """最新分析結果(固定 JSON,spec 二十二)。輸出時套用 Offset + 時效標記。"""
-    if state.latest_result is None:
-        # 首載無快取:經 single-flight 觸發一次(與排程/手動不會重複跑)
-        await _run_full_analysis_shared("manual")
-    return _serve_result(state.latest_result)
+async def latest_analysis(request: Request) -> dict:
+    """最新分析結果(公開市場分析投影)。
+
+    無副作用:匿名/已登入的 GET 皆不得觸發 LLM / provider refresh / 新 AnalysisRun /
+    Telegram。無記憶體快取時,唯讀 DB 最後一筆;仍無 → 回安全的「尚無分析」狀態。
+    只有受保護的 POST /api/analysis/run 或排程可產生新分析。
+    """
+    from app.security import is_authorized
+    raw = state.latest_result
+    if raw is None:
+        raw = _load_last_analysis_from_db()      # 唯讀,不觸發任何成本行為
+        if raw is not None:
+            state.latest_result = raw            # read-through 快取
+    if raw is None:
+        return {"public": True, "available": False,
+                "reason": "尚無分析結果,請稍後(排程或管理員觸發後產生)"}
+    # 已登入(admin)→ 完整私人 payload;匿名 → 公開投影(移除持倉/老師/紀律等私人資料)
+    ok, _via = is_authorized(request)
+    return _serve_result(raw) if ok else _serve_public(raw)
 
 
 @app.post("/api/analysis/run", dependencies=[Depends(require_admin)])
@@ -221,7 +262,7 @@ class MentorSignalReq(BaseModel):
     note: str | None = None
 
 
-@app.get("/api/mentor/signals")
+@app.get("/api/mentor/signals", dependencies=[Depends(require_admin)])
 async def get_mentor_signals() -> dict:
     """老師帶單(僅供參考)+ 與目前系統方向的比對。"""
     from app.services.mentor_service import comparison_block
@@ -247,7 +288,7 @@ async def create_mentor_signal(req: MentorSignalReq) -> dict:
         raise HTTPException(400, str(exc)) from exc
 
 
-@app.get("/api/mentor/history")
+@app.get("/api/mentor/history", dependencies=[Depends(require_admin)])
 async def get_mentor_history() -> dict:
     """老師帶單歷史紀錄(CLOSED 匯入單)+ 統計 + 已知缺口。與進行中訊號分開。"""
     from app.services.mentor_service import history_block
@@ -415,21 +456,21 @@ async def _price_or_market(price: float | None) -> float:
     return tick.mid
 
 
-@app.get("/api/accounts")
+@app.get("/api/accounts", dependencies=[Depends(require_admin)])
 async def get_accounts() -> list[dict]:
     """帳戶清單(帳戶A 老師帶單 / 帳戶B 自己交易,可擴充)。"""
     from app.services.account_service import list_accounts
     return list_accounts()
 
 
-@app.get("/api/accounts/comparison")
+@app.get("/api/accounts/comparison", dependencies=[Depends(require_admin)])
 async def accounts_comparison() -> dict:
     """對照頁:各帳戶分開統計並列(spec 二十四指標)。"""
     from app.services.account_service import comparison
     return comparison()
 
 
-@app.get("/api/positions")
+@app.get("/api/positions", dependencies=[Depends(require_admin)])
 async def get_positions(include_closed: bool = True,
                         account_id: int | None = None) -> list[dict]:
     from app.services.position_service import list_positions, position_view
@@ -499,7 +540,7 @@ async def close_position_api(position_id: int, req: CloseReq) -> dict:
     return out
 
 
-@app.get("/api/behavior/flags")
+@app.get("/api/behavior/flags", dependencies=[Depends(require_admin)])
 async def behavior_flags(limit: int = 20) -> list[dict]:
     from app.services.position_service import recent_behavior_flags
     return recent_behavior_flags(limit=max(1, min(limit, 100)))
@@ -527,23 +568,59 @@ def _ws_origin_ok(ws: WebSocket) -> bool:
         return False
 
 
+def _ws_session_id(ws: WebSocket) -> str | None:
+    return ws.cookies.get(get_settings().admin_session_cookie)
+
+
+async def _ws_send(ws: WebSocket, payload: dict) -> None:
+    import json
+    await ws.send_text(json.dumps(payload, ensure_ascii=False, default=str))
+
+
 @app.websocket("/ws")
-async def ws_endpoint(ws: WebSocket) -> None:
-    """即時推送:tick(未收線 K 棒跳動)、candle_closed、analysis。"""
+async def ws_public(ws: WebSocket) -> None:
+    """公開即時頻道(public alias):只傳公開投影(tick、candle_closed、公開 analysis)。"""
     if not _ws_origin_ok(ws):
-        await ws.close(code=1008)   # policy violation:跨站 Origin 拒絕
+        await ws.close(code=1008)   # 跨站 Origin 拒絕
         return
     await ws.accept()
-    state.ws_clients.add(ws)
+    state.ws_public.add(ws)
     try:
-        import json
         if state.latest_result:
-            await ws.send_text(json.dumps(
-                {"type": "analysis", "data": _serve_result(state.latest_result)},
-                ensure_ascii=False, default=str))
+            await _ws_send(ws, {"type": "analysis", "data": _serve_public(state.latest_result)})
         while True:
-            await ws.receive_text()  # keepalive;client 可送任意訊息
+            await ws.receive_text()  # keepalive
     except WebSocketDisconnect:
         pass
     finally:
-        state.ws_clients.discard(ws)
+        state.ws_public.discard(ws)
+
+
+@app.websocket("/ws/private")
+async def ws_private(ws: WebSocket) -> None:
+    """私人即時頻道:須有效 admin session cookie + 同源;傳完整私人 payload。
+
+    使用安全 session cookie(非 header/URL/subprotocol token)。session 過期由 broadcast 檢查並關閉。
+    """
+    from app.security import session_valid
+    if not _ws_origin_ok(ws):
+        await ws.close(code=1008)   # 跨站 Origin 拒絕
+        return
+    sid = _ws_session_id(ws)
+    if not session_valid(sid):
+        await ws.close(code=1008)   # 無有效 session → 拒絕私人頻道
+        return
+    await ws.accept()
+    state.ws_private[ws] = sid
+    try:
+        if state.latest_result:
+            await _ws_send(ws, {"type": "analysis", "data": _serve_result(state.latest_result)})
+        while True:
+            await ws.receive_text()  # keepalive
+            if not session_valid(_ws_session_id(ws)):   # 收到訊息時再驗一次
+                await ws.close(code=1008)
+                break
+    except WebSocketDisconnect:
+        pass
+    finally:
+        state.ws_private.pop(ws, None)

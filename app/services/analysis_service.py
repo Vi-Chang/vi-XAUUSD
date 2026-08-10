@@ -238,6 +238,8 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
                               or decision.short_scenario.status == "INVALID")),
     )
     result.snapshot_ts = tick.quote_time.isoformat()
+    # 市場層決策快照(在持倉 MANAGE 覆寫之前捕捉);公開投影用此,避免洩露個人持倉。
+    result.market_decision = result.decision.model_copy()
 
     # ── 9b. 我的持倉整合(持倉管理優先於尋找新交易)──
     # 注意:這裡只看「我實際下單的持倉」(positions 表)。老師帶單(mentor_signals)
@@ -313,17 +315,14 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
         else:
             from app.services.price_offset import get_offset_for
             off = get_offset_for(tick.provider or "")
-            pos_dict = None
-            if result.position_management.has_position:
-                pm = result.position_management
-                pos_dict = {"has": True, "side": pm.position_side,
-                            "entry": pm.entry_price, "r": pm.current_r_multiple}
+            # 隱私邊界:AI 為「公開市場分析」,不餵入個人持倉/老師資料,
+            # 確保公開 ai_strategy 文字不會引用私人內容(持倉管理由確定性引擎另行私有輸出)。
             from app.llm.service import generate_ai_strategy
             result.ai_strategy = await generate_ai_strategy(
                 price=tick.mid, atr15=atr15, state=state,
                 quality_status=quality.status, ev=ev, ind=ind,
                 structures=structures, levels=levels, dfs_closed=dfs_closed,
-                bias=result.bias_analysis, position=pos_dict,
+                bias=result.bias_analysis, position=None,
                 no_signal=not off.get("calibrated", False))
             # 跨市場資料同步填入顯示欄位(讀快取,不重複抓)
             from app.services.cross_market import get_cross_market
