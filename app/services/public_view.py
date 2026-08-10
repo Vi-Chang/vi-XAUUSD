@@ -11,6 +11,14 @@
 """
 from __future__ import annotations
 
+import logging
+
+logger = logging.getLogger(__name__)
+
+# 隱私邊界版本:只有此版(position-free / public-safe pipeline)產生的分析才可公開自由文字。
+# 舊資料(缺此戳記或戳記不符)一律不公開 AI/summary/mistake 等自由文字 → fail-closed。
+PRIVACY_BOUNDARY_VERSION = 1
+
 # 公開允許的頂層欄位(白名單)。決策另由 market_decision 映射為 decision。
 PUBLIC_ALLOWLIST: tuple[str, ...] = (
     "version", "snapshot_ts", "timestamp_utc", "timestamp_taipei", "symbol",
@@ -44,18 +52,48 @@ def _public_meta(meta: dict | None) -> dict:
     }
 
 
+def _unavailable(reason: str = "analysis_refresh_required") -> dict:
+    """安全的 unavailable envelope(不含任何原始 payload)。"""
+    return {"public": True, "available": False, "reason": reason}
+
+
 def public_analysis(full: dict) -> dict:
-    """把完整分析 dict 投影為公開 payload(allowlist)。輸入不被就地修改。"""
-    if not isinstance(full, dict):
-        return {"available": False}
-    out: dict = {k: full[k] for k in PUBLIC_ALLOWLIST if k in full}
-    # 決策:一律使用市場層 market_decision(未被持倉 MANAGE 覆寫);缺則退回安全空決策
-    md = full.get("market_decision")
-    out["decision"] = md if isinstance(md, dict) else {
-        "action": "NO_TRADE", "confidence_grade": "X", "evidence_score": 0, "reason": ""}
-    out["meta"] = _public_meta(full.get("meta"))
-    out["public"] = True     # 明確標記此為公開投影(前端可據此顯示登入提示)
-    return out
+    """把完整分析 dict 投影為公開 payload(allowlist + 版本閘門 + fail-closed)。
+
+    fail-closed:缺版本戳記 / 缺 market_decision / 型別錯誤 / 投影例外 / 殘留私人 key,
+    一律回安全 unavailable envelope,**絕不** fallback 回傳原始 full payload。
+    log 只含錯誤類別與 version/id,不記錄完整 payload。
+    """
+    ver = full.get("privacy_boundary_version") if isinstance(full, dict) else None
+    vid = full.get("version") if isinstance(full, dict) else None
+    try:
+        if not isinstance(full, dict):
+            return _unavailable("unavailable")
+        # 版本閘門:舊資料(戳記缺失/不符)不得公開自由文字(text-level leakage 防線)
+        if int(ver or 0) != PRIVACY_BOUNDARY_VERSION:
+            return _unavailable("analysis_refresh_required")
+        # 市場層決策必須存在;不得 fallback 用可能被持倉污染的舊 decision
+        md = full.get("market_decision")
+        if not isinstance(md, dict):
+            logger.error("public projection: missing market_decision (ver=%s id=%s)", ver, vid)
+            return _unavailable("analysis_refresh_required")
+
+        out: dict = {k: full[k] for k in PUBLIC_ALLOWLIST if k in full}
+        out["decision"] = md
+        out["meta"] = _public_meta(full.get("meta"))
+        out["public"] = True
+        out["available"] = True
+
+        # 防禦性:確認公開 payload 無私人 key(allowlist 理論上已保證;仍雙重把關)
+        leaked = assert_no_private_keys(out)
+        if leaked:
+            logger.error("public projection leaked keys=%s (id=%s)", leaked, vid)
+            return _unavailable("unavailable")
+        return out
+    except Exception as exc:  # noqa: BLE001 — 任何例外一律 fail-closed,不外洩原始資料
+        logger.error("public projection failed: %s (ver=%s id=%s)",
+                     type(exc).__name__, ver, vid)
+        return _unavailable("unavailable")
 
 
 def collect_keys(obj) -> set[str]:

@@ -240,6 +240,9 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
     result.snapshot_ts = tick.quote_time.isoformat()
     # 市場層決策快照(在持倉 MANAGE 覆寫之前捕捉);公開投影用此,避免洩露個人持倉。
     result.market_decision = result.decision.model_copy()
+    # 隱私邊界戳記:本 pipeline 為 position-free / public-safe,標記為可公開自由文字。
+    from app.services.public_view import PRIVACY_BOUNDARY_VERSION
+    result.privacy_boundary_version = PRIVACY_BOUNDARY_VERSION
 
     # ── 9b. 我的持倉整合(持倉管理優先於尋找新交易)──
     # 注意:這裡只看「我實際下單的持倉」(positions 表)。老師帶單(mentor_signals)

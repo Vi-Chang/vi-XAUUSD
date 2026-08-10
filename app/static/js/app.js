@@ -300,6 +300,15 @@ function updateFreshnessUI() {
 setInterval(updateFreshnessUI, 30000);
 
 function applyAnalysis(a) {
+  // 尚無可公開分析(例如隱私邊界版本升級後,等待下一次新版分析)→ 友善等待訊息。
+  // 不顯示內部版本或安全細節。
+  if (!a || a.available === false) {
+    const badge = $("decision-badge");
+    if (badge) { unskel(badge); badge.textContent = "分析更新中"; badge.className = "decision-badge"; }
+    const reason = $("decision-reason");
+    if (reason) { unskel(reason); reason.textContent = "分析格式已更新,等待下一次排程產生最新市場分析。"; }
+    return;
+  }
   S.analysis = a;
   S.analysisMeta = {
     version: a.version || 0,
