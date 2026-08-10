@@ -98,6 +98,17 @@ class Settings(BaseSettings):
     auto_trading_enabled: bool = False          # 永遠預設 false(spec 一)
     tradingview_webhook_enabled: bool = False   # Webhook 為付費選配(spec 二之4)
 
+    # ── 管理權限 / 存取控制(Phase 1 安全性)──
+    # 保護會改狀態或產生成本的寫入端點。未設定時:
+    #   mock/開發模式 → 放行(方便本機與測試);正式(mock=false)→ 一律拒絕(fail-closed)。
+    admin_token: str = ""                       # 管理 token(走環境變數,禁止硬編碼)
+    admin_session_ttl_minutes: int = 720        # 瀏覽器登入 session 有效時間(12h)
+    admin_session_cookie: str = "xau_admin"     # session cookie 名稱
+    # /api/analysis/run 節流:同一時間窗內只受理一次手動觸發(防濫用/防重跑)
+    analysis_run_cooldown_seconds: int = 20
+    # 完整分析 single-flight 等鎖逾時(秒):等待進行中分析的最長時間,逾時回 503
+    analysis_lock_timeout_seconds: int = 120
+
     # ── 資料品質 ──
     live_poll_seconds: int = 15                 # 即時價輪詢間隔(provider 可強制放大)
     source_mismatch_pct: float = 0.0005         # 0.05%

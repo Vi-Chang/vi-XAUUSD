@@ -5,8 +5,8 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -16,7 +16,11 @@ from app.db.session import init_db
 from app.logging_config import setup_logging
 from app.notifications.telegram import build_notification_manager
 from app.providers import get_primary_provider
-from app.services.heartbeat import health_payload
+from app.security import (
+    admin_status, clear_session_cookie, create_session, destroy_session, rate_limit,
+    require_admin, set_session_cookie, token_matches,
+)
+from app.services.heartbeat import health_payload, liveness_payload, readiness_payload
 from app.services.scheduler import build_scheduler, state
 from app.utils.timeutils import ensure_utc
 
@@ -49,6 +53,7 @@ async def lifespan(app: FastAPI):
     if not s.disable_scheduler:
         scheduler = build_scheduler()
         scheduler.start()
+        state.scheduler_started = True
         logger.info("scheduler started (mock=%s, provider=%s)",
                     s.mock_data_mode, state.provider.name)
     yield
@@ -66,6 +71,23 @@ app = FastAPI(title="XAUUSD Multi-Timeframe Analysis (MVP)", version=__version__
               lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
+# script-src 'self':所有腳本皆同源外部檔(圖表庫/messages/escape/app),不用 inline。
+# style-src 允許 'unsafe-inline':lightweight-charts 會動態設定 inline style,且首頁有
+# 少量 inline style;樣式注入風險遠低於腳本,權衡後保留。
+_CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; font-src 'self'; connect-src 'self'; "
+        "object-src 'none'; base-uri 'self'; frame-ancestors 'none'")
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("Content-Security-Policy", _CSP)
+    return response
+
 
 @app.get("/", include_in_schema=False)
 async def index() -> FileResponse:
@@ -73,10 +95,62 @@ async def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html")
 
 
+# ── 管理權限:token → 短效 session(瀏覽器操作用;永久 token 不外洩)──
+class AdminLoginReq(BaseModel):
+    token: str | None = None   # 也可改用 X-Admin-Token header 傳入
+
+
+@app.post("/api/admin/login")
+async def admin_login(request: Request, response: Response,
+                      req: AdminLoginReq | None = None) -> dict:
+    """以管理 token 換取 HttpOnly session cookie。token 可走 header 或 body。
+
+    回應只表明成功與否,不回傳 token 或任何 secret。
+    """
+    from app.security import HEADER_NAME
+    provided = request.headers.get(HEADER_NAME) or (req.token if req else None)
+    if not token_matches(provided):
+        # 未設定 token 或 token 不符 → 一律相同訊息,不洩露何者為真
+        raise HTTPException(status_code=401, detail="管理憑證無效。")
+    sid, ttl = create_session()
+    set_session_cookie(response, sid, ttl)
+    return {"ok": True}
+
+
+@app.post("/api/admin/logout")
+async def admin_logout(request: Request, response: Response) -> dict:
+    destroy_session(request.cookies.get(get_settings().admin_session_cookie))
+    clear_session_cookie(response)
+    return {"ok": True}
+
+
+@app.get("/api/admin/status")
+async def admin_status_api(request: Request) -> dict:
+    """前端判斷是否需要/已登入(不洩露 token 內容)。"""
+    return admin_status(request)
+
+
 @app.get("/health")
 async def health() -> dict:
-    """供外部監控(UptimeRobot 免費方案)輪詢。"""
+    """綜合監控(供 UptimeRobot 等)。保留原有欄位並附 readiness 摘要。"""
     return health_payload(state)
+
+
+@app.get("/health/live")
+async def health_live() -> dict:
+    """Liveness:行程是否存活。外部 provider 暫時失敗不影響此判定,恆回 200。"""
+    return liveness_payload(state)
+
+
+@app.get("/health/ready")
+async def health_ready() -> JSONResponse:
+    """Readiness:是否能提供新鮮分析。休市為正常(ready),非 stale failure。
+
+    未就緒回 503(含原因),供負載平衡/監控判斷是否導流。
+    """
+    payload = readiness_payload(state)
+    code = 200 if payload.get("ready") else 503
+    return JSONResponse(payload, status_code=code)
 
 
 def _serve_result(raw: dict) -> dict:
@@ -88,22 +162,36 @@ def _serve_result(raw: dict) -> dict:
                               current_mid=tick.mid if tick else None)
 
 
+async def _run_full_analysis_shared(trigger: str) -> dict:
+    """經 single-flight 執行核心分析並更新共享狀態(手動/首載共用)。"""
+    import asyncio
+    from datetime import datetime, timezone
+
+    from app.services.single_flight import run_analysis_shared
+    try:
+        result = await run_analysis_shared(state.provider, trigger=trigger)
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(status_code=503,
+                            detail="分析忙碌中,請稍後再試。") from exc
+    state.latest_result = result.model_dump()   # 儲存 TwelveData 原值(分析真值)
+    state.last_full_analysis = datetime.now(timezone.utc)
+    return state.latest_result
+
+
 @app.get("/api/analysis/latest")
 async def latest_analysis() -> dict:
     """最新分析結果(固定 JSON,spec 二十二)。輸出時套用 Offset + 時效標記。"""
     if state.latest_result is None:
-        from app.services.analysis_service import run_analysis
-        result = await run_analysis(state.provider, trigger="manual")
-        state.latest_result = result.model_dump()
+        # 首載無快取:經 single-flight 觸發一次(與排程/手動不會重複跑)
+        await _run_full_analysis_shared("manual")
     return _serve_result(state.latest_result)
 
 
-@app.post("/api/analysis/run")
+@app.post("/api/analysis/run", dependencies=[Depends(require_admin)])
 async def trigger_analysis() -> dict:
-    """使用者手動請求分析(LLM 觸發政策允許來源之一)。"""
-    from app.services.analysis_service import run_analysis
-    result = await run_analysis(state.provider, trigger="manual")
-    state.latest_result = result.model_dump()   # 儲存 TwelveData 原值(分析真值)
+    """使用者手動請求分析(受管理權限保護 + 節流,避免濫用與重跑)。"""
+    rate_limit("analysis_run", get_settings().analysis_run_cooldown_seconds)
+    await _run_full_analysis_shared("manual")
     return _serve_result(state.latest_result)
 
 
@@ -130,7 +218,7 @@ async def get_mentor_signals() -> dict:
     return comparison_block(action, cur)
 
 
-@app.post("/api/mentor/signals")
+@app.post("/api/mentor/signals", dependencies=[Depends(require_admin)])
 async def create_mentor_signal(req: MentorSignalReq) -> dict:
     """新增一筆老師帶單(不算持倉,純參考比對)。"""
     from app.services.mentor_service import create_signal
@@ -148,7 +236,7 @@ async def get_mentor_history() -> dict:
     return history_block()
 
 
-@app.post("/api/mentor/signals/{signal_id}/deactivate")
+@app.post("/api/mentor/signals/{signal_id}/deactivate", dependencies=[Depends(require_admin)])
 async def deactivate_mentor_signal(signal_id: int) -> dict:
     from app.services.mentor_service import deactivate_signal
     try:
@@ -170,7 +258,7 @@ class OffsetReq(BaseModel):
     mode: str | None = None
 
 
-@app.post("/api/offset")
+@app.post("/api/offset", dependencies=[Depends(require_admin)])
 async def set_offset_api(req: OffsetReq) -> dict:
     """手動修改 Offset 值或模式;即時生效,不重跑分析。"""
     from app.services.price_offset import offset_info, set_offset
@@ -336,7 +424,7 @@ async def get_positions(include_closed: bool = True,
             for p in list_positions(include_closed=include_closed, account_id=account_id)]
 
 
-@app.post("/api/positions")
+@app.post("/api/positions", dependencies=[Depends(require_admin)])
 async def create_position_api(req: PositionCreateReq) -> dict:
     from app.services.position_service import create_position, position_view
     try:
@@ -350,7 +438,7 @@ async def create_position_api(req: PositionCreateReq) -> dict:
     return position_view(pos, cur)
 
 
-@app.post("/api/positions/{position_id}/stop")
+@app.post("/api/positions/{position_id}/stop", dependencies=[Depends(require_admin)])
 async def modify_stop_api(position_id: int, req: StopModifyReq) -> dict:
     from app.services.position_service import modify_stop, position_view
     try:
@@ -367,7 +455,7 @@ async def modify_stop_api(position_id: int, req: StopModifyReq) -> dict:
     return out
 
 
-@app.post("/api/positions/{position_id}/partial_exit")
+@app.post("/api/positions/{position_id}/partial_exit", dependencies=[Depends(require_admin)])
 async def partial_exit_api(position_id: int, req: PartialExitReq) -> dict:
     from app.services.position_service import partial_exit, position_view
     price = await _price_or_market(req.price)
@@ -380,7 +468,7 @@ async def partial_exit_api(position_id: int, req: PartialExitReq) -> dict:
     return out
 
 
-@app.post("/api/positions/{position_id}/close")
+@app.post("/api/positions/{position_id}/close", dependencies=[Depends(require_admin)])
 async def close_position_api(position_id: int, req: CloseReq) -> dict:
     from app.services.position_service import close_position, position_view
     price = await _price_or_market(req.price)

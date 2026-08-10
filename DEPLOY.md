@@ -41,6 +41,33 @@ Gemini 免費層限制:**10 RPM / 250 次每日**。系統內建保護(超限自
 > 付費模型的費用斷路器要生效,需在 `app/llm/usage.py` 的 `PRICING_PER_M`
 > 表中有該模型價格;表中沒有的模型成本記為 $0(僅次數保護)。
 
+## 存取控制 / 管理權限(Phase 1 安全性)
+
+會改狀態或產生成本的**寫入端點**(分析觸發、老師帶單、offset、持倉操作)受管理權限保護。
+
+| 變數 | 說明 |
+|---|---|
+| `ADMIN_TOKEN` | 管理 token(走環境變數,勿硬編碼)。產生方式:`openssl rand -hex 32` |
+| `ADMIN_SESSION_TTL_MINUTES` | 瀏覽器登入 session 有效時間(預設 720 = 12h) |
+| `ANALYSIS_RUN_COOLDOWN_SECONDS` | `/api/analysis/run` 手動觸發冷卻(預設 20s) |
+
+行為:
+- **正式環境(`MOCK_DATA_MODE=false`)未設定 `ADMIN_TOKEN` → 所有寫入端點回 503**(fail-closed,不默認放行)。**部署前務必在 Zeabur 設定 `ADMIN_TOKEN`**,否則儀表板的新增/修改功能會全部停用。
+- 自動化 / curl:在 header 帶 `X-Admin-Token: <token>`(constant-time 比對)。
+- 瀏覽器:第一次點寫入操作時會提示輸入 token → 換取 HttpOnly + SameSite=Strict session cookie(永久 token 不進 HTML/JS/URL/localStorage)。
+- 讀取端點(dashboard 顯示、health、K 棒、分析結果)維持公開。
+- 回應與 log 不含 token、環境變數或內部例外。
+
+另已加入安全標頭:`Content-Security-Policy`(script-src 'self')、`X-Content-Type-Options: nosniff`、`X-Frame-Options: DENY`、`Referrer-Policy: no-referrer`。
+
+## 健康檢查端點
+
+| 端點 | 用途 |
+|---|---|
+| `GET /health` | 綜合監控(保留原有欄位 + readiness/監控摘要),供 UptimeRobot 等 |
+| `GET /health/live` | Liveness:行程存活即 200(外部 provider 暫時失敗不影響) |
+| `GET /health/ready` | Readiness:能否提供新鮮分析;未就緒回 503。**週末休市視為就緒**(不誤判 stale) |
+
 ## Zeabur 更新環境變數的注意事項
 
 `zeabur variable env -f <file>` 是**整組覆蓋**:每次更新必須包含完整變數集,

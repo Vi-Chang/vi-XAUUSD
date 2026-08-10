@@ -45,6 +45,9 @@ class AppState:
         self.l1_fail_count = 0
         self.l1_alerted = False
         self.td_degraded_alerted = False
+        # ── 監控用(readiness/health)──
+        self.last_quote_ok_at: datetime | None = None   # 最後一次成功取得報價
+        self.scheduler_started = False                  # 排程是否已啟動
 
     def mark(self, job: str) -> None:
         self.last_job_run[job] = datetime.now(timezone.utc)
@@ -94,6 +97,7 @@ async def job_quote_l1() -> None:
         state.quote_cache.add(tick)
         state.l1_fail_count = 0
         state.l1_alerted = False
+        state.last_quote_ok_at = datetime.now(timezone.utc)
 
         from app.db.models import LivePrice
         from app.db.session import db_session
@@ -192,10 +196,11 @@ async def run_full_analysis(*, trigger: str, reason_zh: str | None) -> None:
                 f"Twelve Data 今日用量已達 {s.twelve_data_soft_limit} 次,"
                 f"完整分析自動降級:改用既有快取 K 棒,不再打行情 API", severity="WARN")
 
-        from app.services.analysis_service import run_analysis
+        from app.services.single_flight import run_analysis_shared
         tick = state.quote_cache.fresh_tick(max_age_seconds=l1_interval_seconds() * 3)
-        result = await run_analysis(state.provider, trigger=trigger,
-                                    tick=tick, cached_only=degraded)
+        # single-flight:與手動 API / 首載共用同一道鎖,並發只實際跑一次
+        result = await run_analysis_shared(state.provider, trigger=trigger,
+                                           tick=tick, cached_only=degraded)
         state.latest_result = result.model_dump()
         state.last_full_analysis = datetime.now(timezone.utc)
 
