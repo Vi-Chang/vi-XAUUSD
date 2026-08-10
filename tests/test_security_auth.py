@@ -25,12 +25,18 @@ def _reset():
     s = get_settings()
     saved = (s.admin_token, s.mock_data_mode, s.app_env,
              s.allow_unauthenticated_mutations, s.max_admin_sessions,
-             s.admin_login_max_attempts, s.admin_session_ttl_minutes)
+             s.admin_login_max_attempts, s.admin_session_ttl_minutes,
+             s.min_admin_token_length)
     yield
     (s.admin_token, s.mock_data_mode, s.app_env,
      s.allow_unauthenticated_mutations, s.max_admin_sessions,
-     s.admin_login_max_attempts, s.admin_session_ttl_minutes) = saved
+     s.admin_login_max_attempts, s.admin_session_ttl_minutes,
+     s.min_admin_token_length) = saved
     security.reset_state_for_tests()
+    # 清理:本檔的 /api/analysis/run 會寫入共享排程狀態,避免污染其他測試(如 test_tiered)
+    from app.services.scheduler import state as _sched_state
+    _sched_state.latest_result = None
+    _sched_state.last_full_analysis = None
 
 
 def _set(token="", env="test", allow_unauth=False):
@@ -84,29 +90,58 @@ def test_test_env_no_token_allows():
     _run(security.require_admin(FakeReq()))              # test 放行
 
 
-def test_unknown_app_env_defaults_to_production_fail_closed():
-    """未知/空 APP_ENV → validator 正規化為 production → fail-closed。"""
-    s = get_settings()
-    s.admin_token = ""
-    s.app_env = "garbage"                                # validator 只在載入時跑;直接測 helper
-    # 模擬:security 讀 app_env();此處直接驗證 unauthenticated_mutations_allowed
+def test_unknown_blank_misspelled_app_env_defaults_to_production():
+    """未知/空/拼錯 APP_ENV → validator 正規化為 production(fail-closed)。"""
     from app.config import Settings
-    assert Settings(app_env="garbage").app_env == "production"
-    assert Settings(app_env="").app_env == "production"
+    for bad in ("garbage", "", "prod", "Production ", "production", "dev"):
+        assert Settings(app_env=bad).app_env == "production", bad
+    for good in ("development", "test", "production"):
+        assert Settings(app_env=good).app_env == good
 
 
-def test_explicit_allow_flag_opens_even_in_production():
+def test_allow_flag_does_NOT_open_production():
+    """回歸:APP_ENV=production 時,ALLOW_UNAUTHENTICATED_MUTATIONS=true 也不得放行。"""
     _set(token="", env="production", allow_unauth=True)
-    _run(security.require_admin(FakeReq()))              # 顯式旗標 → 放行
+    with pytest.raises(Exception) as ei:
+        _run(security.require_admin(FakeReq()))          # 仍拒絕未授權
+    assert ei.value.status_code == 503
+    # 且視為組態錯誤
+    bad, why = security.production_auth_misconfigured()
+    assert bad and why == "allow_unauthenticated_mutations_set_in_production"
+
+
+def test_allow_flag_opens_only_in_dev_test():
+    for env in ("development", "test"):
+        _set(token="", env=env, allow_unauth=True)
+        _run(security.require_admin(FakeReq()))          # dev/test 放行(本就放行)
+        assert security.production_auth_misconfigured()[0] is False
+
+
+def test_production_token_too_short_is_misconfigured():
+    s = get_settings()
+    s.app_env, s.allow_unauthenticated_mutations = "production", False
+    s.min_admin_token_length = 32
+    s.admin_token = "short"                              # < 32 → 弱憑證
+    bad, why = security.production_auth_misconfigured()
+    assert bad and why == "admin_token_too_short"
+    s.admin_token = "x" * 32                             # 達門檻 → OK
+    assert security.production_auth_misconfigured()[0] is False
 
 
 def test_production_token_missing_flag():
     _set(token="", env="production")
     assert security.production_token_missing() is True
-    _set(token="tok", env="production")
+    _set(token="y" * 40, env="production")
     assert security.production_token_missing() is False
     _set(token="", env="development")
     assert security.production_token_missing() is False
+
+
+def test_misconfig_reason_does_not_leak_token_length_or_content():
+    s = get_settings()
+    s.app_env, s.admin_token, s.min_admin_token_length = "production", "abc123secret", 32
+    _bad, why = security.production_auth_misconfigured()
+    assert "abc123secret" not in why and "12" not in why and "len" not in why.lower()
 
 
 # ── header vs session + CSRF/Origin ─────────────────────────

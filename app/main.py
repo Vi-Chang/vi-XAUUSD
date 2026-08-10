@@ -18,8 +18,7 @@ from app.notifications.telegram import build_notification_manager
 from app.providers import get_primary_provider
 from app.security import (
     admin_status, clear_session_cookie, create_session, destroy_session,
-    production_token_missing, rate_limit, rate_limit_window, require_admin,
-    set_session_cookie, token_matches,
+    rate_limit, rate_limit_window, require_admin, set_session_cookie, token_matches,
 )
 from app.services.heartbeat import health_payload, liveness_payload, readiness_payload
 from app.services.scheduler import build_scheduler, state
@@ -50,12 +49,14 @@ async def lifespan(app: FastAPI):
         state.secondary = TwelveDataProvider()
     from datetime import datetime, timezone
     state.started_at = datetime.now(timezone.utc)
-    # 組態安全檢查:production 缺 ADMIN_TOKEN → 明確在啟動時失敗(不等到 mutation 才發現)。
+    # 組態安全檢查:production 寫入權限組態有誤 → 明確在啟動時失敗(不等到 mutation 才發現)。
     # 不中止行程(讓公開 dashboard/health 仍可服務),但 readiness 會回報 not-ready。
-    if production_token_missing():
-        logger.critical("SECURITY: APP_ENV=production 但未設定 ADMIN_TOKEN —— "
+    from app.security import production_auth_misconfigured
+    _auth_bad, _auth_why = production_auth_misconfigured()
+    if _auth_bad:
+        logger.critical("SECURITY: APP_ENV=production 寫入權限組態有誤(%s)—— "
                         "所有寫入端點已停用(fail-closed),/health/ready 將回報 not-ready。"
-                        "請設定 ADMIN_TOKEN 後重啟。")
+                        "請修正組態後重啟。", _auth_why)
     scheduler = None
     if not s.disable_scheduler:
         scheduler = build_scheduler()

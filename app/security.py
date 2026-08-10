@@ -60,17 +60,36 @@ def is_production() -> bool:
 
 
 def unauthenticated_mutations_allowed() -> bool:
-    """未設 token 時是否放行寫入:僅 development/test 或顯式旗標;production 一律否。"""
-    s = get_settings()
-    if s.allow_unauthenticated_mutations:
-        return True
+    """未設 token 時是否放行寫入:**僅** development/test。
+
+    production 一律 False(即使 ALLOW_UNAUTHENTICATED_MUTATIONS=true 也不放行);
+    該旗標在 production 只被視為組態錯誤(見 production_auth_misconfigured)。
+    """
     return app_env() in ("development", "test")
 
 
+def production_auth_misconfigured() -> tuple[bool, str]:
+    """production 的寫入權限組態是否有誤;回傳 (有誤, 原因碼)。
+
+    原因碼不含 token 內容或實際長度,可安全用於 readiness/log。
+    """
+    if not is_production():
+        return False, ""
+    s = get_settings()
+    if s.allow_unauthenticated_mutations:
+        return True, "allow_unauthenticated_mutations_set_in_production"
+    tok = _token_configured()
+    if not tok:
+        return True, "admin_token_missing"
+    if len(tok) < max(1, s.min_admin_token_length):
+        return True, "admin_token_too_short"   # 只表達「未達門檻」,不洩露實際長度
+    return False, ""
+
+
 def production_token_missing() -> bool:
-    """production 缺 ADMIN_TOKEN(且未顯式放行)→ 組態錯誤,寫入端點停用。"""
-    return (is_production() and not _token_configured()
-            and not get_settings().allow_unauthenticated_mutations)
+    """相容介面:production 寫入權限是否組態有誤(缺 token / 太短 / 旗標誤設)。"""
+    bad, _why = production_auth_misconfigured()
+    return bad
 
 
 def token_matches(provided: str | None) -> bool:

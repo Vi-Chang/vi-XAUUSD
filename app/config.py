@@ -108,9 +108,11 @@ class Settings(BaseSettings):
     # ── 執行環境(決定 fail-open/closed;不靠 mock/hostname/provider 推測)──
     # development|test|production;未知/空值 → production(安全預設)。
     app_env: str = "production"
-    # 明確允許「未設 ADMIN_TOKEN 時放行寫入」——僅供本機/CI 特例,預設 false(fail-closed)。
-    # 一般情況由 app_env 決定(development/test 放行);此旗標為額外的顯式逃生門。
+    # 顯式逃生門:僅在 development/test 具意義。**production 一律忽略此旗標且不放行**;
+    # 若 production 誤設為 true,視為組態錯誤(startup + readiness 報錯),寫入仍拒絕未授權。
     allow_unauthenticated_mutations: bool = False
+    # production 下 ADMIN_TOKEN 最低長度(不足視為弱憑證,readiness 失敗)。建議 ≥32。
+    min_admin_token_length: int = 32
     # API-only 模式:刻意關閉排程(例如純手動觸發部署)。readiness 據此區分「刻意」與「誤設」。
     api_only_mode: bool = False
 
