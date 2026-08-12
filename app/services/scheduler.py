@@ -144,6 +144,11 @@ async def job_quote_l1() -> None:
                              "ask": fmt_price(tick.ask), "mid": fmt_price(tick.mid),
                              "spread": fmt_price(tick.spread),
                              "time": int(tick.quote_time.timestamp())})
+        # 首次 provider session 可能耗時超過 APScheduler 的 misfire grace，導致原定
+        # 第 10 秒執行的 L2 被跳過。首次報價成功後直接補一筆完整分析，避免新部署
+        # 長時間停在 analysis_refresh_required；後續仍由 L2 事件／定時規則接手。
+        if state.last_full_analysis is None:
+            await run_full_analysis(trigger="startup", reason_zh="服務啟動後首次報價已就緒")
     except Exception as exc:  # noqa: BLE001 — 靜默重試;連續失敗 N 次才警告一次
         state.l1_fail_count += 1
         logger.warning("quote_l1 failed (%d consecutive): %s", state.l1_fail_count, exc)
@@ -217,7 +222,7 @@ def _td_soft_limited() -> bool:
 
 
 async def run_full_analysis(*, trigger: str, reason_zh: str | None) -> None:
-    """執行完整分析;事件觸發訊息帶 ⚡ 前綴,定時保底帶 🕐。"""
+    """執行完整分析；事件觸發訊息帶 ⚡，startup／定時保底不主動發交易提醒。"""
     state.mark("full_analysis")
     s = get_settings()
     try:
