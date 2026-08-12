@@ -1,6 +1,7 @@
 """單一、可驗證的市場分析狀態。UI 與相容欄位都只能由此衍生。"""
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable
 from typing import Literal, cast
 
@@ -8,10 +9,12 @@ import pandas as pd
 
 from app.engines.market_dimensions import dimensions
 from app.engines.market_structure import StructureEvent, StructureReport
+from app.engines.risk_override import apply_risk_priority, detect_short_term_weakness
 from app.i18n import state_zh
 from app.schemas.analysis import AnalysisEvidence, NormalizedAnalysisState
 
 WAIT_MESSAGE = "訊號尚未一致，等待下一根 15 分 K 收盤確認。"
+logger = logging.getLogger(__name__)
 Direction = Literal["bullish", "bearish"]
 TrendBias = Literal["bullish", "bearish", "neutral"]
 BreakoutState = Literal["confirmed", "testing", "failed", "none"]
@@ -107,17 +110,31 @@ def validate_consistency(state: NormalizedAnalysisState) -> NormalizedAnalysisSt
         errors.append("市場狀態與交易建議方向直接相反")
     if state.marketStateCode == "FAILED_BREAKDOWN" and "可追空" in state.tradingScript:
         errors.append("市場狀態與交易建議方向直接相反")
+    if state.shortTermWeakness in ("confirmed", "accelerating") and state.longEntryAllowed:
+        errors.append("短線確認轉弱卻允許新多單")
+    if state.riskOverride == "protect_existing_long" and any(
+            text in state.tradingScript for text in ("強烈做多", "立即做多", "放心持有")):
+        errors.append("保護既有多單時仍顯示強烈做多")
+    if state.eventDataStatus == "FAILED" and state.dataConfidence == "high":
+        errors.append("事件資料失效但資料可信度為 high")
+    if state.entryReadiness == "no_trade" and state.entryTiming == "favorable":
+        errors.append("no_trade 卻標示可進場")
+    if state.supportState in ("confirmed_breakdown", "retest_rejected") \
+            and not state.lastClosedCandleTimestamp:
+        errors.append("沒有已收盤 K 棒時間卻標示有效跌破")
     if errors:
         return state.model_copy(update={"entryTiming": "wait", "riskDirection": "wait",
             "riskLabel": "等待確認", "riskMessage": WAIT_MESSAGE,
             "tradingScript": WAIT_MESSAGE, "mostLikelyMistake": "在訊號矛盾時搶先進場。",
+            "entryReadiness": "no_trade", "riskOverride": "suspend_all_entries",
+            "longEntryAllowed": False, "shortEntryAllowed": False,
             "consistencyValid": False, "consistencyErrors": errors,
             "consistencyMessage": WAIT_MESSAGE})
     return state.model_copy(update={"consistencyValid": True, "consistencyErrors": [],
                                     "consistencyMessage": ""})
 
 
-def validate_api_payload(payload: dict) -> dict:
+def validate_api_payload(payload: dict, *, strict: bool = False) -> dict:
     """API 最後一道防線：加入頂層快照指紋後重跑 validator。"""
     raw = payload.get("normalized_analysis")
     if not isinstance(raw, dict):
@@ -131,6 +148,22 @@ def validate_api_payload(payload: dict) -> dict:
         prices["api"] = float(top_price["mid"])
     checked = validate_consistency(state.model_copy(update={
         "sourceTimestamps": timestamps, "sourcePrices": prices}))
+    api_errors = list(checked.consistencyErrors)
+    for key in ("long_scenario", "short_scenario"):
+        sc = payload.get(key) or {}
+        if checked.entryReadiness == "no_trade" and any(sc.get(x) for x in
+                ("entry_zone_id", "stop_loss_id", "target_ids")):
+            api_errors.append("no_trade 卻產生立即進場或停損價")
+    if api_errors and strict:
+        raise ValueError("ANALYSIS_CONSISTENCY_ERROR:" + ";".join(api_errors))
+    if api_errors:
+        logger.error("ANALYSIS_CONSISTENCY_ERROR errors=%s version=%s",
+                     api_errors, payload.get("version"))
+        checked = checked.model_copy(update={"entryTiming": "wait",
+            "entryReadiness": "no_trade", "riskOverride": "suspend_all_entries",
+            "longEntryAllowed": False, "shortEntryAllowed": False,
+            "tradingScript": WAIT_MESSAGE, "consistencyValid": False,
+            "consistencyErrors": api_errors, "consistencyMessage": WAIT_MESSAGE})
     out = dict(payload)
     out["normalized_analysis"] = checked.model_dump()
     if not checked.consistencyValid:
@@ -150,7 +183,7 @@ def build_normalized_state(*, generated_at: str, market_timestamp: str, current_
                            chase_flags: list[str], indicators: dict | None = None,
                            closed_times: dict[str, str] | None = None,
                            atr15: float = 0.0, event_timestamp: str = "",
-                           event_risk: str = "unknown") -> NormalizedAnalysisState:
+                           event_risk: str = "unknown", event_lockout: bool = False) -> NormalizedAnalysisState:
     indicators = indicators or {}
     closed_times = closed_times or {}
     market_status = _market_status(market_quality)
@@ -159,6 +192,13 @@ def build_normalized_state(*, generated_at: str, market_timestamp: str, current_
         closed_times=closed_times, m15_all=m15_all, m15_closed=m15_closed,
         atr15=atr15, price=current_price, market_status=market_status,
         event_status=event_status, chase_flags=chase_flags)
+    weakness = detect_short_term_weakness(
+        indicators=indicators, support_state=dims["supportState"])
+    priority = apply_risk_priority(weakness=weakness, market_status=market_status,
+        event_status=event_status, event_lockout=event_lockout,
+        market_regime=dims["marketRegime"], entry_readiness=dims["entryReadiness"],
+        support_state=dims["supportState"], levels=dims["confirmationLevels"])
+    dims["entryReadiness"] = priority["entryReadiness"]
     trend: TrendBias = ("bullish" if dims["marketRegime"] in ("bullish", "strong_bullish") else
                         "bearish" if dims["marketRegime"] in ("bearish", "strong_bearish") else "neutral")
     breakout, ev = _breakout(structures.get("15M"), m15_all, m15_closed)
@@ -226,7 +266,14 @@ def build_normalized_state(*, generated_at: str, market_timestamp: str, current_
                     if support_level else "15M 動態支撐")
     resistance_text = (f"15M swing 壓力 {resistance_level.price:.2f}（緩衝 {resistance_level.buffer:.2f}）"
                        if resistance_level else "15M 動態壓力")
-    if dims["marketRegime"] in ("bullish", "strong_bullish") and dims["shortTermMomentum"] in ("pullback", "weakening"):
+    if weakness.state == "accelerating":
+        script = ("短線空方動能擴大。超賣不等於止跌，禁止追多或攤平。"
+                  "若已有多單，優先處理風險；等待已收盤 K 棒形成止跌結構後再評估。")
+        mistake = "因為指標超賣就攤平多單，忽略價格仍在創低與負動能擴大。"
+    elif weakness.state in ("confirmed", "early_warning") and dims["marketRegime"] in ("bullish", "strong_bullish"):
+        script = "大週期偏多，但短線已轉弱；暫停新多單。若已有多單，優先處理風險。"
+        mistake = "把大週期偏多誤認為多單可以放心續抱或繼續追多。"
+    elif dims["marketRegime"] in ("bullish", "strong_bullish") and dims["shortTermMomentum"] in ("pullback", "weakening"):
         script = (f"大週期維持多頭，但短線正在回調。重新站回{resistance_text}且收盤確認，"
                   f"或{support_text}出現止跌結構後，才評估低風險多單；有效跌破並反抽失敗，"
                   "才啟動短線空方劇本。目前等待。")
@@ -265,6 +312,15 @@ def build_normalized_state(*, generated_at: str, market_timestamp: str, current_
         eventDataTimestamp=event_timestamp,
         freshnessBySource={"market": market_status, "events": event_status},
         eventRisk=normalized_event_risk,
+        shortTermWeakness=weakness.state,
+        positionRisk=priority["positionRisk"], riskOverride=priority["riskOverride"],
+        longEntryAllowed=priority["longEntryAllowed"],
+        shortEntryAllowed=priority["shortEntryAllowed"], reasons=priority["reasons"],
+        invalidationConditions=priority["invalidationConditions"],
+        existingLongGuidance=priority["existingLongGuidance"],
+        existingShortGuidance=priority["existingShortGuidance"],
+        structuralInvalidationNote=("以上僅為 swing、ATR 與已收盤 K 棒推導的結構失效區；"
+                                    "不是個人帳戶停損價，未提供持倉與可承受風險時不產生精準停損。"),
         sourceTimestamps={k: market_timestamp for k in
             ("marketState", "evidence", "risk", "tradingScript", "dataQuality")},
         sourcePrices={k: current_price for k in

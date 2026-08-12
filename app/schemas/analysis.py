@@ -130,6 +130,12 @@ class PositionManagement(BaseModel):
     trailing_stop_plan: str = ""
     full_exit_condition: str = ""
     prohibited_actions: list[str] = Field(default_factory=list)
+    current_price: float | None = None
+    unrealized_pnl: float | None = None
+    structural_risk: str = ""
+    account_risk: str = ""
+    risk_release_condition: str = ""
+    data_timestamp: str = ""
 
 
 class TradingCoachView(BaseModel):
@@ -200,6 +206,21 @@ class DynamicConfirmationLevel(BaseModel):
     source: str
 
 
+class AssessmentReason(BaseModel):
+    code: str
+    priority: int
+    message: str
+    evidenceFamilies: list[str] = Field(default_factory=list)
+
+
+class InvalidationCondition(BaseModel):
+    code: str
+    message: str
+    timeframe: str = ""
+    price: float | None = None
+    source: str = ""
+
+
 class NormalizedAnalysisState(BaseModel):
     """畫面判斷的唯一來源；所有欄位屬同一報價與同一根已收盤 K 棒。"""
     generatedAt: str = ""
@@ -249,6 +270,19 @@ class NormalizedAnalysisState(BaseModel):
     eventDataTimestamp: str = ""
     freshnessBySource: dict[str, str] = Field(default_factory=dict)
     eventRisk: Literal["low", "medium", "high", "unknown"] = "unknown"
+    shortTermWeakness: Literal["none", "early_warning", "confirmed", "accelerating"] = "none"
+    positionRisk: Literal["normal", "elevated", "high", "critical"] = "normal"
+    riskOverride: Literal[
+        "none", "block_new_long", "block_new_short", "protect_existing_long",
+        "protect_existing_short", "suspend_all_entries"
+    ] = "suspend_all_entries"
+    longEntryAllowed: bool = False
+    shortEntryAllowed: bool = False
+    reasons: list[AssessmentReason] = Field(default_factory=list)
+    invalidationConditions: list[InvalidationCondition] = Field(default_factory=list)
+    existingLongGuidance: str = ""
+    existingShortGuidance: str = ""
+    structuralInvalidationNote: str = ""
 
 
 class MentorSignalView(BaseModel):

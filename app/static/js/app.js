@@ -416,6 +416,7 @@ function applyAnalysis(a) {
 
 function renderNormalized(n) {
   if (!n) return;
+  renderRiskPriority(n);
   const trend = { bullish: "偏多", bearish: "偏空", neutral: "中性" };
   const breakout = { confirmed: "已收盤確認", testing: "盤中測試", failed: "突破失敗", none: "無突破" };
   const timing = { favorable: "條件有利", chase: "不宜追價", wait: "等待確認", invalid: "資料無效" };
@@ -454,6 +455,50 @@ function renderNormalized(n) {
   $("risk-label").textContent = n.riskLabel;
   $("risk-label").className = "chip " + (n.riskDirection === "none" ? "good" : "warn");
   $("risk-message").textContent = n.riskMessage || "";
+}
+
+function renderRiskPriority(n) {
+  const weakness = {
+    none: "未偵測到明顯轉弱", early_warning: "早期轉弱警告",
+    confirmed: "短線轉弱已確認", accelerating: "短線空方動能加速",
+  };
+  const regimes = {
+    strong_bullish: "強勢多頭", bullish: "大週期偏多", range: "區間",
+    bearish: "大週期偏空", strong_bearish: "強勢空頭",
+  };
+  const contradictions = [];
+  if (["confirmed", "accelerating"].includes(n.shortTermWeakness) && n.longEntryAllowed) {
+    contradictions.push("短線轉弱時仍允許新多單");
+  }
+  if (n.riskOverride === "protect_existing_long" && /立即買入|強烈買入|續抱加碼/.test(n.tradingScript || "")) {
+    contradictions.push("多單保護狀態與交易文案衝突");
+  }
+  if (n.eventDataStatus === "FAILED" && n.dataConfidence === "high") {
+    contradictions.push("事件資料失效但可信度仍為高");
+  }
+  if (n.entryReadiness === "no_trade" && (n.longEntryAllowed || n.shortEntryAllowed)) {
+    contradictions.push("暫停交易時仍允許新進場");
+  }
+  const safe = contradictions.length > 0;
+  if (safe) console.error("ANALYSIS_CONSISTENCY_ERROR", contradictions);
+  $("priority-data").textContent = n.marketDataStatus !== "GOOD"
+    ? `行情 ${n.marketDataStatus}，暫停交易`
+    : n.eventDataStatus !== "GOOD"
+      ? `行情正常；事件 ${n.eventDataStatus}，事件風險未知`
+      : "行情與事件資料正常";
+  $("priority-existing-long").textContent = safe
+    ? "訊號矛盾，優先降低風險"
+    : (n.existingLongGuidance || "依結構管理，不因大週期偏多而續抱");
+  $("priority-new-long").textContent = !safe && n.longEntryAllowed ? "允許（條件已確認）" : "暫停";
+  $("priority-new-short").textContent = !safe && n.shortEntryAllowed ? "允許（條件已確認）" : "暫停";
+  $("priority-weakness").textContent = weakness[n.shortTermWeakness] || n.shortTermWeakness;
+  $("priority-regime").textContent = regimes[n.marketRegime] || n.marketRegime;
+  $("priority-message").textContent = safe
+    ? "訊號尚未一致，等待下一根 15 分 K 收盤確認。"
+    : (n.tradingScript || "等待條件完成。");
+  const critical = safe || ["high", "critical"].includes(n.positionRisk)
+    || ["protect_existing_long", "protect_existing_short", "suspend_all_entries"].includes(n.riskOverride);
+  $("risk-priority-card").classList.toggle("critical", critical);
 }
 
 // ═══ V2 AI 策略面板 ═══════════════════════════════════════
@@ -912,6 +957,15 @@ function posCard(p) {
       h`<li>${x.time.slice(5, 16).replace("T", " ")} 平倉 ${x.percent}% @ ${fmt(x.price)}(R=${x.r_at_exit ?? "–"})</li>`),
   ];
   const targets = (p.planned_targets || []).map((t) => fmt(t)).join(" / ") || "–";
+  const normalized = S.analysis && S.analysis.normalized_analysis;
+  let positionAdvice = p.recommended_action || "";
+  if (p.is_open && normalized) {
+    if (p.side === "LONG" && ["protect_existing_long", "suspend_all_entries"].includes(normalized.riskOverride)) {
+      positionAdvice = normalized.existingLongGuidance;
+    } else if (p.side === "SHORT" && ["protect_existing_short", "suspend_all_entries"].includes(normalized.riskOverride)) {
+      positionAdvice = normalized.existingShortGuidance;
+    }
+  }
   const actions = h`
     <div class="pos-actions">
       <button class="btn btn-sm btn-warn" data-act="pos-stop" data-id="${p.id}">改出場價</button>
@@ -937,7 +991,7 @@ function posCard(p) {
     <div class="pos-row"><div class="lbl"><span>賺賠比進度(回本 → 3 倍)</span>
       <span class="num">${r == null ? "沒設出場價" : fmt(r, 2) + " 倍"}</span></div>
       <div class="progress"><div class="fill" style="width:${rPct + "%"}"></div></div></div>
-    ${p.recommended_action ? h`<div class="pos-advice">${p.recommended_action}</div>` : ""}
+    ${positionAdvice ? h`<div class="pos-advice">${positionAdvice}</div>` : ""}
     ${actions}` : ""}
     ${histList.length ? h`<details class="pos-hist"><summary>操作歷史</summary><ul>${joinSafe(histList)}</ul></details>` : ""}
   </div>`;

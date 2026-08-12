@@ -1,0 +1,11 @@
+{
+  "price": 4406,
+  "marketRegime": "bullish",
+  "shortTermWeakness": "accelerating",
+  "entryReadiness": "no_trade",
+  "positionRisk": "high",
+  "riskOverride": "protect_existing_long",
+  "longEntryAllowed": false,
+  "shortEntryAllowed": false,
+  "message": "短線空方動能擴大；超賣不等於止跌，禁止追多或攤平。"
+}

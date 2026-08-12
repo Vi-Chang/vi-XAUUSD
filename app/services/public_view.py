@@ -80,8 +80,9 @@ def public_analysis(full: dict) -> dict:
     try:
         if not isinstance(full, dict):
             return _unavailable("unavailable")
+        from app.config import get_settings
         from app.engines.normalized_analysis import validate_api_payload
-        full = validate_api_payload(full)
+        full = validate_api_payload(full, strict=get_settings().app_env == "development")
         # 版本閘門:舊資料(戳記缺失/不符)不得公開自由文字(text-level leakage 防線)
         if int(ver or 0) != PRIVACY_BOUNDARY_VERSION:
             return _unavailable("analysis_refresh_required")

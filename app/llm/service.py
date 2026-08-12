@@ -44,6 +44,11 @@ def _align_with_normalized(strategy: AiStrategy, normalized) -> AiStrategy:
             next_trigger="等待對應週期已收盤 K 棒完成確認")
         strategy.trade_plan = AiTradePlan()
         strategy.one_liner = normalized.tradingScript
+    if normalized.riskOverride == "protect_existing_long":
+        strategy.risk_warning = normalized.existingLongGuidance
+        strategy.one_liner = normalized.tradingScript
+    elif normalized.riskOverride == "protect_existing_short":
+        strategy.risk_warning = normalized.existingShortGuidance
     return strategy
 
 

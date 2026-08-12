@@ -1,0 +1,10 @@
+{
+  "marketRegime": "bullish",
+  "shortTermWeakness": "confirmed",
+  "recoveryCandidate": true,
+  "entryReadiness": "wait_confirmation",
+  "positionRisk": "elevated",
+  "riskOverride": "block_new_long",
+  "longEntryAllowed": false,
+  "message": "超賣後出現回穩候選，但仍須下一根已收盤 15 分 K 確認，尚未允許新多單。"
+}

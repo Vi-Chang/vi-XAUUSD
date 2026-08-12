@@ -1,0 +1,10 @@
+{
+  "price": 4413,
+  "marketRegime": "bullish",
+  "shortTermWeakness": "confirmed",
+  "entryReadiness": "wait_confirmation",
+  "positionRisk": "elevated",
+  "riskOverride": "protect_existing_long",
+  "longEntryAllowed": false,
+  "message": "大週期偏多，但短線已轉弱；暫停新多單，既有多單優先處理風險。"
+}
