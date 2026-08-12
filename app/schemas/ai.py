@@ -2,14 +2,14 @@
 
 紀律:
 - 所有價位欄位一律為候選價位/FVG 的 ID,後端反查數字(防幻覺,沿用 spec 八)。
-- 勝率欄位為「主觀評估機率」,非歷史統計勝率(原規格書二十一之誠實標示)。
+- evidence_tilt 只代表 AI 對技術證據方向的分配,不是勝率或漲跌機率。
 - 禁止「觀望/再等等/沒有訊號/資訊不足」單獨出現:Wait 必附觸發條件。
 """
 from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 
 class AnalystView(BaseModel):
@@ -25,16 +25,16 @@ class AiMarketStructure(BaseModel):
     reason: str = ""
 
 
-class AiWinRates(BaseModel):
+class AiEvidenceTilt(BaseModel):
     long_pct: int = 50
     short_pct: int = 50
-    disclaimer: str = "主觀評估機率(依當前證據),非歷史統計勝率"
+    disclaimer: str = "AI 技術證據方向分配，不是勝率或漲跌機率"
 
 
 class AiAction(BaseModel):
     type: Literal["Buy", "Sell", "Wait"] = "Wait"
     wait_condition: str = ""                 # Wait 時必填:等什麼
-    next_trigger: str = ""                   # 下一個高勝率進場條件(永遠必填)
+    next_trigger: str = ""                   # 下一個可驗證進場條件(永遠必填)
 
 
 class AiTradePlan(BaseModel):
@@ -67,7 +67,11 @@ class AiStrategy(BaseModel):
     gate_note: str = ""                       # 程式硬性風控蓋章說明(AI 不可推翻)
 
     market_structure: AiMarketStructure = AiMarketStructure()      # 1
-    win_rates: AiWinRates = AiWinRates()                           # 2
+    evidence_tilt: AiEvidenceTilt = Field(
+        default_factory=AiEvidenceTilt,
+        validation_alias=AliasChoices("evidence_tilt", "win_rates"),
+        serialization_alias="evidence_tilt",
+    )                                                              # 2
     action: AiAction = AiAction()                                  # 3
     trade_plan: AiTradePlan = AiTradePlan()                        # 4-6(進場/停損/TP1-3)
     invalidation: str = ""                                         # 7 失效條件
@@ -111,7 +115,7 @@ DECISION_SCHEMA: dict = {
             },
             "required": ["label", "reason"], "additionalProperties": False,
         },
-        "win_rates": {
+        "evidence_tilt": {
             "type": "object",
             "properties": {"long_pct": {"type": "integer"}, "short_pct": {"type": "integer"}},
             "required": ["long_pct", "short_pct"], "additionalProperties": False,
@@ -158,7 +162,7 @@ DECISION_SCHEMA: dict = {
             "required": ["score", "factors"], "additionalProperties": False,
         },
     },
-    "required": ["market_structure", "win_rates", "action", "entry_id", "stop_loss_id",
+    "required": ["market_structure", "evidence_tilt", "action", "entry_id", "stop_loss_id",
                  "tp1_id", "tp2_id", "tp3_id", "invalidation", "rationale",
                  "risk_warning", "one_liner", "scenarios", "confidence"],
     "additionalProperties": False,
