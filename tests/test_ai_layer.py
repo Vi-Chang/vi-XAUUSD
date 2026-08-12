@@ -14,10 +14,9 @@ from app.engines.key_levels import CandidateLevel
 from app.llm.client import set_client_for_tests
 from app.llm.guardrails import validate_and_build
 from app.llm.snapshot import build_snapshot, fingerprint_of
-from app.llm.usage import estimate_cost, record_usage, spent_today
-from app.schemas.ai import ANALYST_SCHEMA
+from app.llm.usage import estimate_cost, record_usage
+from app.schemas.ai import ANALYST_SCHEMA, AiStrategy
 from app.schemas.analysis import BiasAnalysis
-
 
 # ── 測試素材 ─────────────────────────────────────────────────
 
@@ -42,7 +41,7 @@ def _ev(lockout=False):
 def _good_decision() -> dict:
     return {
         "market_structure": {"label": "Bullish", "reason": "日線多頭排列"},
-        "win_rates": {"long_pct": 60, "short_pct": 40},
+        "evidence_tilt": {"long_pct": 60, "short_pct": 40},
         "action": {"type": "Buy", "wait_condition": "",
                    "next_trigger": "15分K收盤站上 RES_ZONE_01 上緣加碼"},
         "entry_id": "SUP_ZONE_01", "stop_loss_id": "SWING_LOW_15M_01",
@@ -136,7 +135,7 @@ def test_guardrails_pass_and_resolve():
     assert errs == [] and st is not None and st.available
     assert st.trade_plan.entry_id == "SUP_ZONE_01"
     assert "SUP_ZONE_01" in st.trade_plan.resolved
-    assert st.win_rates.long_pct + st.win_rates.short_pct == 100
+    assert st.evidence_tilt.long_pct + st.evidence_tilt.short_pct == 100
 
 
 def test_guardrails_unknown_id_rejected():
@@ -169,13 +168,22 @@ def test_guardrails_pure_wait_forbidden():
 
 def test_guardrails_probability_normalization():
     d = _good_decision()
-    d["win_rates"] = {"long_pct": 58, "short_pct": 46}       # 104 → 歸一
+    d["evidence_tilt"] = {"long_pct": 58, "short_pct": 46}  # 104 → 歸一
     d["scenarios"][0]["probability_pct"] = 55                # 105 → 歸一
     st, errs = validate_and_build(d, _resolve_table(),
                                   current_price=4000.0, event_lockout=False)
     assert errs == []
-    assert st.win_rates.long_pct + st.win_rates.short_pct == 100
+    assert st.evidence_tilt.long_pct + st.evidence_tilt.short_pct == 100
     assert sum(s.probability_pct for s in st.scenarios) == 100
+
+
+def test_legacy_win_rates_input_is_accepted_but_serializes_as_evidence_tilt():
+    strategy = AiStrategy.model_validate({
+        "win_rates": {"long_pct": 55, "short_pct": 45},
+    })
+    dumped = strategy.model_dump()
+    assert dumped["evidence_tilt"]["long_pct"] == 55
+    assert "win_rates" not in dumped
 
 
 def test_guardrails_event_lockout_forces_wait():
@@ -218,7 +226,7 @@ def test_429_exponential_backoff_then_success(monkeypatch):
     monkeypatch.setattr(client_mod, "_BACKOFF_SECONDS", (0.0, 0.0, 0.0))
     fake = FakeClient(fail_first_n=2)
     set_client_for_tests(fake)
-    data, cost = asyncio.run(client_mod.call_json(
+    data, _cost = asyncio.run(client_mod.call_json(
         system="測試", user_payload={"x": 1}, schema=ANALYST_SCHEMA, max_tokens=100))
     assert data["bias"] == "BULLISH"
     assert fake.calls == 3                            # 2 次失敗 + 1 次成功
@@ -272,10 +280,11 @@ def test_json_fence_stripping():
 
 def _run_service(**over):
     from app.llm.service import generate_ai_strategy
-    kwargs = dict(price=4000.0, atr15=5.0, state="RANGE", quality_status="GOOD",
-                  ev=_ev(), ind={"15M": {"atr14": 5.0}}, structures={},
-                  levels=_levels(), dfs_closed={}, bias=BiasAnalysis(),
-                  position=None, no_signal=False)
+    kwargs = {"price": 4000.0, "atr15": 5.0, "state": "RANGE",
+              "quality_status": "GOOD", "ev": _ev(),
+              "ind": {"15M": {"atr14": 5.0}}, "structures": {},
+              "levels": _levels(), "dfs_closed": {}, "bias": BiasAnalysis(),
+              "position": None, "no_signal": False}
     kwargs.update(over)
     return asyncio.run(generate_ai_strategy(**kwargs))
 

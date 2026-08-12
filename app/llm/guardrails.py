@@ -2,7 +2,7 @@
 
 - ID 反查:AI 引用的價位 ID 必須存在於候選表(candidate levels + FVG),否則退回。
 - 價位不變式:沿用 setup_validator(Buy 停損低於進場、TP 遞增、±5% 帶、rr 檢查)。
-- 機率總和:win_rates 與 scenarios 合計 100(±10 內自動歸一,否則退回)。
+- 證據方向:evidence_tilt 合計 100；舊 win_rates 僅作輸入相容，不再輸出。
 - 禁語:Wait 而無 wait_condition / next_trigger → 退回(禁止純觀望)。
 - 事件鎖定:gates.event_lockout=true 而 AI 給 Buy/Sell → 程式直接蓋章改 Wait(不退回)。
 """
@@ -12,8 +12,13 @@ import logging
 
 from app.engines.setup_validator import has_fatal, validate_prices_detailed
 from app.schemas.ai import (
-    AiAction, AiConfidence, AiMarketStructure, AiScenario, AiStrategy, AiTradePlan,
-    AiWinRates,
+    AiAction,
+    AiConfidence,
+    AiEvidenceTilt,
+    AiMarketStructure,
+    AiScenario,
+    AiStrategy,
+    AiTradePlan,
 )
 
 logger = logging.getLogger(__name__)
@@ -49,7 +54,7 @@ def validate_and_build(raw: dict, resolve_table: dict[str, dict], *,
     next_trigger = (action_raw.get("next_trigger") or "").strip()
     wait_condition = (action_raw.get("wait_condition") or "").strip()
     if not next_trigger:
-        errors.append("next_trigger 空白:任何情況都必須給下一個高勝率進場條件")
+        errors.append("next_trigger 空白:任何情況都必須給下一個可驗證進場條件")
     if action_type == "Wait" and not wait_condition:
         errors.append("action=Wait 但 wait_condition 空白:禁止純觀望")
 
@@ -80,11 +85,11 @@ def validate_and_build(raw: dict, resolve_table: dict[str, dict], *,
                                   ";".join(r["msg"] for r in detailed
                                            if r["severity"] == "FATAL"))
 
-    # ── 勝率合計 100 ──
-    wr = raw.get("win_rates", {}) or {}
+    # ── 技術證據方向分配合計 100；暫時接受舊 key 以讀取既有快取。──
+    wr = raw.get("evidence_tilt") or raw.get("win_rates") or {}
     pair = _normalize_pair(int(wr.get("long_pct", 0)), int(wr.get("short_pct", 0)))
     if pair is None:
-        errors.append(f"win_rates 合計須為 100(收到 {wr})")
+        errors.append(f"evidence_tilt 合計須為 100(收到 {wr})")
 
     # ── 三情境合計 100 ──
     sc_raw = (raw.get("scenarios") or [])[:3]
@@ -119,7 +124,7 @@ def validate_and_build(raw: dict, resolve_table: dict[str, dict], *,
         available=True,
         gate_note=gate_note,
         market_structure=AiMarketStructure(**(raw.get("market_structure") or {})),
-        win_rates=AiWinRates(long_pct=pair[0], short_pct=pair[1]),
+        evidence_tilt=AiEvidenceTilt(long_pct=pair[0], short_pct=pair[1]),
         action=AiAction(type=action_type, wait_condition=wait_condition,
                         next_trigger=next_trigger),
         trade_plan=AiTradePlan(

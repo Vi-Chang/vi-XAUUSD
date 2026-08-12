@@ -4,8 +4,8 @@
 
 const MSG = {
   state: {
-    STRONG_BULL_TREND: "強勢上漲",
-    STRONG_BEAR_TREND: "強勢下跌",
+    STRONG_BULL_TREND: "大週期偏多",
+    STRONG_BEAR_TREND: "大週期偏空",
     BULLISH_PULLBACK: "上漲中的回檔",
     BEARISH_REBOUND: "下跌中的反彈",
     RANGE: "區間盤整",
