@@ -208,10 +208,23 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
         price=tick.mid)
 
     # ── 8. 規則引擎 ──
+    previous_action = None
+    try:
+        from sqlalchemy import select as sa_select
+        with db_session() as db:
+            previous = db.execute(
+                sa_select(AnalysisRun).order_by(AnalysisRun.id.desc()).limit(1)
+            ).scalar_one_or_none()
+            previous_action = previous.decision_action if previous else None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("previous analysis state unavailable: %s", exc)
+
     decision = decide(quality=quality, structures=structures,
                       indicators_h1=ind.get("1H", {}), market_state=state,
                       price=tick.mid, atr15=atr15, levels=levels,
-                      event_lockout=ev.event_lockout)
+                      event_lockout=ev.event_lockout,
+                      previous_action=previous_action,
+                      m15_df=dfs_closed.get("15M"))
 
     # ── 9. 組固定輸出 JSON ──
     def zones(kind: str, strength: str) -> list[dict]:

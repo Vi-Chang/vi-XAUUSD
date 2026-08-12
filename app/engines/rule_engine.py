@@ -10,6 +10,8 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
+import pandas as pd
+
 from app.config import get_settings
 from app.i18n import dir_zh, state_zh
 from app.engines.data_quality import DataQualityReport
@@ -276,7 +278,9 @@ def _build_scenario(direction: str, conditions: list[str], *, price: float,
 
 def decide(*, quality: DataQualityReport, structures: dict[str, StructureReport],
            indicators_h1: dict, market_state: str, price: float, atr15: float,
-           levels: list[CandidateLevel], event_lockout: bool = False) -> RuleDecision:
+           levels: list[CandidateLevel], event_lockout: bool = False,
+           previous_action: str | None = None,
+           m15_df: pd.DataFrame | None = None) -> RuleDecision:
     """主決策。硬性風控(資料品質、事件鎖定)由此層強制執行,AI 無權推翻(spec 十三 D)。"""
     s = get_settings()
     empty_long, empty_short = Scenario(), Scenario()
@@ -360,7 +364,28 @@ def decide(*, quality: DataQualityReport, structures: dict[str, StructureReport]
         d_zh = dir_zh(dominant)
         sc = long_sc if dominant == "LONG" else short_sc
         chase_this = [f for f in chase if dominant in f]
+        gate = None
         if sc.status == "PREPARE" and rr_ok and not chase_this:
+            from app.engines.entry_trigger import evaluate_entry_gate
+            gate = evaluate_entry_gate(
+                dominant, price=price, atr15=atr15, levels=levels,
+                entry_zone_id=sc.entry_zone_id, previous_action=previous_action,
+                m15_df=m15_df,
+                opposing_zone_atr_mult=s.opposing_zone_hard_gate_atr_mult,
+                breakout_buffer_atr_mult=s.breakout_close_buffer_atr_mult,
+            )
+        if gate is not None and gate.blocked:
+            action, grade, reason = "WATCH", "C", gate.reason
+        elif gate is not None and gate.triggered:
+            action = dominant
+            grade = "A" if score >= 60 else "B"
+            sc = sc.model_copy(update={"status": "TRIGGERED", "required_confirmations": []})
+            if dominant == "LONG":
+                long_sc = sc
+            else:
+                short_sc = sc
+            reason = f"{d_zh}：{gate.reason}賺賠比最高 {max(rr)} 倍。"
+        elif sc.status == "PREPARE" and rr_ok and not chase_this:
             action = f"PREPARE_{dominant}"
             grade = "A" if score >= 60 else "B"
             reason = (f"{d_zh}的條件湊齊了(含關鍵的順勢突破),賺賠比最高 {max(rr)} 倍、划算;"
