@@ -335,9 +335,13 @@ def decide(*, quality: DataQualityReport, structures: dict[str, StructureReport]
     # evidence_score:明確條件加總(每條件 10 分,上限 100)
     n_long, n_short = len(long_conds), len(short_conds)
     dominant = "LONG" if n_long > n_short else ("SHORT" if n_short > n_long else None)
-    score = min(100, 10 * max(n_long, n_short)
-                + (10 if quality.status == "GOOD" else 0)
-                + (10 if not chase else 0))
+    from app.engines.evidence_scoring import grouped_evidence_score
+    dominant_conditions = long_conds if dominant == "LONG" else short_conds
+    opposing_conditions = short_conds if dominant == "LONG" else long_conds
+    score = grouped_evidence_score(
+        dominant_conditions, opposing_conditions,
+        quality_good=quality.status == "GOOD", chase=bool(chase),
+    )
 
     # R/R 檢核(spec 十六:第一目標須達下限 setup_min_rr1、主要目標原則上 >= 2R)
     # 門檻與 setup_validator 一致,避免「validator 判不划算但決策仍 PREPARE」的矛盾。
