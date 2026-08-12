@@ -1,11 +1,12 @@
 """Backfill forward returns for persisted analysis decisions."""
 from __future__ import annotations
 
+from bisect import bisect_left
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 
-from app.db.models import AnalysisRun
+from app.db.models import AnalysisRun, Candle
 
 
 HORIZONS = {
@@ -33,25 +34,58 @@ def _entry_price(row: AnalysisRun) -> float | None:
     return value if value > 0 else None
 
 
-def backfill_outcomes(db, *, now: datetime, current_price: float) -> int:
-    """Fill each due horizon once, using the first later analysis price observed."""
+def _utc(value: datetime) -> datetime:
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+
+def first_close_at_or_after(candles: list[tuple[datetime, float]],
+                            target: datetime) -> float | None:
+    """Return the first closed-candle price at/after target, never a live price."""
+    if not candles:
+        return None
+    times = [item[0] for item in candles]
+    index = bisect_left(times, _utc(target))
+    return candles[index][1] if index < len(candles) else None
+
+
+def backfill_outcomes(db, *, now: datetime, current_price: float | None = None) -> int:
+    """Recompute each horizon from its own first closed 15M candle.
+
+    ``current_price`` remains accepted for call-site compatibility but is
+    deliberately unused: one late live quote must not populate several
+    horizons with the same value.
+    """
     oldest = now - max(HORIZONS.values()) - timedelta(hours=1)
     rows = db.execute(
         select(AnalysisRun).where(AnalysisRun.run_time >= oldest)
         .order_by(AnalysisRun.run_time.asc()).limit(1000)
     ).scalars().all()
+    candle_rows = db.execute(
+        select(Candle.close_time, Candle.close, Candle.received_at)
+        .where(Candle.symbol == "XAUUSD", Candle.timeframe == "15M",
+               Candle.is_closed.is_(True), Candle.close_time >= oldest)
+        .order_by(Candle.close_time.asc(), Candle.received_at.desc())
+    ).all()
+    # Providers may store several versions of one candle.  The query orders
+    # newest received first, so setdefault keeps the newest version per close.
+    by_time: dict[datetime, float] = {}
+    for close_time, close, _received_at in candle_rows:
+        by_time.setdefault(_utc(close_time), float(close))
+    candles = sorted(by_time.items())
+
     updated = 0
     for row in rows:
         entry = _entry_price(row)
-        value = signed_return_pct(row.decision_action, entry or 0.0, current_price)
-        if value is None:
+        if signed_return_pct(row.decision_action, entry or 0.0, entry or 0.0) is None:
             continue
-        run_time = row.run_time
-        if run_time.tzinfo is None:
-            run_time = run_time.replace(tzinfo=timezone.utc)
+        run_time = _utc(row.run_time)
         age = now - run_time
         for field, horizon in HORIZONS.items():
-            if getattr(row, field) is None and age >= horizon:
+            if age < horizon:
+                continue
+            close = first_close_at_or_after(candles, run_time + horizon)
+            value = signed_return_pct(row.decision_action, entry or 0.0, close or 0.0)
+            if value is not None and getattr(row, field) != value:
                 setattr(row, field, value)
                 updated += 1
     return updated
