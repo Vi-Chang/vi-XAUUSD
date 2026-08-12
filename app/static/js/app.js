@@ -526,7 +526,6 @@ function renderAiStrategy(ai) {
     return;
   }
   const act = ai.action || {};
-  const wr = ai.win_rates || {};
   const tp = ai.trade_plan || {};
   const res = tp.resolved || {};
   const conf = ai.confidence || {};
