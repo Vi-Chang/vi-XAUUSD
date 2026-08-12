@@ -7,7 +7,16 @@ from __future__ import annotations
 from datetime import date, datetime
 
 from sqlalchemy import (
-    JSON, Boolean, Date, DateTime, Float, ForeignKey, Index, Integer, String, Text,
+    JSON,
+    Boolean,
+    Date,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
     UniqueConstraint,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column

@@ -6,7 +6,6 @@ nearly equal opposing evidence receives a conflict penalty.
 """
 from __future__ import annotations
 
-
 WEIGHTS = {"STRUCT": 15, "LEVEL": 15, "MOMO": 15, "HTF": 10}
 CAPS = {"STRUCT": 40, "LEVEL": 20, "MOMO": 15, "HTF": 20}
 

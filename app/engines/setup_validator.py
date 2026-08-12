@@ -15,6 +15,8 @@ from app.config import get_settings
 logger = logging.getLogger(__name__)
 
 
+import itertools
+
 from app.utils.formatting import fmt_price as _fmt  # P3:全站共用 formatter
 
 
@@ -54,8 +56,8 @@ def validate_prices_detailed(direction: str, *, entry: float | None, sl: float |
                         "msg": f"空單 SL({_fmt(sl)}) <= Entry({_fmt(entry)}),邏輯不可能成立"})
     if entry is not None and tps:
         seq = [entry, *tps]
-        ordered = all(a < b for a, b in zip(seq, seq[1:])) if up else \
-                  all(a > b for a, b in zip(seq, seq[1:]))
+        ordered = all(a < b for a, b in itertools.pairwise(seq)) if up else \
+                  all(a > b for a, b in itertools.pairwise(seq))
         if not ordered:
             out.append({"severity": "FATAL",
                         "msg": f"目標價次序錯亂:entry={_fmt(entry)}, "

@@ -10,7 +10,13 @@ from sqlalchemy import select
 from app.db.models import Candle as CandleRow
 from app.db.session import db_session
 from app.providers.base import Candle, MarketDataProvider
-from app.utils.timeutils import NY, TIMEFRAME_MINUTES, ensure_utc, trading_day, trading_day_bounds
+from app.utils.timeutils import (
+    NY,
+    TIMEFRAME_MINUTES,
+    ensure_utc,
+    trading_day,
+    trading_day_bounds,
+)
 
 logger = logging.getLogger(__name__)
 

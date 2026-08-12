@@ -95,5 +95,5 @@ class MarketDataProvider(ABC):
                           count: int = 300) -> list[Candle]:
         """回傳按時間升冪的 K 棒;最後一根可能未收線(is_closed=False)。"""
 
-    async def close(self) -> None:  # noqa: B027 — 預設無資源可釋放
+    async def close(self) -> None:
         pass

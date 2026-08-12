@@ -119,38 +119,38 @@ def check_structure_events(price: float, cache: QuoteCache,
             dist_pct = 0.0
         else:
             dist_pct = min(abs(price - lv.price_low), abs(price - lv.price_high)) / price
-        if dist_pct <= s.tier2_touch_pct and lv.kind in ("SUP_ZONE", "RES_ZONE"):
-            if cooldown.allow(f"touch:{lv.level_id}", s.tier2_level_cooldown_minutes):
-                kind_zh = "支撐區" if lv.kind == "SUP_ZONE" else "壓力區"
-                events.append(TierEvent(
-                    f"touch:{lv.level_id}",
-                    f"價格觸及候選{kind_zh} {lv.level_id}"
-                    f"({lv.price_low:.2f}–{lv.price_high:.2f})"))
+        if dist_pct <= s.tier2_touch_pct and lv.kind in ("SUP_ZONE", "RES_ZONE") \
+                and cooldown.allow(f"touch:{lv.level_id}", s.tier2_level_cooldown_minutes):
+            kind_zh = "支撐區" if lv.kind == "SUP_ZONE" else "壓力區"
+            events.append(TierEvent(
+                f"touch:{lv.level_id}",
+                f"價格觸及候選{kind_zh} {lv.level_id}"
+                f"({lv.price_low:.2f}–{lv.price_high:.2f})"))
         if lv.kind == "SWING_HIGH_15M":
             swing_high = lv.price_low
         if lv.kind == "SWING_LOW_15M":
             swing_low = lv.price_low
 
     # b. 突破 15 分K 前高/前低(沿用系統結構價位;正式 BOS/CHoCH 由第 3 層收線確認)
-    if swing_high is not None and price > swing_high:
-        if cooldown.allow("break:high", s.tier2_level_cooldown_minutes):
-            events.append(TierEvent(
-                "break:high",
-                f"價格突破 15 分K 前高 {swing_high:.2f}(可能順勢突破,待收線確認)"))
-    if swing_low is not None and price < swing_low:
-        if cooldown.allow("break:low", s.tier2_level_cooldown_minutes):
-            events.append(TierEvent(
-                "break:low",
-                f"價格跌破 15 分K 前低 {swing_low:.2f}(可能順勢跌破,待收線確認)"))
+    if swing_high is not None and price > swing_high \
+            and cooldown.allow("break:high", s.tier2_level_cooldown_minutes):
+        events.append(TierEvent(
+            "break:high",
+            f"價格突破 15 分K 前高 {swing_high:.2f}(可能順勢突破,待收線確認)"))
+    if swing_low is not None and price < swing_low \
+            and cooldown.allow("break:low", s.tier2_level_cooldown_minutes):
+        events.append(TierEvent(
+            "break:low",
+            f"價格跌破 15 分K 前低 {swing_low:.2f}(可能順勢跌破,待收線確認)"))
 
     # c. 異常波動:目前 5 分鐘桶振幅 > 近 20 桶平均 × 倍數
     cur = cache.current_bucket_range()
     avg = cache.avg_closed_range(20)
-    if cur is not None and avg is not None and avg > 0 and \
-            cur > avg * s.tier2_anomaly_range_mult:
-        if cooldown.allow("anomaly", s.tier2_level_cooldown_minutes):
-            events.append(TierEvent(
-                "anomaly",
-                f"5 分鐘內波動異常放大(振幅 {cur:.2f},是近期平均 {avg:.2f} 的 "
-                f"{cur / avg:.1f} 倍)"))
+    if cur is not None and avg is not None and avg > 0 \
+            and cur > avg * s.tier2_anomaly_range_mult \
+            and cooldown.allow("anomaly", s.tier2_level_cooldown_minutes):
+        events.append(TierEvent(
+            "anomaly",
+            f"5 分鐘內波動異常放大(振幅 {cur:.2f},是近期平均 {avg:.2f} 的 "
+            f"{cur / avg:.1f} 倍)"))
     return events

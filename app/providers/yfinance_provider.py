@@ -39,6 +39,7 @@ class YFinanceProvider(MarketDataProvider):
                           count: int = 300) -> list[Candle]:
         def _fetch() -> list[Candle]:
             import yfinance as yf
+
             from app.services.candle_service import candle_close_time
             df = yf.Ticker(self._ticker).history(
                 period=YF_PERIOD[timeframe], interval=YF_INTERVAL[timeframe])

@@ -52,8 +52,8 @@ def active_source() -> str:
         from app.services.scheduler import state
         if state.provider is not None:        # 分析主力 provider = K 棒來源
             return state.provider.name
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception:
+        logger.debug("active provider unavailable; using configured provider", exc_info=True)
     return s.primary_provider if s.primary_provider not in ("auto", "") else "twelve_data"
 
 
@@ -87,8 +87,8 @@ def get_mode() -> str:
             row = db.query(SystemSetting).filter(SystemSetting.key == MODE_KEY).one_or_none()
             if row is not None and row.value in VALID_MODES:
                 return row.value
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception:
+        logger.warning("offset mode database read failed; using configured mode", exc_info=True)
     return s.offset_mode
 
 

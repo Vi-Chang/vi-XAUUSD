@@ -13,7 +13,6 @@ import logging
 from datetime import datetime, timezone
 
 from app.config import get_settings
-from app.engines.setup_validator import validate_prices
 
 logger = logging.getLogger(__name__)
 

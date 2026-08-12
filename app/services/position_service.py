@@ -124,16 +124,16 @@ def recommended_action(pos: Position, current_price: float) -> tuple[str, list[s
     if r is None:
         return "你還沒設賠錢出場價!請立刻補上,不然虧多少自己都不知道。", prohibited
     if r <= -1.0:
-        return (f"已經賠到或超過賠錢出場價了(賺賠比 {r} 倍),照紀律該出就出,"
-                "千萬別凹單放大虧損。", prohibited)
+        return ((f"已經賠到或超過賠錢出場價了(賺賠比 {r} 倍),照紀律該出就出,"
+                "千萬別凹單放大虧損。"), prohibited)
     if r < 1.0:
-        return (f"還沒回本(賺賠比 {r} 倍):賠錢出場價守原本的位置,別急著移到成本價;"
-                "除非行情邏輯壞了,否則別被小震盪洗掉。", prohibited)
+        return ((f"還沒回本(賺賠比 {r} 倍):賠錢出場價守原本的位置,別急著移到成本價;"
+                "除非行情邏輯壞了,否則別被小震盪洗掉。"), prohibited)
     if r < 2.0:
-        return (f"小賺了(賺賠比 {r} 倍):可以先落袋 2~3 成,剩下的看 15 分K 管理,"
-                "先別急著保本以免正常回踩被掃。", prohibited)
-    return (f"賺不少了(賺賠比 {r} 倍):再落袋 3~5 成,留 2~4 成續抱賺趨勢,"
-            "賠錢出場價跟著結構往上移;分批出,不是全跑、也不是全賭。", prohibited)
+        return ((f"小賺了(賺賠比 {r} 倍):可以先落袋 2~3 成,剩下的看 15 分K 管理,"
+                "先別急著保本以免正常回踩被掃。"), prohibited)
+    return ((f"賺不少了(賺賠比 {r} 倍):再落袋 3~5 成,留 2~4 成續抱賺趨勢,"
+            "賠錢出場價跟著結構往上移;分批出,不是全跑、也不是全賭。"), prohibited)
 
 
 def _flag(db, flag: str, evidence: dict, action: str) -> None:

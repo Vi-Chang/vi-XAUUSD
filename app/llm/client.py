@@ -156,8 +156,7 @@ def _parse_json(text: str) -> dict:
         pass
     if text.startswith("```"):
         text = text.strip("`")
-        if text.startswith("json"):
-            text = text[4:]
+        text = text.removeprefix("json")
         try:
             return json.loads(text.strip())
         except json.JSONDecodeError:
