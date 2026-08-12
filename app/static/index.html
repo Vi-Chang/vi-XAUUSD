@@ -80,6 +80,16 @@
   </section>
 
   <aside class="side">
+    <div class="card risk-priority" id="risk-priority-card">
+      <div class="card-title">風險優先摘要</div>
+      <div class="kv"><span>資料警告</span><span id="priority-data">–</span></div>
+      <div class="kv"><span>既有多單</span><span id="priority-existing-long">–</span></div>
+      <div class="kv"><span>新多單</span><span id="priority-new-long">–</span></div>
+      <div class="kv"><span>新空單</span><span id="priority-new-short">–</span></div>
+      <div class="kv"><span>短線狀態</span><span id="priority-weakness">–</span></div>
+      <div class="kv"><span>市場背景</span><span id="priority-regime">–</span></div>
+      <p class="risk-priority-message" id="priority-message"></p>
+    </div>
     <div class="card" id="decision-card">
       <div class="card-title">當前決策</div>
       <div class="no-trade-banner" id="no-trade-banner" hidden role="alert">
@@ -112,18 +122,28 @@
       </div>
       <div class="state-chip-row"><span class="lbl">市場狀態</span>
         <span class="chip skel" id="market-state-chip">…</span></div>
+      <div class="kv"><span>中期趨勢</span><span id="trend-bias">–</span></div>
+      <div class="kv"><span>突破狀態</span><span id="breakout-state">–</span></div>
+      <div class="kv"><span>進場時機</span><span id="entry-timing">–</span></div>
+      <div class="kv"><span>分析資料時間</span><span class="num" id="analysis-data-time">–</span></div>
+      <div class="kv"><span>最後收盤 K 棒</span><span class="num" id="last-closed-time">–</span></div>
+      <div class="kv"><span>分析產生時間</span><span class="num" id="analysis-generated-time">–</span></div>
+      <p class="reason" id="normalized-script"></p>
     </div>
 
     <div class="card">
-      <div class="card-title">多空證據傾向</div>
+      <div class="card-title">趨勢、進場與可信度</div>
       <div class="bias-nums">
-        <span class="bias-label bull">多方 <b class="num" id="bias-bull-pct">–%</b></span>
-        <span class="bias-label bear"><b class="num" id="bias-bear-pct">–%</b> 空方</span>
+        <span class="bias-label bull">趨勢傾向 <b id="technical-bias">–</b></span>
+        <span class="bias-label bear">技術分數 <b class="num" id="trend-score">–</b></span>
       </div>
       <div class="bias-bar" id="bias-bar">
         <div class="bias-bull-fill" id="bias-bull-fill" style="width:50%"></div>
         <div class="bias-bear-fill" id="bias-bear-fill" style="width:50%"></div>
       </div>
+      <div class="kv"><span>進場品質</span><span id="entry-quality">–</span></div>
+      <div class="kv"><span>資料可信度</span><span id="data-confidence">–</span></div>
+      <div class="kv"><span>支撐狀態</span><span id="support-state">–</span></div>
       <details class="bias-details" id="bias-details-bull">
         <summary>多方證據 <span class="num" id="bias-bull-count">0</span> 項</summary>
         <ul id="bias-bull-list"></ul>
@@ -132,7 +152,11 @@
         <summary>空方證據 <span class="num" id="bias-bear-count">0</span> 項</summary>
         <ul id="bias-bear-list"></ul>
       </details>
-      <div class="bias-disclaimer" id="bias-disclaimer">證據傾向 ≠ 勝率;僅代表當下多空條件的相對完整度</div>
+      <details class="bias-details" id="bias-details-invalidated" hidden>
+        <summary>已失效證據 <span class="num" id="bias-invalidated-count">0</span> 項</summary>
+        <ul id="bias-invalidated-list"></ul>
+      </details>
+      <div class="bias-disclaimer" id="bias-disclaimer">技術分數是去相關化後的證據傾向，此數值不是勝率。</div>
     </div>
 
     <div class="card">
@@ -148,8 +172,13 @@
     <div class="card">
       <div class="card-title">系統</div>
       <div class="kv"><span>資料源</span><span class="num" id="sys-provider">–</span></div>
-      <div class="kv"><span>資料品質</span><span id="sys-quality">–</span></div>
+      <div class="kv"><span>行情資料</span><span id="sys-market-quality">–</span></div>
+      <div class="kv"><span>事件資料</span><span id="sys-event-quality">–</span></div>
+      <div class="kv"><span>事件資料更新</span><span class="num" id="event-data-time">–</span></div>
+      <p class="event-detail" id="quality-summary"></p>
       <div class="kv"><span>最近分析</span><span class="num" id="sys-lastrun">–</span></div>
+      <div class="state-chip-row"><span class="lbl">追價風險</span><span class="chip" id="risk-label">–</span></div>
+      <p class="event-detail" id="risk-message"></p>
       <div class="mistake" id="mistake-box"></div>
     </div>
   </aside>
@@ -233,6 +262,6 @@
 <script src="/static/vendor/lightweight-charts.standalone.production.js"></script>
 <script src="/static/js/escape.js"></script>
 <script src="/static/js/messages.js"></script>
-<script src="/static/js/app.js"></script>
+<script src="/static/js/app.js?v=normalized-v1"></script>
 </body>
 </html>

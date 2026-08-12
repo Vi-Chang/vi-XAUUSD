@@ -216,6 +216,9 @@ body {
 .bar { flex: 1; height: 6px; background: #0d1420; border-radius: 3px; overflow: hidden; }
 .bar-fill { height: 100%; background: linear-gradient(90deg, var(--info), var(--bull)); transition: width .5s; }
 .reason { font-size: .82rem; color: var(--text-dim); }
+.risk-priority { border-color: rgba(240,160,32,.55); }
+.risk-priority.critical { border-color: var(--danger); box-shadow: 0 0 0 1px rgba(248,81,73,.2); }
+.risk-priority-message { margin-top: 8px; color: var(--warn); font-weight: 650; font-size: .82rem; }
 
 /* ═══ 多週期膠囊 ═══ */
 .tf-capsules { display: flex; gap: 8px; margin-bottom: 12px; }
@@ -417,6 +420,8 @@ body {
   .pq .big { font-size: 1.2rem; }
   .tabs { overflow-x: auto; }
   .tab { padding: 10px 14px; white-space: nowrap; }
+  .tf-capsules { display: grid; grid-template-columns: 1fr 1fr; }
+  .capsule { border-radius: 8px; padding: 8px 4px; font-size: .72rem; }
 }
 
 /* ═══ V2 AI 策略面板 ═══ */

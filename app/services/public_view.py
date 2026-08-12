@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 #   6. legacy fallback 政策(_unavailable / 版本閘門)
 # 此常數為唯一真實來源(single source of truth):analysis_service 蓋章時 import 本常數,
 # 不得各處硬編碼數字(見 tests/test_privacy_boundary.py 的 invariant test)。
-PRIVACY_BOUNDARY_VERSION = 1
+PRIVACY_BOUNDARY_VERSION = 2
 
 # 公開允許的頂層欄位(白名單)。決策另由 market_decision 映射為 decision。
 PUBLIC_ALLOWLIST: tuple[str, ...] = (
@@ -36,7 +36,7 @@ PUBLIC_ALLOWLIST: tuple[str, ...] = (
     "current_price", "data_quality", "event_risk", "cross_market_context",
     "market_state", "timeframes", "key_levels",
     "long_scenario", "short_scenario",
-    "bias_analysis", "ai_strategy",
+    "bias_analysis", "normalized_analysis", "ai_strategy",
     "summary_zh_tw", "most_likely_user_mistake_now",
     "freshness",
 )
@@ -80,6 +80,9 @@ def public_analysis(full: dict) -> dict:
     try:
         if not isinstance(full, dict):
             return _unavailable("unavailable")
+        from app.config import get_settings
+        from app.engines.normalized_analysis import validate_api_payload
+        full = validate_api_payload(full, strict=get_settings().app_env == "development")
         # 版本閘門:舊資料(戳記缺失/不符)不得公開自由文字(text-level leakage 防線)
         if int(ver or 0) != PRIVACY_BOUNDARY_VERSION:
             return _unavailable("analysis_refresh_required")

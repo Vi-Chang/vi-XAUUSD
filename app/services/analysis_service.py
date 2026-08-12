@@ -8,27 +8,44 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
+import pandas as pd
+
 from app import PROMPT_VERSION, STRATEGY_VERSION
 from app.config import get_settings
-from app.i18n import state_zh
-from app.utils.formatting import fmt_price
 from app.db.models import (
-    AnalysisRun, CandidateLevel as CandidateLevelRow, MarketStructure,
+    AnalysisRun,
+    MarketStructure,
+)
+from app.db.models import (
+    CandidateLevel as CandidateLevelRow,
 )
 from app.db.session import db_session
 from app.engines import data_quality, indicators, market_state
 from app.engines.key_levels import build_candidate_levels, resolve_ids
 from app.engines.market_structure import StructureReport, analyze_structure
+from app.engines.normalized_analysis import build_normalized_state
 from app.engines.rule_engine import decide
+from app.i18n import state_zh
 from app.providers.base import MarketDataProvider
 from app.schemas.analysis import (
-    AnalysisResult, BiasAnalysis, CurrentPrice, DataQuality, Decision, EventRisk,
-    KeyLevels, Meta, PositionManagement, TimeframeView, Timeframes, TradingCoachView,
+    AnalysisResult,
+    BiasAnalysis,
+    CurrentPrice,
+    DataQuality,
+    Decision,
+    EventRisk,
+    KeyLevels,
+    Meta,
+    PositionManagement,
+    Timeframes,
+    TimeframeView,
+    TradingCoachView,
     validate_candidate_refs,
 )
 from app.services.candle_service import candles_to_df, refresh_candles
 from app.services.event_service import evaluate_event_risk
 from app.services.market_calendar import load_holidays
+from app.utils.formatting import fmt_price
 from app.utils.timeutils import to_taipei, trading_day
 
 logger = logging.getLogger(__name__)
@@ -84,7 +101,6 @@ def _tf_view(rep: StructureReport | None, ind: dict) -> TimeframeView:
         return TimeframeView(structure="INSUFFICIENT_DATA", momentum="",
                              interpretation="資料不足")
     from app.i18n import EVENT_TYPE_ZH
-    labels = [s.label for s in rep.swings if s.label][-4:]
     hist = ind.get("macd_hist")
     momentum = ("動能偏多" if hist and hist > 0 else "動能偏空" if hist and hist < 0 else "動能中性")
     recent_ev = [EVENT_TYPE_ZH.get(e.event_type, e.event_type)
@@ -161,6 +177,7 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
 
     # ── 2. 指標(以已收線資料為準)──
     ind: dict[str, dict] = {}
+    closed_times: dict[str, str] = {}
     for tf in ("1D", "4H", "1H", "15M", "1W"):
         df = dfs_closed.get(tf)
         if df is None or len(df) < 30:
@@ -168,9 +185,20 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
             continue
         tds = None
         if tf in ("5M", "15M", "30M", "1H"):
-            import pandas as pd
             tds = pd.Series([trading_day(t.to_pydatetime()) for t in df.index], index=df.index)
-        ind[tf] = indicators.latest_snapshot(indicators.compute_all(df, tds))
+        computed = indicators.compute_all(df, tds)
+        ind[tf] = indicators.latest_snapshot(computed)
+        if len(computed) >= 2:
+            prev = computed.iloc[-2]
+            for key in ("macd_hist", "rsi6", "rsi12", "rsi14", "stoch_k", "stoch_d"):
+                value = prev.get(key)
+                if value is not None:
+                    ind[tf][f"{key}_prev"] = None if pd.isna(value) else round(float(value), 4)
+        if len(computed) >= 3:
+            value = computed.iloc[-3].get("macd_hist")
+            ind[tf]["macd_hist_prev2"] = (
+                None if value is None or pd.isna(value) else round(float(value), 4))
+        closed_times[tf] = df.index[-1].isoformat()
     atr15 = ind.get("15M", {}).get("atr14") or (tick.mid * 0.001)
 
     # ── 3. 事件風險(MVP:manual fallback)──
@@ -246,7 +274,8 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
                              level=ev.level, event_lockout=ev.event_lockout,
                              next_event=ev.next_event,
                              minutes_remaining=ev.minutes_remaining,
-                             source=ev.source, reason=ev.reason),
+                             source=ev.source, reason=ev.reason,
+                             data_updated_at=ev.data_updated_at),
         market_state=state,
         timeframes=Timeframes(
             weekly=_tf_view(structures.get("1W"), ind.get("1W", {})),
@@ -283,6 +312,36 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
                               or decision.short_scenario.status == "INVALID")),
     )
     result.snapshot_ts = tick.quote_time.isoformat()
+    # 唯一分析狀態：在 API/DB 回傳前完成，後續 UI 與相容欄位均由它回填。
+    normalized = build_normalized_state(
+        generated_at=now.isoformat(), market_timestamp=tick.quote_time.isoformat(),
+        current_price=fmt_price(tick.mid), market_state=state,
+        market_quality=quality.status, event_source=ev.source,
+        event_stale=ev.manual_file_stale, structures=structures,
+        m15_all=dfs_all.get("15M"), m15_closed=dfs_closed.get("15M"),
+        bull_evidence=decision.bull_evidence, bear_evidence=decision.bear_evidence,
+        chase_flags=decision.chase_flags, indicators=ind, closed_times=closed_times,
+        atr15=atr15, event_timestamp=ev.data_updated_at,
+        event_risk=(ev.time_risk or "UNKNOWN").lower(), event_lockout=ev.event_lockout)
+    result.normalized_analysis = normalized
+    # 舊 API 欄位保留，但不可再自行判斷；全部鏡射 normalized state。
+    result.bias_analysis = BiasAnalysis(
+        bull_pct=normalized.bullPct, bear_pct=normalized.bearPct,
+        bull_evidence=[x.label for x in normalized.longEvidence],
+        bear_evidence=[x.label for x in normalized.shortEvidence],
+        chase_flags=([f"RISK:{normalized.riskLabel}"]
+                     if normalized.riskDirection != "none" else []),
+        disclaimer="技術證據傾向採週期與家族加權；此數值不是勝率。")
+    result.summary_zh_tw = normalized.tradingScript
+    result.most_likely_user_mistake_now = normalized.mostLikelyMistake
+    if normalized.entryTiming in ("wait", "invalid"):
+        result.decision.action = "NO_TRADE" if normalized.entryTiming == "invalid" else "WATCH"
+        result.decision.reason = normalized.consistencyMessage or normalized.tradingScript
+        safe_watch = {"status": "WATCH", "entry_zone_id": None, "stop_loss_id": None,
+                      "invalidation_id": None, "target_ids": [], "risk_reward": [],
+                      "resolved_prices": {}}
+        result.long_scenario = result.long_scenario.model_copy(update=safe_watch)
+        result.short_scenario = result.short_scenario.model_copy(update=safe_watch)
     # 市場層決策快照(在持倉 MANAGE 覆寫之前捕捉);公開投影用此,避免洩露個人持倉。
     result.market_decision = result.decision.model_copy()
     # 隱私邊界戳記:本 pipeline 為 position-free / public-safe,標記為可公開自由文字。
@@ -294,20 +353,36 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
     # 是獨立資料表,絕不進入此判斷 —— 只有老師帶單、我空手時仍正常找新交易。
     try:
         from app.services.position_service import (
-            list_positions, position_view, recent_behavior_flags,
+            list_positions,
+            position_view,
+            recent_behavior_flags,
         )
         open_positions = list_positions(include_closed=False, limit=5)
         if open_positions:
             v = position_view(open_positions[0], tick.mid)
+            position_action = v["recommended_action"]
+            if v["side"] == "LONG" and normalized.riskOverride == "protect_existing_long":
+                position_action = normalized.existingLongGuidance
+            elif v["side"] == "SHORT" and normalized.riskOverride == "protect_existing_short":
+                position_action = normalized.existingShortGuidance
             result.position_management = PositionManagement(
                 has_position=True, position_side=v["side"],
                 entry_price=v["entry_price"],
                 current_r_multiple=v["r_multiple"],
-                recommended_action=v["recommended_action"],
+                recommended_action=position_action,
                 partial_exit_plan="回本後先落袋 2~3 成 → 到主要目標再落袋 3~5 成 → 留 2~4 成續抱趨勢",
                 trailing_stop_plan="賠錢出場價跟著最近的 15 分K/1 小時結構往上移,別用固定金額亂移",
                 full_exit_condition="到最終目標、行情正式反轉、原本的劇本壞了、移動停損被打到、或快出大數據要降風險",
-                prohibited_actions=v["prohibited_actions"])
+                prohibited_actions=v["prohibited_actions"],
+                current_price=fmt_price(tick.mid), unrealized_pnl=v["unrealized_pnl"],
+                structural_risk=normalized.structuralInvalidationNote,
+                account_risk=("依使用者輸入的進場價、停損與手數計算；不得由市場結構代替。"
+                              if v.get("stop_loss") is not None else
+                              "未提供有效停損，無法計算個人帳戶風險。"),
+                risk_release_condition=(normalized.invalidationConditions[0].message
+                                        if normalized.invalidationConditions else
+                                        "等待短線動能與已收盤結構恢復一致。"),
+                data_timestamp=normalized.marketDataTimestamp)
             if result.decision.action in ("WATCH", "PREPARE_LONG", "PREPARE_SHORT"):
                 result.decision.action = "MANAGE"
                 result.decision.reason = ("你手上已經有單了,先顧好這張單、別急著找新的。"
@@ -391,7 +466,7 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
                 quality_status=quality.status, ev=ev, ind=ind,
                 structures=structures, levels=levels, dfs_closed=dfs_closed,
                 bias=result.bias_analysis, position=None,
-                no_signal=not off.get("calibrated", False))
+                no_signal=not off.get("calibrated", False), normalized=normalized)
             # 跨市場資料同步填入顯示欄位(讀快取,不重複抓)
             from app.services.cross_market import get_cross_market
             cross = await get_cross_market()
@@ -409,8 +484,8 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
             result.meta.llm_cost_usd_today = spent_today()
             if result.ai_strategy.available:
                 result.meta.model_version = f"rules+{result.ai_strategy.model}"
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("ai strategy layer failed: %s", exc)
+    except Exception:
+        logger.exception("ai strategy layer failed")
 
     # ── 10. 儲存 ──
     try:

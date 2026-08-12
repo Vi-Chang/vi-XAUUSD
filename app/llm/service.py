@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta, timezone
 
+from pydantic import ValidationError
 from sqlalchemy import select
 
 from app.config import get_settings
@@ -18,9 +19,37 @@ from app.llm.client import LlmQuotaError, LlmRateLimitError, llm_available
 from app.llm.guardrails import validate_and_build
 from app.llm.snapshot import build_snapshot, fingerprint_of
 from app.llm.usage import budget_exceeded
-from app.schemas.ai import AiStrategy
+from app.schemas.ai import AiAction, AiMarketStructure, AiStrategy, AiTradePlan
 
 logger = logging.getLogger(__name__)
+
+
+def _align_with_normalized(strategy: AiStrategy, normalized) -> AiStrategy:
+    if normalized is None:
+        return strategy
+    strategy.market_structure = AiMarketStructure(
+        label=("Bullish" if "bullish" in normalized.marketRegime else
+               "Bearish" if "bearish" in normalized.marketRegime else "Range"),
+        reason=normalized.tradingScript)
+    cap = {"high": 85, "medium": 70, "low": 50, "insufficient": 20}[
+        normalized.dataConfidence]
+    strategy.confidence.score = min(strategy.confidence.score, cap)
+    factor = f"統一資料可信度：{normalized.dataConfidence}"
+    if factor not in strategy.confidence.factors:
+        strategy.confidence.factors.append(factor)
+    if normalized.eventRisk == "unknown":
+        strategy.gate_note = "事件資料缺失，目前分析僅依技術面"
+    if normalized.entryReadiness != "ready":
+        strategy.action = AiAction(type="Wait", wait_condition=normalized.tradingScript,
+            next_trigger="等待對應週期已收盤 K 棒完成確認")
+        strategy.trade_plan = AiTradePlan()
+        strategy.one_liner = normalized.tradingScript
+    if normalized.riskOverride == "protect_existing_long":
+        strategy.risk_warning = normalized.existingLongGuidance
+        strategy.one_liner = normalized.tradingScript
+    elif normalized.riskOverride == "protect_existing_short":
+        strategy.risk_warning = normalized.existingShortGuidance
+    return strategy
 
 
 def _cached(fingerprint: str) -> dict | None:
@@ -53,7 +82,7 @@ async def generate_ai_strategy(*, price: float, atr15: float, state: str,
                                quality_status: str, ev, ind: dict, structures: dict,
                                levels: list, dfs_closed: dict, bias,
                                position: dict | None, no_signal: bool,
-                               run_id: int | None = None) -> AiStrategy:
+                               run_id: int | None = None, normalized=None) -> AiStrategy:
     s = get_settings()
     now_iso = datetime.now(timezone.utc).isoformat()
 
@@ -88,7 +117,7 @@ async def generate_ai_strategy(*, price: float, atr15: float, state: str,
         price=price, atr15=atr15, state=state, quality_status=quality_status,
         ev=ev, ind=ind, structures=structures, levels=levels, fvgs=fvgs,
         bias=bias, position=position, cross=cross.to_prompt_dict(),
-        no_signal=no_signal, event_lockout=ev.event_lockout)
+        no_signal=no_signal, event_lockout=ev.event_lockout, normalized=normalized)
     fp = fingerprint_of(snapshot)
 
     cached = _cached(fp)
@@ -99,9 +128,9 @@ async def generate_ai_strategy(*, price: float, atr15: float, state: str,
             st.fingerprint = fp
             logger.info("AI_CACHE_HIT fingerprint=%s (age<%dmin, no API call)",
                         fp[:12], s.llm_cache_minutes)
-            return st
-        except Exception:  # noqa: BLE001 — 舊格式不相容就重算
-            pass
+            return _align_with_normalized(st, normalized)
+        except (ValidationError, TypeError, ValueError) as exc:  # 舊格式不相容就重算
+            logger.debug("AI cache schema changed, recalculating: %s", type(exc).__name__)
 
     resolve_table = {lv.level_id: lv.to_dict() for lv in levels}
     resolve_table.update({z.fvg_id: z.to_dict() for z in fvgs})
@@ -134,13 +163,14 @@ async def generate_ai_strategy(*, price: float, atr15: float, state: str,
         strategy.cost_usd = round(cost, 4)
         strategy.fingerprint = fp
         strategy.generated_at = now_iso
+        strategy = _align_with_normalized(strategy, normalized)
         _persist(fp, strategy, run_id)
         return strategy
     except (LlmQuotaError, LlmRateLimitError) as exc:
         # 額度/頻率上限:訊息本身已是友善繁中,直接顯示
         logger.warning("AI quota/rate limited: %s", exc)
         return AiStrategy(unavailable_reason=str(exc), generated_at=now_iso)
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("AI strategy generation failed: %s", exc)
+    except Exception:
+        logger.exception("AI strategy generation failed")
         return AiStrategy(unavailable_reason="AI 分析暫時無法使用,請稍後再試",
                           generated_at=now_iso)
