@@ -109,6 +109,17 @@ class TestAnomaly:
 
 
 class TestLayer3Trigger:
+    def test_scheduler_runs_quote_then_structure_shortly_after_startup(self):
+        from app.services.scheduler import build_scheduler
+
+        scheduler = build_scheduler()
+        quote = scheduler.get_job("quote_l1")
+        structure = scheduler.get_job("structure_l2")
+        assert quote.next_run_time is not None
+        assert structure.next_run_time is not None
+        delay = (structure.next_run_time - quote.next_run_time).total_seconds()
+        assert 9 <= delay <= 11
+
     async def test_event_triggers_full_analysis(self, monkeypatch):
         """模擬價格觸及關鍵價位 → 正確觸發第 3 層,且冷卻期內不重複觸發。"""
         import app.services.scheduler as sch
@@ -158,8 +169,8 @@ class TestLayer3Trigger:
 
 class TestSoftLimitDegrade:
     def test_td_soft_limit_flag(self, monkeypatch):
-        from app.services.scheduler import _td_soft_limited
         import app.providers.twelve_data as td
+        from app.services.scheduler import _td_soft_limited
 
         class FakeQuota:
             used_today = 650

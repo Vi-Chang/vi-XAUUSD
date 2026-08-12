@@ -13,7 +13,7 @@ Jobs:
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -310,10 +310,13 @@ async def job_heartbeat() -> None:
 def build_scheduler() -> AsyncIOScheduler:
     s = get_settings()
     sched = AsyncIOScheduler(timezone="UTC")
+    startup = datetime.now(timezone.utc)
     sched.add_job(job_quote_l1, "interval", seconds=l1_interval_seconds(),
-                  id="quote_l1", max_instances=1, coalesce=True)
+                  id="quote_l1", max_instances=1, coalesce=True,
+                  next_run_time=startup)
     sched.add_job(job_structure_l2, "interval", seconds=s.tier2_check_seconds,
-                  id="structure_l2", max_instances=1, coalesce=True)
+                  id="structure_l2", max_instances=1, coalesce=True,
+                  next_run_time=startup + timedelta(seconds=10))
     sched.add_job(job_cross_check, "cron", minute="7,22,37,52", id="cross_check",
                   max_instances=1, coalesce=True)
     sched.add_job(job_heartbeat, "interval", minutes=s.heartbeat_minutes,
