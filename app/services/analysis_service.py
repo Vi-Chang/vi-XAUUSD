@@ -99,6 +99,38 @@ def _tf_view(rep: StructureReport | None, ind: dict) -> TimeframeView:
     )
 
 
+def _apply_no_trade_gate(result: AnalysisResult, elig) -> None:
+    """交易資格閘門不合格 → 強制 NO_TRADE、清除可執行劇本、市場層決策同步降級。
+
+    - 新入場動作(WATCH/PREPARE/LONG/SHORT)→ NO_TRADE(不得保留新入場指令)。
+    - 既有持倉管理(MANAGE)保留(非新入場),但附資料提醒。
+    - 公開市場層決策(market_decision)一律 NO_TRADE(公開端不得出現可執行 BUY/SELL)。
+    - 劇本剝除可執行價位,避免被當成有效新入場方案。
+    """
+    qt = result.snapshot_ts or result.current_price.last_update or ""
+    reason = f"{elig.reason}(資料更新時間:{qt})" if qt else elig.reason
+    new_entry = ("WATCH", "PREPARE_LONG", "PREPARE_SHORT", "LONG", "SHORT")
+    if result.decision.action in new_entry:
+        result.decision.action = "NO_TRADE"
+        result.decision.confidence_grade = "X"
+        result.decision.evidence_score = 0
+        result.decision.reason = reason
+    elif result.decision.action == "MANAGE":
+        result.decision.reason = f"(資料提醒:{elig.reason})" + result.decision.reason
+    result.market_decision.action = "NO_TRADE"
+    result.market_decision.confidence_grade = "X"
+    result.market_decision.evidence_score = 0
+    result.market_decision.reason = reason
+
+    def _neutralize(sc):
+        return sc.model_copy(update={
+            "status": "WATCH", "entry_zone_id": None, "stop_loss_id": None,
+            "invalidation_id": None, "target_ids": [], "risk_reward": [],
+            "resolved_prices": {}})
+    result.long_scenario = _neutralize(result.long_scenario)
+    result.short_scenario = _neutralize(result.short_scenario)
+
+
 async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
                        symbol: str = "XAUUSD", tick=None,
                        cached_only: bool = False) -> AnalysisResult:
@@ -308,12 +340,32 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
     except Exception as exc:  # noqa: BLE001
         logger.warning("mentor comparison failed: %s", exc)
 
+    # ── 9c2. 交易資格閘門(單一權威;必在 AI 呼叫前執行)──
+    # 資料過期/異常、來源異常、休市、K 棒不足或證據不足 → 一律 NO_TRADE(資料不足,暫不交易),
+    # 清除可執行劇本、市場層決策同步降級,並跳過付費 AI(省成本),
+    # 確保不輸出可被誤認為有效的新入場指令。
+    from app.engines.trade_gate import evaluate_trade_eligibility
+    # 證據門檻只約束「可執行動作」(PREPARE/LONG/SHORT);WATCH 本就非可執行,不因此改判 NO_TRADE。
+    _actionable = result.decision.action in ("PREPARE_LONG", "PREPARE_SHORT", "LONG", "SHORT")
+    elig = evaluate_trade_eligibility(
+        tick=tick, quality=quality, market_state=state, atr15=atr15,
+        evidence_score=(result.decision.evidence_score if _actionable else None),
+        now=now, is_fallback=cached_only)
+    result.trade_eligibility = elig
+    if not elig.eligible:
+        _apply_no_trade_gate(result, elig)
+
     # ── 9d. V2 AI 分析層(4 Agent;任何失敗不影響上面的確定性輸出)──
     try:
         from app.llm.client import llm_available
         from app.schemas.ai import AiStrategy
-        ok_ai, ai_reason = llm_available()
-        if not ok_ai:
+        # 閘門不合格 → 在呼叫 AI 前即停止(省 token),不打任何 AI。
+        ok_ai, ai_reason = (False, "") if not elig.eligible else llm_available()
+        if not elig.eligible:
+            result.ai_strategy = AiStrategy(
+                unavailable_reason=f"資料品質閘門:{elig.reason}",
+                gate_note=f"程式風控:未過交易資格閘門({elig.code}),AI 呼叫前即停止出訊")
+        elif not ok_ai:
             result.ai_strategy = AiStrategy(unavailable_reason=ai_reason)
         else:
             from app.services.price_offset import get_offset_for

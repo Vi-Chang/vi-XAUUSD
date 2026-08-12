@@ -208,6 +208,26 @@ class OffsetInfo(BaseModel):
     note: str = ""
 
 
+class TradeEligibility(BaseModel):
+    """交易資格閘門結果(app/engines/trade_gate)。
+
+    單一權威:資料過期/異常/休市/證據不足時 eligible=False,系統一律 NO_TRADE。
+    僅含資料品質/市場/報價層資訊,不含任何個人/持倉資料(可公開安全,但預設不進公開
+    allowlist 以維持既有公開 schema 相容;公開端以 decision.action=NO_TRADE + reason 表達)。
+    """
+    eligible: bool = True
+    code: str = "OK"                # OK / NO_QUOTE / INVALID_QUOTE_TIME / INVALID_QUOTE /
+                                    # DATA_FAILED / MARKET_CLOSED / STALE_QUOTE /
+                                    # FALLBACK_CACHE_STALE / SPREAD_TOO_WIDE / DATA_DEGRADED /
+                                    # INSUFFICIENT_HISTORY / NO_EVIDENCE
+    reason: str = ""
+    data_age_seconds: float | None = None
+    source_status: str = "OK"       # OK / DEGRADED / STALE / FAILED / INVALID / NO_QUOTE
+    market_status: str = "OPEN"     # OPEN / CLOSED
+    spread_status: str = "OK"       # OK / TOO_WIDE / INVALID / UNKNOWN
+    evidence_status: str = "OK"     # OK / INSUFFICIENT / UNKNOWN
+
+
 class Meta(BaseModel):
     prompt_version: str = ""
     strategy_version: str = ""
@@ -241,6 +261,8 @@ class AnalysisResult(BaseModel):
     decision: Decision = Decision()
     # 市場層決策(未被「持倉管理 MANAGE 覆寫」污染);公開投影以此為 decision,避免洩露持倉。
     market_decision: Decision = Decision()
+    # 交易資格閘門結果(資料/市場/報價層;預設 eligible=True 以相容舊資料)。
+    trade_eligibility: TradeEligibility = TradeEligibility()
     ai_strategy: AiStrategy = Field(default_factory=AiStrategy)   # V2 AI 分析層
     offset_info: OffsetInfo = OffsetInfo()
     meta: Meta = Meta()

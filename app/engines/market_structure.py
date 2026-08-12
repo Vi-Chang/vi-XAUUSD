@@ -225,6 +225,25 @@ def detect_events(df: pd.DataFrame, swings: list[SwingPoint], timeframe: str, *,
             ev.still_valid = False   # 收回後又跌破 → 假跌破敘事被推翻
         if ev.event_type == "FAILED_BREAKOUT" and max(later) > ev.price:
             ev.still_valid = False   # 跌回後又突破 → 假突破敘事被推翻
+
+    # 對向結構突破「取代」較早的舊突破(結構已反轉,方向一致性防線):
+    # 若在某個有效 BOS/CHoCH 之後,又出現更晚的、有效的「反向」BOS/CHoCH,
+    # 則較早的同向突破失效 —— 只保留「最近一次反轉之後」的同向突破。
+    # 修正實例:跌破 15 分K 前低(BOS_DOWN)之後,更早的 BOS_UP 仍被當成「順勢突破」
+    # → 誤判 PREPARE_LONG。此處讓 still_valid 反映當前真實結構方向,rule_engine 不再誤計。
+    structural = [e for e in events if e.event_type.startswith(("BOS", "CHOCH"))]
+    latest_up = max((e.time for e in structural
+                     if e.still_valid and e.event_type.endswith("_UP")), default=None)
+    latest_down = max((e.time for e in structural
+                       if e.still_valid and e.event_type.endswith("_DOWN")), default=None)
+    for e in structural:
+        if not e.still_valid:
+            continue
+        if e.event_type.endswith("_UP") and latest_down is not None and latest_down > e.time:
+            e.still_valid = False   # 後出現有效反向下破 → 舊上破被結構反轉取代
+        elif e.event_type.endswith("_DOWN") and latest_up is not None and latest_up > e.time:
+            e.still_valid = False   # 後出現有效反向上破 → 舊下破被結構反轉取代
+
     events.sort(key=lambda e: e.time)
     return events
 

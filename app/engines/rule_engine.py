@@ -62,12 +62,14 @@ def _direction_conditions(direction: str, *, structures: dict[str, StructureRepo
     m15, h1, h4 = structures.get("15M"), structures.get("1H"), structures.get("4H")
     up = direction == "LONG"
 
-    # 結構條件(必要類)
+    # 結構條件(必要類)。方向一致性防線:當「最新有效結構突破」已反轉為反向趨勢時,
+    # 不得再用殘留的舊 swing 標籤(HL/LH)當成本方向的結構確認 —— 避免跌破前低後
+    # 仍以更早的「更高低點 HL」誤認做多結構成立(與回報的方向衝突同類)。
     if m15:
         labels = [s.label for s in m15.swings if s.label][-3:]
-        if up and "HL" in labels:
+        if up and "HL" in labels and m15.trend != "DOWN":
             ok.append("STRUCT:15分K低點越墊越高,漲勢沒斷(更高低點 HL)")
-        if not up and "LH" in labels:
+        if not up and "LH" in labels and m15.trend != "UP":
             ok.append("STRUCT:15分K高點越壓越低,跌勢沒停(更低高點 LH)")
         for ev in m15.events[-4:]:
             if not ev.still_valid or ev.provisional:

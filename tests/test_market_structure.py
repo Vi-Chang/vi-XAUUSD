@@ -54,3 +54,30 @@ def test_downtrend_trend_down():
     closes = zigzag_path([(15, -2.0), (8, 1.0), (15, -2.0), (8, 1.0), (15, -2.0)])
     rep = analyze_structure(make_df(closes), "1H")
     assert rep.trend == "DOWN"
+
+
+def test_opposite_break_supersedes_earlier_bos_up():
+    """先 BOS_UP、之後價格真正收破前低(BOS_DOWN)→ 較早的 BOS_UP 被結構反轉取代(失效)。
+
+    修正回報的方向衝突:跌破 15 分K 前低後,系統仍把更早的上破當成「順勢突破」→
+    誤判做多條件湊齊。修正後,已收破前低時不得再有『有效的』上破供 rule_engine 誤計。
+    """
+    closes = (zigzag_path([(15, 1.5), (10, -1.8), (15, 1.5), (10, -1.8), (25, 2.5)])  # 先突破前高 → BOS_UP
+              + [4060, 4045, 4030, 4015, 4005, 3998, 3992, 3988,           # 持續收破前低 → BOS_DOWN
+                 3985, 3985, 3985, 3985])                                   # 未收回、觀察期已滿(非 provisional)
+    rep = analyze_structure(make_df(closes), "15M", fail_confirm_bars=3)
+    types = [e.event_type for e in rep.events]
+    assert any(t.endswith("_UP") for t in types), types
+    assert any(t.endswith("_DOWN") for t in types), types
+
+    valid_breaks = [e for e in rep.events
+                    if e.still_valid and not e.provisional
+                    and e.event_type.startswith(("BOS", "CHOCH"))]
+    # 收破前低後:最新有效結構突破必為向下,且其之前的上破一律失效(不得殘留有效上破)。
+    assert valid_breaks and valid_breaks[-1].event_type.endswith("_DOWN")
+    for e in rep.events:
+        if e.event_type.endswith("_UP") and e.still_valid and not e.provisional:
+            down_after = [d for d in rep.events
+                          if d.event_type.endswith("_DOWN") and d.still_valid and d.time > e.time]
+            assert not down_after, f"stale valid BOS_UP survived a later BOS_DOWN: {types}"
+    assert rep.trend == "DOWN"
