@@ -45,6 +45,18 @@ body {
   padding: 10px 14px; border-radius: 8px; margin-bottom: 10px;
   animation: pulse 1.6s infinite;
 }
+.no-trade-banner {
+  display: flex; align-items: center; gap: 10px;
+  background: rgba(248,81,73,.14); border: 1px solid var(--danger);
+  border-radius: 8px; padding: 10px 12px; margin-bottom: 10px;
+}
+.no-trade-banner[hidden] { display: none; }
+.no-trade-banner .nt-icon { font-size: 1.4rem; line-height: 1; }
+.no-trade-banner .nt-text { display: flex; flex-direction: column; gap: 2px; }
+.no-trade-banner .nt-text strong { color: var(--danger); font-weight: 800; }
+.no-trade-banner .nt-text span { color: var(--text-dim); font-size: .82rem; }
+.no-trade-banner .nt-updated { opacity: .8; }
+.decision-badge.blocked { outline: 2px solid var(--danger); }
 .sc-invalid {
   color: var(--warn); font-size: .85rem; padding: 14px 6px; text-align: center;
 }

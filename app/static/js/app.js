@@ -338,6 +338,22 @@ function applyAnalysis(a) {
   unskel(reason);
   reason.textContent = a.decision.reason;
 
+  // 資料不足 → 醒目「暫不交易」橫幅(資料過期/異常/休市/證據不足時系統一律 NO_TRADE)
+  const ntBanner = $("no-trade-banner");
+  if (ntBanner) {
+    if (a.decision.action === "NO_TRADE") {
+      const nr = $("no-trade-reason");
+      if (nr) nr.textContent = a.decision.reason || "資料品質未通過,暫停輸出可執行訊號。";
+      const lu = (a.current_price && a.current_price.last_update) || a.snapshot_ts || "";
+      const nu = $("no-trade-updated");
+      if (nu) nu.textContent = lu ? ("資料更新時間 " + String(lu).slice(11, 19) + " UTC") : "";
+      ntBanner.hidden = false;
+      badge.classList.add("blocked");
+    } else {
+      ntBanner.hidden = true;
+    }
+  }
+
   // 多週期膠囊
   const tfMap = { "1D": a.timeframes.daily, "4H": a.timeframes.h4,
                   "1H": a.timeframes.h1, "15M": a.timeframes.m15 };

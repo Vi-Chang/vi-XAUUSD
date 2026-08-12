@@ -82,6 +82,14 @@
   <aside class="side">
     <div class="card" id="decision-card">
       <div class="card-title">當前決策</div>
+      <div class="no-trade-banner" id="no-trade-banner" hidden role="alert">
+        <span class="nt-icon" aria-hidden="true">⛔</span>
+        <div class="nt-text">
+          <strong>資料不足,暫不交易</strong>
+          <span id="no-trade-reason"></span>
+          <span class="nt-updated" id="no-trade-updated"></span>
+        </div>
+      </div>
       <div class="decision-row">
         <span class="decision-badge skel" id="decision-badge">…</span>
         <span class="grade-badge skel" id="grade-badge">…</span>

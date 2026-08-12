@@ -138,6 +138,13 @@ class Settings(BaseSettings):
     source_mismatch_event_relax_mult: float = 2.0  # 高波動事件時段放寬倍數
     stale_price_seconds: int = 60
 
+    # ── 交易資格閘門(stale-data no-trade gate;資料不足/異常/休市/證據不足 → NO_TRADE)──
+    # 單一權威(app/engines/trade_gate.evaluate_trade_eligibility);門檻一律可設定,不硬編。
+    gate_spread_max_abs: float = 5.0            # 點差絕對上限(USD);超過視為異常報價
+    gate_spread_max_atr15_mult: float = 1.0     # 或 > 此倍數 × 15M ATR(取兩者較大者為門檻)
+    gate_min_evidence_score: int = 20           # 證據分數低於此 → 不輸出可執行訊號
+    gate_fallback_quote_max_age_seconds: int = 900  # 使用 fallback/cache 報價時的最大允許時齡
+
     # ── 市場狀態分類 ──
     state_event_max_age_minutes: int = 180  # FAILED_* 事件超過此時間不再定義市場狀態
 
