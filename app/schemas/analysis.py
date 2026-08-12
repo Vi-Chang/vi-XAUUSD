@@ -171,6 +171,86 @@ class BiasAnalysis(BaseModel):
     disclaimer: str = "證據傾向 ≠ 勝率;僅代表當下多空條件的相對完整度(規格書二十一)"
 
 
+class AnalysisEvidence(BaseModel):
+    id: str
+    direction: Literal["bullish", "bearish"]
+    category: str
+    label: str
+    sourceEvent: str | None = None
+    level: float | None = None
+    candleTime: str | None = None
+    reason: str = ""
+    data_updated_at: str = ""
+
+
+class TimeframeAssessment(BaseModel):
+    timeframe: Literal["1D", "4H", "1H", "15M"]
+    trend: Literal["bullish", "bearish", "neutral"] = "neutral"
+    momentum: Literal["accelerating", "stable", "weakening", "pullback", "reversal_risk"] = "stable"
+    label: str = ""
+    familyScores: dict[str, float] = Field(default_factory=dict)
+    closedCandleTime: str = ""
+
+
+class DynamicConfirmationLevel(BaseModel):
+    kind: Literal["support", "resistance"]
+    price: float
+    buffer: float
+    timeframe: Literal["1D", "4H", "1H", "15M"]
+    source: str
+
+
+class NormalizedAnalysisState(BaseModel):
+    """畫面判斷的唯一來源；所有欄位屬同一報價與同一根已收盤 K 棒。"""
+    generatedAt: str = ""
+    marketDataTimestamp: str = ""
+    currentPrice: float | None = None
+    trendBias: Literal["bullish", "bearish", "neutral"] = "neutral"
+    breakoutState: Literal["confirmed", "testing", "failed", "none"] = "none"
+    entryTiming: Literal["favorable", "chase", "wait", "invalid"] = "wait"
+    longEvidence: list[AnalysisEvidence] = Field(default_factory=list)
+    shortEvidence: list[AnalysisEvidence] = Field(default_factory=list)
+    invalidatedEvidence: list[AnalysisEvidence] = Field(default_factory=list)
+    eventDataStatus: Literal["GOOD", "STALE", "FAILED"] = "FAILED"
+    marketDataStatus: Literal["GOOD", "STALE", "FAILED"] = "FAILED"
+    bullPct: int = 50
+    bearPct: int = 50
+    evidenceTotal: int = 0
+    riskDirection: Literal["long", "short", "both", "wait", "none"] = "none"
+    riskLabel: str = "等待確認"
+    riskMessage: str = ""
+    marketStateCode: str = "INSUFFICIENT_DATA"
+    marketStateLabel: str = "資料不足"
+    tradingScript: str = ""
+    mostLikelyMistake: str = ""
+    consistencyValid: bool = True
+    consistencyErrors: list[str] = Field(default_factory=list)
+    consistencyMessage: str = ""
+    sourceTimestamps: dict[str, str] = Field(default_factory=dict)
+    sourcePrices: dict[str, float] = Field(default_factory=dict)
+    marketRegime: Literal[
+        "strong_bullish", "bullish", "range", "bearish", "strong_bearish"
+    ] = "range"
+    shortTermMomentum: Literal[
+        "accelerating", "stable", "weakening", "pullback", "reversal_risk"
+    ] = "stable"
+    entryReadiness: Literal["ready", "wait_confirmation", "avoid_chasing", "no_trade"] = "no_trade"
+    dataConfidence: Literal["high", "medium", "low", "insufficient"] = "insufficient"
+    supportState: Literal[
+        "none", "testing_support", "intrabar_breach", "confirmed_breakdown",
+        "failed_breakdown", "retest_rejected"
+    ] = "none"
+    trendScore: int = 50
+    entryQualityScore: int = 0
+    technicalBiasLabel: str = "中性"
+    timeframeAssessments: list[TimeframeAssessment] = Field(default_factory=list)
+    confirmationLevels: list[DynamicConfirmationLevel] = Field(default_factory=list)
+    lastClosedCandleTimestamp: str = ""
+    eventDataTimestamp: str = ""
+    freshnessBySource: dict[str, str] = Field(default_factory=dict)
+    eventRisk: Literal["low", "medium", "high", "unknown"] = "unknown"
+
+
 class MentorSignalView(BaseModel):
     """老師帶單一筆 + 與系統方向的比對(純參考,不影響決策)。"""
     id: int
@@ -254,6 +334,7 @@ class AnalysisResult(BaseModel):
     long_scenario: Scenario = Scenario()
     short_scenario: Scenario = Scenario()
     bias_analysis: BiasAnalysis = BiasAnalysis()
+    normalized_analysis: NormalizedAnalysisState = NormalizedAnalysisState()
     risk_manager: RiskManagerView = RiskManagerView()
     position_management: PositionManagement = PositionManagement()
     mentor_comparison: MentorComparison = MentorComparison()

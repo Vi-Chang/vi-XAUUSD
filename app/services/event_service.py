@@ -59,6 +59,7 @@ class EventRiskState:
     source: str = "none"            # finnhub/fmp/manual/none
     reason: str = ""
     manual_file_stale: bool = False
+    data_updated_at: str = ""
 
 
 def load_manual_events() -> tuple[list[dict], bool]:
@@ -95,6 +96,11 @@ def evaluate_event_risk(now: datetime | None = None) -> EventRiskState:
     upcoming.sort()
 
     state = EventRiskState(source="manual", manual_file_stale=stale)
+    try:
+        raw = json.loads(Path(s.manual_events_path).read_text(encoding="utf-8"))
+        state.data_updated_at = str(raw.get("updated_at", ""))
+    except Exception:  # noqa: BLE001
+        state.data_updated_at = ""
     if stale:
         state.reason = f"manual_events.json 超過 {s.manual_events_stale_days} 天未更新,請更新本週事件"
     if not upcoming:

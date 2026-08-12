@@ -39,7 +39,7 @@ def _tf_block(structures: dict, ind: dict, tf: str) -> dict:
 def build_snapshot(*, price: float, atr15: float, state: str, quality_status: str,
                    ev, ind: dict, structures: dict, levels: list, fvgs: list,
                    bias, position: dict | None, cross: dict,
-                   no_signal: bool, event_lockout: bool) -> dict:
+                   no_signal: bool, event_lockout: bool, normalized=None) -> dict:
     """組緊湊快照。levels=CandidateLevel list、fvgs=FvgZone list、bias=規則引擎輸出。"""
     # 候選價位:全部 STRONG + 距現價最近的 WEAK,合計上限 16
     strong = [lv for lv in levels if lv.strength == "STRONG"]
@@ -70,6 +70,19 @@ def build_snapshot(*, price: float, atr15: float, state: str, quality_status: st
         "gates": {"no_signal": bool(no_signal), "event_lockout": bool(event_lockout),
                   "quality": quality_status},
     }
+    if normalized is not None:
+        snap["market_dimensions"] = {
+            "regime": normalized.marketRegime,
+            "momentum": normalized.shortTermMomentum,
+            "entry": normalized.entryReadiness,
+            "data_confidence": normalized.dataConfidence,
+            "support_state": normalized.supportState,
+            "trend_score": normalized.trendScore,
+            "entry_score": normalized.entryQualityScore,
+            "timeframes": [{"tf": x.timeframe, "trend": x.trend,
+                            "momentum": x.momentum, "label": x.label}
+                           for x in normalized.timeframeAssessments],
+        }
     # 隱私邊界:AI 為公開市場分析,不餵入個人持倉。只有明確提供 position 時才納入
     # (目前一律 None → 快照完全不含 position/account/持倉欄位)。
     if position:
@@ -98,6 +111,7 @@ def fingerprint_of(snapshot: dict) -> str:
         "pos": (snapshot.get("position", {}).get("has"),
                 snapshot.get("position", {}).get("side")),
         "gates": snapshot.get("gates"),
+        "market_dimensions": snapshot.get("market_dimensions"),
     }
     blob = json.dumps(reduced, ensure_ascii=False, sort_keys=True, default=str)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()

@@ -417,6 +417,8 @@ body {
   .pq .big { font-size: 1.2rem; }
   .tabs { overflow-x: auto; }
   .tab { padding: 10px 14px; white-space: nowrap; }
+  .tf-capsules { display: grid; grid-template-columns: 1fr 1fr; }
+  .capsule { border-radius: 8px; padding: 8px 4px; font-size: .72rem; }
 }
 
 /* ═══ V2 AI 策略面板 ═══ */

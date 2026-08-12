@@ -32,6 +32,7 @@ const PRIVATE_PANELS = ["position-list", "mentor-body", "mentor-history",
 const $ = (id) => document.getElementById(id);
 const unskel = (el) => el && el.classList.remove("skel");
 const fmt = (v, d = 2) => (v == null ? "–" : Number(v).toFixed(d));
+const fmtTs = (v) => v ? String(v).slice(0, 16).replace("T", " ") : "–";
 
 /* ═══ 圖表初始化 ═══ */
 function initChart() {
@@ -354,25 +355,30 @@ function applyAnalysis(a) {
     }
   }
 
-  // 多週期膠囊
+  const n = a.normalized_analysis;
+  // 多週期膠囊：顯示統一狀態，不再只看結構 UP/DOWN。
   const tfMap = { "1D": a.timeframes.daily, "4H": a.timeframes.h4,
                   "1H": a.timeframes.h1, "15M": a.timeframes.m15 };
+  const normalizedTf = Object.fromEntries(((n && n.timeframeAssessments) || []).map((x) => [x.timeframe, x]));
   document.querySelectorAll(".capsule").forEach((cap) => {
     const v = tfMap[cap.dataset.tf];
+    const nv = normalizedTf[cap.dataset.tf];
     unskel(cap);
     cap.classList.remove("up", "down", "range");
-    const st = (v && v.structure) || "";
+    const st = nv ? nv.trend.toUpperCase() : ((v && v.structure) || "");
     if (st.startsWith("UP")) cap.classList.add("up");
     else if (st.startsWith("DOWN")) cap.classList.add("down");
     else if (st) cap.classList.add("range");
-    cap.title = st + (v && v.momentum ? " | " + v.momentum : "");
+    cap.textContent = nv ? `${cap.dataset.tf}・${nv.label}` : cap.dataset.tf;
+    cap.title = nv ? `${nv.label}｜${nv.momentum}` : st + (v && v.momentum ? " | " + v.momentum : "");
   });
   const msChip = $("market-state-chip");
   unskel(msChip);
-  msChip.textContent = stateZh(a.market_state);
-  msChip.className = "chip " + (a.market_state.includes("BULL") ? "good"
-    : a.market_state.includes("BEAR") ? "bad"
-    : a.market_state.includes("TRANSITION") || a.market_state.includes("PENDING") ? "warn" : "info");
+  const stateCode = n ? n.marketStateCode : a.market_state;
+  msChip.textContent = n ? n.marketStateLabel : stateZh(stateCode);
+  msChip.className = "chip " + (stateCode.includes("BULL") ? "good"
+    : stateCode.includes("BEAR") ? "bad"
+    : stateCode.includes("FAILED") || stateCode.includes("TRANSITION") || stateCode.includes("PENDING") ? "warn" : "info");
 
   // 頂部 chips
   const mkChip = $("chip-market");
@@ -382,7 +388,7 @@ function applyAnalysis(a) {
   unskel(qChip);
   qChip.textContent = "資料品質 " + q;
   qChip.className = "chip " + (q === "GOOD" ? "good" : q === "DEGRADED" ? "warn" : "bad");
-  $("sys-quality").textContent = q;
+  renderNormalized(n);
   $("sys-provider").textContent = a.current_price.provider || "–";
   $("sys-lastrun").textContent = (a.timestamp_taipei || "").slice(11, 19) || "–";
 
@@ -398,7 +404,7 @@ function applyAnalysis(a) {
 
   // 事件風險(全中文;僅倒數時間保留數字格式)
   renderEventRisk(a.event_risk);
-  renderBias(a.bias_analysis);
+  renderBias(a.bias_analysis, n);
 
   if (a.offset_info) renderOffset(a.offset_info);
   const offVal = a.offset_info ? a.offset_info.value : 0;
@@ -406,6 +412,48 @@ function applyAnalysis(a) {
   renderScenario($("scenario-short"), a.short_scenario, "做空劇本", offVal);
   renderAiStrategy(a.ai_strategy);
   applyOverlays().catch(console.error);
+}
+
+function renderNormalized(n) {
+  if (!n) return;
+  const trend = { bullish: "偏多", bearish: "偏空", neutral: "中性" };
+  const breakout = { confirmed: "已收盤確認", testing: "盤中測試", failed: "突破失敗", none: "無突破" };
+  const timing = { favorable: "條件有利", chase: "不宜追價", wait: "等待確認", invalid: "資料無效" };
+  $("trend-bias").textContent = trend[n.trendBias] || n.trendBias;
+  $("breakout-state").textContent = breakout[n.breakoutState] || n.breakoutState;
+  $("entry-timing").textContent = timing[n.entryTiming] || n.entryTiming;
+  $("analysis-data-time").textContent = fmtTs(n.marketDataTimestamp);
+  $("last-closed-time").textContent = fmtTs(n.lastClosedCandleTimestamp);
+  $("analysis-generated-time").textContent = fmtTs(n.generatedAt);
+  $("normalized-script").textContent = n.tradingScript || "";
+  const regimes = { strong_bullish: "強勢多頭", bullish: "大週期多頭", range: "區間",
+                    bearish: "大週期空頭", strong_bearish: "強勢空頭" };
+  const momentums = { accelerating: "短線加速", stable: "短線穩定", weakening: "短線降溫",
+                      pullback: "短線回調", reversal_risk: "短線反轉風險" };
+  $("market-state-chip").textContent = `${regimes[n.marketRegime] || n.marketRegime}｜${momentums[n.shortTermMomentum] || n.shortTermMomentum}`;
+  $("technical-bias").textContent = n.technicalBiasLabel;
+  $("trend-score").textContent = `${n.trendScore}/100`;
+  const readiness = { ready: "條件已具備", wait_confirmation: "等待確認", avoid_chasing: "避免追價", no_trade: "暫停交易" };
+  const confidence = { high: "高", medium: "中", low: "低", insufficient: "不足" };
+  const support = { none: "無測試", testing_support: "測試支撐", intrabar_breach: "盤中刺破",
+                    confirmed_breakdown: "收盤有效跌破", failed_breakdown: "跌破後站回",
+                    retest_rejected: "反抽無法站回" };
+  $("entry-quality").textContent = `${readiness[n.entryReadiness] || n.entryReadiness}・${n.entryQualityScore}/100`;
+  $("data-confidence").textContent = confidence[n.dataConfidence] || n.dataConfidence;
+  $("support-state").textContent = support[n.supportState] || n.supportState;
+  const setQuality = (id, status) => {
+    const el = $(id); el.textContent = status;
+    el.className = "chip " + (status === "GOOD" ? "good" : status === "STALE" ? "warn" : "bad");
+  };
+  setQuality("sys-market-quality", n.marketDataStatus);
+  setQuality("sys-event-quality", n.eventDataStatus);
+  $("event-data-time").textContent = fmtTs(n.eventDataTimestamp);
+  $("quality-summary").textContent = n.marketDataStatus === "GOOD" && n.eventDataStatus === "FAILED"
+    ? "行情資料正常；事件資料失效，本次分析未納入事件風險。"
+    : `行情資料 ${n.marketDataStatus}；事件資料 ${n.eventDataStatus}。`;
+  $("risk-label").textContent = n.riskLabel;
+  $("risk-label").className = "chip " + (n.riskDirection === "none" ? "good" : "warn");
+  $("risk-message").textContent = n.riskMessage || "";
 }
 
 // ═══ V2 AI 策略面板 ═══════════════════════════════════════
@@ -437,6 +485,7 @@ function renderAiStrategy(ai) {
   const tp = ai.trade_plan || {};
   const res = tp.resolved || {};
   const conf = ai.confidence || {};
+  const normalized = S.analysis && S.analysis.normalized_analysis;
   const cls = act.type === "Buy" ? "good" : act.type === "Sell" ? "bad" : "warn";
 
   const analysts = ai.analysts || {};
@@ -476,10 +525,11 @@ function renderAiStrategy(ai) {
         <div class="ai-sec-title">市場結構判定</div>
         <p>${ai.market_structure ? ai.market_structure.reason : ""}</p>
 
-        <div class="ai-sec-title">多空評估(主觀機率,非歷史勝率)</div>
-        <div class="bias-bar"><div class="bias-bull-fill" style="width:${(wr.long_pct || 0) + "%"}"></div>
-          <div class="bias-bear-fill" style="width:${(wr.short_pct || 0) + "%"}"></div></div>
-        <div class="ai-kv"><span>多方 ${wr.long_pct ?? "–"}%</span><span>${wr.short_pct ?? "–"}% 空方</span></div>
+        <div class="ai-sec-title">統一市場評估</div>
+        <div class="ai-kv"><span>趨勢傾向</span><span>${normalized ? normalized.technicalBiasLabel : "–"}</span></div>
+        <div class="ai-kv"><span>進場品質</span><span>${normalized ? normalized.entryReadiness : "–"}</span></div>
+        <div class="ai-kv"><span>資料可信度</span><span>${normalized ? normalized.dataConfidence : "–"}</span></div>
+        <p class="bias-disclaimer">技術證據傾向不是勝率；AI 不得覆寫統一進場狀態。</p>
 
         <div class="ai-sec-title">行動</div>
         ${act.type === "Wait" && act.wait_condition ? h`<div class="ai-kv"><span>等什麼</span><span>${act.wait_condition}</span></div>` : ""}
@@ -540,12 +590,11 @@ function renderEventRisk(er) {
     "事件清單來自 data/manual_events.json,請每週日更新本週高影響事件。";
 }
 
-function renderBias(b) {
+function renderBias(b, n) {
   if (!b) return;
-  $("bias-bull-pct").textContent = `${b.bull_pct}%`;
-  $("bias-bear-pct").textContent = `${b.bear_pct}%`;
-  $("bias-bull-fill").style.width = `${b.bull_pct}%`;
-  $("bias-bear-fill").style.width = `${b.bear_pct}%`;
+  const tilt = n ? n.trendScore : 50;
+  $("bias-bull-fill").style.width = `${tilt}%`;
+  $("bias-bear-fill").style.width = `${100 - tilt}%`;
   const strip = (s) => s.replace(/^(STRUCT|LEVEL|MOMO|HTF):/, "");
   const fill = (listId, countId, items) => {
     $(countId).textContent = items.length;
@@ -555,6 +604,10 @@ function renderBias(b) {
   };
   fill("bias-bull-list", "bias-bull-count", b.bull_evidence || []);
   fill("bias-bear-list", "bias-bear-count", b.bear_evidence || []);
+  const invalid = n ? (n.invalidatedEvidence || []) : [];
+  $("bias-details-invalidated").hidden = invalid.length === 0;
+  $("bias-invalidated-count").textContent = invalid.length;
+  $("bias-invalidated-list").innerHTML = invalid.map((x) => h`<li>${x.label}<br><small>${x.level != null ? `失效價位 ${Number(x.level).toFixed(2)}・` : ""}${x.candleTime ? fmtTs(x.candleTime) + "・" : ""}${x.reason || ""}</small></li>`).join("");
   if (b.disclaimer) $("bias-disclaimer").textContent = b.disclaimer;
   const flags = b.chase_flags || [];
   let flagBox = document.getElementById("bias-flags");
@@ -567,7 +620,7 @@ function renderBias(b) {
   flagBox.innerHTML = flags.map((f) => {
     const key = f.split(":")[0];
     const title = f.split(":").slice(1).join(":");
-    return h`<span class="chip warn" title="${title}">${MSG.chase[key] || key}</span>`;
+    return h`<span class="chip warn" title="${title}">${key === "RISK" ? title : (MSG.chase[key] || key)}</span>`;
   }).join("");
 }
 
