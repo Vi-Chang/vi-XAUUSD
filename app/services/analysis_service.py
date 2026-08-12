@@ -415,6 +415,8 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
     # ── 10. 儲存 ──
     try:
         with db_session() as db:
+            from app.services.outcome_tracker import backfill_outcomes
+            backfill_outcomes(db, now=now, current_price=tick.mid)
             run = AnalysisRun(
                 run_time=now, trigger=trigger, market_state=state,
                 decision_action=result.decision.action,
