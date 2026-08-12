@@ -348,6 +348,16 @@ async def analysis_history(limit: int = 20) -> list[dict]:
     } for r in rows]
 
 
+@app.get("/api/performance")
+async def performance_api(limit: int = 5000) -> dict:
+    """匿名規則訊號績效；不包含帳戶、部位或個人交易資料。"""
+    from app.db.session import db_session
+    from app.services.performance_service import performance_report
+    limit = max(100, min(limit, 10000))
+    with db_session() as db:
+        return performance_report(db, limit=limit)
+
+
 @app.get("/api/candles")
 async def candles_api(timeframe: str = "15M", limit: int = 300) -> list[dict]:
     """資料庫已儲存 K 棒(圖表用;與分析引擎同一份資料,spec 之一致性要求)。"""

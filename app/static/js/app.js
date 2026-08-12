@@ -1081,6 +1081,29 @@ async function loadHistory() {
   }
 }
 
+async function loadPerformance() {
+  const body = $("performance-body");
+  try {
+    const report = await (await fetch("/api/performance")).json();
+    const labels = { overall: "整體", direction: "方向", score_band: "分數區間",
+      market_state: "市場狀態", session: "交易時段" };
+    const cards = [];
+    for (const [group, rows] of Object.entries(report.groups || {})) {
+      for (const row of rows) cards.push(h`<div class="performance-card">
+        <h4>${labels[group] || group}：${row.key} · ${row.horizon}</h4>
+        <div class="performance-metrics">
+          <span>樣本<b class="num ${row.sufficient_sample ? "" : "sample-low"}">${row.sample_size}</b></span>
+          <span>勝率<b class="num">${row.win_rate_pct == null ? "—" : row.win_rate_pct + "%"}</b></span>
+          <span>平均報酬<b class="num">${row.average_return_pct == null ? "—" : row.average_return_pct + "%"}</b></span>
+        </div>${row.sufficient_sample ? "" : '<div class="sample-low">樣本不足，暫不可據此調參</div>'}</div>`);
+    }
+    body.innerHTML = h`<div class="performance-note">有效訊號 ${report.eligible_signals} 筆；最低可信樣本 ${report.minimum_sample_size} 筆。自動調參：關閉。</div>
+      <div class="performance-grid">${joinSafe(cards) || '<div class="empty">尚無已完成的訊號結果</div>'}</div>`;
+  } catch (e) {
+    body.innerHTML = '<div class="empty">績效資料讀取失敗</div>';
+  }
+}
+
 /* ═══ 倒數計時 ═══ */
 setInterval(() => {
   if (!S.countdownTarget) return;
@@ -1126,6 +1149,7 @@ async function boot() {
       t.classList.add("active");
       $("panel-" + t.dataset.tab).classList.add("active");
       if (t.dataset.tab === "history") loadHistory();
+      if (t.dataset.tab === "performance") loadPerformance();
       if (t.dataset.tab === "position") loadPositions();
       if (t.dataset.tab === "mentor") { loadMentor(); loadMentorHistory(); }
       if (t.dataset.tab === "coach") loadCoach();
