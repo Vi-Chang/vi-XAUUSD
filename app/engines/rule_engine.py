@@ -13,10 +13,10 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from app.config import get_settings
-from app.i18n import dir_zh, state_zh
 from app.engines.data_quality import DataQualityReport
 from app.engines.key_levels import CandidateLevel, nearest_zone
 from app.engines.market_structure import StructureReport
+from app.i18n import dir_zh, state_zh
 from app.schemas.analysis import Scenario
 
 logger = logging.getLogger(__name__)
@@ -176,7 +176,7 @@ def _build_scenario(direction: str, conditions: list[str], *, price: float,
     up = direction == "LONG"
     entry = nearest_zone(levels, price, "SUP_ZONE" if up else "RES_ZONE", "STRONG")
     stop_ref = None
-    m15 = structures.get("15M")
+    structures.get("15M")
     for lv in levels:
         if up and lv.kind == "SWING_LOW_15M":
             stop_ref = lv
@@ -208,7 +208,10 @@ def _build_scenario(direction: str, conditions: list[str], *, price: float,
 
     # ── P1 產生端不變式:產不出合法 SL 就不產出停損(不硬湊、不送出矛盾組合)──
     from app.engines.setup_validator import (
-        has_fatal, log_invalid, stop_side_ok, validate_prices_detailed,
+        has_fatal,
+        log_invalid,
+        stop_side_ok,
+        validate_prices_detailed,
     )
     entry_px = entry.mid if entry else None
     stop_px = (stop_ref.mid - (0.25 * atr15 if up else -0.25 * atr15)) if stop_ref else None

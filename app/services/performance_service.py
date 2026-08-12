@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 from collections import defaultdict
+
 from sqlalchemy import select
+
 from app.db.models import AnalysisRun
 
 HORIZONS = ("outcome_15m", "outcome_1h", "outcome_4h", "outcome_1d")

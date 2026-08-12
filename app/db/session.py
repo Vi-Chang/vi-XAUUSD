@@ -51,7 +51,7 @@ def init_db() -> None:
     """
     from sqlalchemy import inspect, text
 
-    from app.db import models  # noqa: F401  (註冊 metadata)
+    from app.db import models
     engine = get_engine()
     models.Base.metadata.create_all(engine)
 

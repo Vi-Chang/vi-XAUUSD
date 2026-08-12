@@ -13,12 +13,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import httpx
 
 from app.config import get_settings
-from app.providers.base import Candle, MarketDataProvider, PriceTick, ProviderError, with_retry
+from app.providers.base import (
+    Candle,
+    MarketDataProvider,
+    PriceTick,
+    ProviderError,
+    with_retry,
+)
 
 logger = logging.getLogger(__name__)
 

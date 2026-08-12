@@ -18,7 +18,12 @@ import httpx
 
 from app.config import get_settings
 from app.providers.base import (
-    Candle, MarketDataProvider, PriceTick, ProviderError, QuotaExceededError, with_retry,
+    Candle,
+    MarketDataProvider,
+    PriceTick,
+    ProviderError,
+    QuotaExceededError,
+    with_retry,
 )
 from app.utils.timeutils import TIMEFRAME_MINUTES
 

@@ -77,10 +77,9 @@ def check_live_price(tick: PriceTick | None, *, now: datetime | None = None,
         warnings.append(f"bid({tick.bid}) > ask({tick.ask})")
     age = (now - tick.quote_time).total_seconds()
     stale = False
-    if age > threshold:
-        if is_market_open(now, holidays):
-            warnings.append(f"STALE_DATA: price age {age:.0f}s > {threshold}s")
-            stale = True
+    if age > threshold and is_market_open(now, holidays):
+        warnings.append(f"STALE_DATA: price age {age:.0f}s > {threshold}s")
+        stale = True
         # 休市中不報 STALE(行事曆防呆)
     if spread_p95 is not None and tick.spread > spread_p95 * 3:
         warnings.append(f"abnormal spread {tick.spread} (p95={spread_p95})")
@@ -137,9 +136,7 @@ def evaluate(candles_by_tf: dict[str, pd.DataFrame], tick: PriceTick | None, *,
         report.status = "FAILED"
     elif stale:
         report.status = "STALE"
-    elif report.missing_candles or report.source_mismatch or not required_missing:
-        report.status = "DEGRADED"
-    elif any("bid(" in w or "inconsistent OHLC" in w for w in report.warnings):
+    elif report.missing_candles or report.source_mismatch or not required_missing or any("bid(" in w or "inconsistent OHLC" in w for w in report.warnings):
         report.status = "DEGRADED"
     else:
         report.status = "GOOD"

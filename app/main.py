@@ -5,7 +5,15 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi import (
+    Depends,
+    FastAPI,
+    HTTPException,
+    Request,
+    Response,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -17,8 +25,15 @@ from app.logging_config import setup_logging
 from app.notifications.telegram import build_notification_manager
 from app.providers import get_primary_provider
 from app.security import (
-    admin_status, clear_session_cookie, create_session, destroy_session,
-    rate_limit, rate_limit_window, require_admin, set_session_cookie, token_matches,
+    admin_status,
+    clear_session_cookie,
+    create_session,
+    destroy_session,
+    rate_limit,
+    rate_limit_window,
+    require_admin,
+    set_session_cookie,
+    token_matches,
 )
 from app.services.heartbeat import health_payload, liveness_payload, readiness_payload
 from app.services.scheduler import build_scheduler, state
@@ -272,8 +287,8 @@ async def get_mentor_signals() -> dict:
     cur = None
     try:
         cur = (await state.provider.get_live_price()).mid
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception:
+        logger.debug("comparison live price unavailable", exc_info=True)
     return comparison_block(action, cur)
 
 

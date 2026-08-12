@@ -84,8 +84,8 @@ async def broadcast_private(payload: dict) -> None:
         if not session_valid(sid):
             try:
                 await ws.close(code=1008)   # session 過期 → 不再傳私人資料
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception:
+                logger.debug("failed to close expired private websocket", exc_info=True)
             dead.append(ws)
             continue
         try:
@@ -200,8 +200,8 @@ async def job_structure_l2() -> None:
                    > s.tier3_max_age_minutes * 60)
         if overdue:
             await run_full_analysis(trigger="timed", reason_zh=None)
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("structure_l2 failed: %s", exc)
+    except Exception:
+        logger.exception("structure_l2 failed")
 
 
 # ═══ 第 3 層:完整分析(事件觸發 + 定時保底)═══════════════
@@ -276,8 +276,8 @@ async def run_full_analysis(*, trigger: str, reason_zh: str | None) -> None:
         pub = public_analysis(annotate_freshness(state.latest_result, current_mid=cm))
         await broadcast_public({"type": "analysis", "data": pub})
         await broadcast_private({"type": "analysis", "data": full})
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("full_analysis failed: %s", exc)
+    except Exception as exc:
+        logger.exception("full_analysis failed")
         if state.notifier:
             await state.notifier.notify("RISK", "analysis_error", f"分析失敗:{exc}",
                                         severity="ERROR")

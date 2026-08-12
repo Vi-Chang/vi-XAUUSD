@@ -8,7 +8,6 @@ from sqlalchemy import select
 
 from app.db.models import AnalysisRun, Candle
 
-
 HORIZONS = {
     "outcome_15m": timedelta(minutes=15),
     "outcome_1h": timedelta(hours=1),

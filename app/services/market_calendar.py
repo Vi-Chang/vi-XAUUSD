@@ -5,11 +5,14 @@
 """
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime
 
 from app.db.models import MarketCalendarEntry
 from app.db.session import db_session
 from app.utils.timeutils import is_market_open
+
+logger = logging.getLogger(__name__)
 
 # 內建假日(NY 日曆日);每年年底維護一次即可
 BUILTIN_HOLIDAYS: dict[date, str] = {
@@ -28,8 +31,8 @@ def load_holidays() -> frozenset[date]:
         with db_session() as db:
             for row in db.query(MarketCalendarEntry).all():
                 days.add(row.calendar_date)
-    except Exception:  # noqa: BLE001 — 行事曆讀取失敗不應讓分析崩潰,改用內建
-        pass
+    except Exception:  # 行事曆讀取失敗不應讓分析崩潰，改用內建
+        logger.warning("market calendar database unavailable; using built-ins", exc_info=True)
     return frozenset(days)
 
 
