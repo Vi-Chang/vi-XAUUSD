@@ -109,6 +109,38 @@ class TestAnomaly:
 
 
 class TestLayer3Trigger:
+    async def test_first_successful_quote_triggers_startup_analysis(self, monkeypatch):
+        import app.services.scheduler as sch
+
+        monkeypatch.setattr(sch, "market_is_open", lambda *a, **k: True)
+        tick = PriceTick("XAUUSD", 4000.0, 4000.4,
+                         datetime.now(timezone.utc), "test")
+
+        class Provider:
+            name = "test"
+
+            async def get_live_price(self):
+                return tick
+
+        calls = []
+
+        async def fake_full(*, trigger, reason_zh):
+            calls.append((trigger, reason_zh))
+            sch.state.last_full_analysis = datetime.now(timezone.utc)
+
+        async def fake_broadcast(_payload):
+            return None
+
+        monkeypatch.setattr(sch, "run_full_analysis", fake_full)
+        monkeypatch.setattr(sch, "broadcast_all", fake_broadcast)
+        monkeypatch.setattr("app.services.api_counter.bump", lambda _name: None)
+        sch.state.fast_provider = Provider()
+        sch.state.last_full_analysis = None
+        sch.state.quote_cache = QuoteCache()
+
+        await sch.job_quote_l1()
+        assert calls == [("startup", "服務啟動後首次報價已就緒")]
+
     def test_scheduler_runs_quote_then_structure_shortly_after_startup(self):
         from app.services.scheduler import build_scheduler
 
