@@ -112,6 +112,7 @@ body {
   min-width: 200px; font-size: .74rem;
 }
 .op-row { display: flex; align-items: center; gap: 8px; line-height: 1.9; }
+.op-context { display: none; }
 .op-lbl { color: var(--text-dim); text-transform: uppercase; letter-spacing: .5px;
   font-size: .64rem; min-width: 108px; }
 .op-val { font-weight: 600; }
