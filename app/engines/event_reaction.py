@@ -39,9 +39,15 @@ def assess_event_reaction(*, post_event_wait: bool, m15_closed_at: str,
     fundamental_bias = ("bearish_xauusd" if surprise is not None and surprise > 0 and stronger_us
                         else "bullish_xauusd" if surprise is not None and surprise < 0 and stronger_us
                         else "neutral" if surprise == 0 else "unknown")
-    common = dict(actual=actual, forecast=forecast, previous=previous,
-                  outcome_status=outcome_status, outcome_source=outcome_source,
-                  surprise=surprise, fundamental_bias=fundamental_bias)
+    common = {
+        "actual": actual,
+        "forecast": forecast,
+        "previous": previous,
+        "outcome_status": outcome_status,
+        "outcome_source": outcome_source,
+        "surprise": surprise,
+        "fundamental_bias": fundamental_bias,
+    }
     if not post_event_wait:
         return EventReaction(**common, message="目前沒有進入事件公布後確認窗口。")
     if not m15_closed_at:
