@@ -260,6 +260,9 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
                       previous_action=previous_action,
                       m15_df=dfs_closed.get("15M"))
 
+    # API 與 normalized state 必須共用完全相同的快照價格與精度。
+    snapshot_price = cast(float, fmt_price(tick.mid))
+
     # ── 9. 組固定輸出 JSON ──
     def zones(kind: str, strength: str) -> list[dict]:
         return [lv.to_dict() for lv in levels if lv.kind == kind and lv.strength == strength]
@@ -269,7 +272,7 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
         timestamp_taipei=to_taipei(now).isoformat(),
         symbol=symbol,
         current_price=CurrentPrice(bid=fmt_price(tick.bid), ask=fmt_price(tick.ask),
-                                   mid=fmt_price(tick.mid), spread=fmt_price(tick.spread),
+                                   mid=snapshot_price, spread=fmt_price(tick.spread),
                                    provider=tick.provider,
                                    last_update=tick.quote_time.isoformat()),
         data_quality=DataQuality(status=cast(DataQualityStatus, quality.status),
@@ -322,7 +325,7 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
     # 唯一分析狀態：在 API/DB 回傳前完成，後續 UI 與相容欄位均由它回填。
     normalized = build_normalized_state(
         generated_at=now.isoformat(), market_timestamp=tick.quote_time.isoformat(),
-        current_price=tick.mid, market_state=state,
+        current_price=snapshot_price, market_state=state,
         market_quality=quality.status, event_source=ev.source,
         event_stale=ev.manual_file_stale, structures=structures,
         m15_all=dfs_all.get("15M"), m15_closed=dfs_closed.get("15M"),
