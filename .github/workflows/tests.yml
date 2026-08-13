@@ -30,7 +30,7 @@ jobs:
 
       - name: Type-check core analysis contract
         run: >-
-          python -m mypy app/services/analysis_service.py app/schemas/analysis.py
+          python -m mypy app/main.py app/services/analysis_service.py app/schemas/analysis.py
           --follow-imports=skip --ignore-missing-imports
 
       - name: Check frontend JavaScript syntax
