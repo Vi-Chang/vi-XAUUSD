@@ -67,6 +67,7 @@ class Settings(BaseSettings):
 
     # ── 事件 / 跨市場(Phase 6)──
     finnhub_api_key: str = ""
+    finnhub_economic_calendar_url: str = "https://finnhub.io/api/v1/calendar/economic"
     fmp_api_key: str = ""
     fred_api_key: str = ""
     manual_events_path: str = "data/manual_events.json"
