@@ -21,6 +21,15 @@ END:VCALENDAR
     assert events[0]["time_utc"] == "2026-08-12T12:30:00Z"
 
 
+def test_parse_fomc_calendar_uses_eastern_release_time():
+    page = "2026 FOMC Meetings January 27-28 March 17-18* 2025 FOMC Meetings"
+    events = es.parse_fomc_calendar(page, 2026)
+    assert [event["name"] for event in events] == ["FOMC Rate Decision", "FOMC Rate Decision"]
+    # 冬季為 14:00 ET = 19:00 UTC；三月已轉夏令時間，為 18:00 UTC。
+    assert events[0]["time_utc"] == "2026-01-28T19:00:00Z"
+    assert events[1]["time_utc"] == "2026-03-18T18:00:00Z"
+
+
 def test_post_release_window_locks_new_entries(monkeypatch):
     now = datetime(2026, 8, 13, 12, 40, tzinfo=timezone.utc)
     event = {"name": "Consumer Price Index", "country": "US", "impact": "HIGH",

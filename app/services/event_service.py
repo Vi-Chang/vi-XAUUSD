@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.request import Request, urlopen
+from zoneinfo import ZoneInfo
 
 from app.config import get_settings
 
@@ -107,6 +109,40 @@ def parse_bls_ics(text: str) -> list[dict]:
     return events
 
 
+_MONTHS = {name: number for number, name in enumerate((
+    "January", "February", "March", "April", "May", "June", "July", "August",
+    "September", "October", "November", "December"), start=1)}
+
+
+def parse_fomc_calendar(html: str, year: int) -> list[dict]:
+    """從 Fed 官方 FOMC 年度日程擷取會議最後一天的決議時間。
+
+    Fed 的利率決議通常於會議最後日美東 14:00 發布；使用 America/New_York
+    換算 UTC，避免夏令時間把事件錯排一小時。只採用該年度段落，避免歷史日程混入。
+    """
+    plain = re.sub(r"<[^>]+>", " ", html)
+    plain = re.sub(r"\s+", " ", plain)
+    marker = f"{year} FOMC Meetings"
+    start = plain.find(marker)
+    if start < 0:
+        return []
+    end = plain.find(f"{year - 1} FOMC Meetings", start + len(marker))
+    section = plain[start:end if end >= 0 else None]
+    pattern = re.compile(
+        r"(January|February|March|April|May|June|July|August|September|October|November|December)"
+        r"\s+(\d{1,2})(?:\s*[-–]\s*(\d{1,2}))?", re.IGNORECASE)
+    eastern = ZoneInfo("America/New_York")
+    events: list[dict] = []
+    for match in pattern.finditer(section):
+        month = _MONTHS[match.group(1).title()]
+        day = int(match.group(3) or match.group(2))
+        local = datetime(year, month, day, 14, 0, tzinfo=eastern)
+        events.append({"name": "FOMC Rate Decision", "country": "US", "impact": "HIGH",
+                       "time_utc": local.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+                       "source": "Federal Reserve"})
+    return events
+
+
 def _write_catalog(path: Path, events: list[dict], now: datetime) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {"updated_at": now.isoformat().replace("+00:00", "Z"), "source": "BLS",
@@ -129,13 +165,16 @@ def load_official_events(now: datetime | None = None, *, fetcher=None) -> tuple[
     if fresh or not s.official_event_sync_enabled or s.app_env == "test":
         return events, not fresh, updated.isoformat() if updated else ""
     try:
-        if fetcher is not None:
-            raw = fetcher(s.official_events_url)
-        else:
-            request = Request(s.official_events_url, headers={"User-Agent": "XAUUSD-event-risk/1.0"})
+        def fetch(url: str) -> str:
+            if fetcher is not None:
+                return fetcher(url)
+            request = Request(url, headers={"User-Agent": "XAUUSD-event-risk/1.0"})
             with urlopen(request, timeout=s.official_events_timeout_seconds) as response:  # nosec B310
-                raw = response.read().decode("utf-8")
-        parsed = parse_bls_ics(raw)
+                return response.read().decode("utf-8")
+
+        parsed = parse_bls_ics(fetch(s.official_events_url))
+        parsed.extend(parse_fomc_calendar(fetch(s.official_fomc_events_url), now.year))
+        parsed = list({(item["name"], item["time_utc"]): item for item in parsed}.values())
         if not parsed:
             raise ValueError("official calendar had no supported high-impact events")
         _write_catalog(path, parsed, now)
