@@ -4,6 +4,7 @@ from app.services.performance_service import (
     _score_band,
     _session,
     _summary,
+    _walk_forward_validation,
 )
 
 
@@ -43,3 +44,12 @@ def test_calibration_recommendations_are_review_only():
     recommendations = _calibration_recommendations(groups)
     assert {item["kind"] for item in recommendations} == {"stop_buffer_review", "target_distance_review", "signal_filter_review"}
     assert all(item["review_required"] is True for item in recommendations)
+
+
+def test_walk_forward_requires_two_independent_sample_windows():
+    insufficient = _walk_forward_validation({"1h": [0.1] * 59})
+    assert insufficient["1h"]["status"] == "not_validated"
+    validated = _walk_forward_validation({"1h": [0.1] * 30 + [0.2] * 30})
+    assert validated["1h"]["status"] == "validated"
+    conflicting = _walk_forward_validation({"1h": [0.1] * 30 + [-0.2] * 30})
+    assert conflicting["1h"]["status"] == "not_validated"

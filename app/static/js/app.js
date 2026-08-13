@@ -1254,7 +1254,7 @@ async function loadPerformance() {
     const recommendations = report.calibration_recommendations || [];
     if (recommendations.length) cards.push(h`<div class="performance-card calibration-card">
       <h4>校正建議（僅供人工檢視）</h4>
-      ${joinSafe(recommendations.map((item) => h`<p><b>${item.scope}・${item.horizon}</b><br>${item.message}</p>`))}
+      ${joinSafe(recommendations.map((item) => h`<p><b>${item.scope}・${item.horizon}</b><br>${item.message}<br><small>${item.walk_forward_status === "validated" ? "樣本外驗證：已通過" : "樣本外驗證：尚未通過（僅供檢視）"}</small></p>`))}
     </div>`);
     for (const [group, rows] of Object.entries(report.groups || {})) {
       for (const row of rows) cards.push(h`<div class="performance-card">
