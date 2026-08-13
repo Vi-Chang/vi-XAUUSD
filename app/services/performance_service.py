@@ -96,12 +96,33 @@ def _calibration_recommendations(groups: dict[str, list[dict]]) -> list[dict]:
     return recommendations[:8]
 
 
+def _walk_forward_validation(values_by_horizon: dict[str, list[float]]) -> dict[str, dict]:
+    """Split chronologically ordered outcomes into calibration and holdout windows."""
+    result: dict[str, dict] = {}
+    for horizon, values in values_by_horizon.items():
+        midpoint = len(values) // 2
+        calibration, validation = values[:midpoint], values[midpoint:]
+        calibration_summary, validation_summary = _summary(calibration), _summary(validation)
+        calibration_return = calibration_summary["average_return_pct"]
+        validation_return = validation_summary["average_return_pct"]
+        enough = calibration_summary["sufficient_sample"] and validation_summary["sufficient_sample"]
+        agrees = (isinstance(calibration_return, (int, float)) and isinstance(validation_return, (int, float))
+                  and ((calibration_return > 0 and validation_return > 0)
+                       or (calibration_return <= 0 and validation_return <= 0)))
+        result[horizon] = {"calibration": calibration_summary, "validation": validation_summary,
+                           "status": "validated" if enough and agrees else "not_validated",
+                           "reason": "兩段樣本的平均報酬方向一致" if enough and agrees
+                           else "樣本不足或校正期與樣本外驗證期表現不一致"}
+    return result
+
+
 def performance_report(db, *, limit: int = 5000) -> dict:
     rows = db.execute(select(AnalysisRun).order_by(AnalysisRun.run_time.desc()).limit(limit)).scalars().all()
     buckets = {name: defaultdict(list) for name in
                ("overall", "direction", "score_band", "market_state", "session")}
     excursions = {name: defaultdict(lambda: {"mfe": [], "mae": []}) for name in buckets}
     planned = {name: defaultdict(lambda: {"risk": [], "target": []}) for name in buckets}
+    outcomes_by_horizon: dict[str, list[float]] = defaultdict(list)
     eligible = 0
     for row in rows:
         direction = _direction(row.decision_action)
@@ -116,6 +137,7 @@ def performance_report(db, *, limit: int = 5000) -> dict:
             value = getattr(row, horizon)
             if value is None:
                 continue
+            outcomes_by_horizon[horizon.removeprefix("outcome_")].append(float(value))
             for group, key in keys.items():
                 buckets[group][f"{key}|{horizon}"].append(float(value))
                 path = ((row.result_json or {}).get("outcome_path") or {}).get(horizon) or {}
@@ -137,6 +159,12 @@ def performance_report(db, *, limit: int = 5000) -> dict:
                           "average_planned_risk_pct": _average(planned[group][combined]["risk"]),
                           "average_target_distance_pct": _average(planned[group][combined]["target"])}
                          for combined, values in sorted(entries.items())]
+    walk_forward = _walk_forward_validation({key: list(reversed(values)) for key, values in outcomes_by_horizon.items()})
+    recommendations = _calibration_recommendations(groups)
+    for recommendation in recommendations:
+        validation = walk_forward.get(recommendation["horizon"], {})
+        recommendation["walk_forward_status"] = validation.get("status", "not_validated")
+        recommendation["walk_forward_reason"] = validation.get("reason", "尚無樣本外驗證資料")
     return {"eligible_signals": eligible, "minimum_sample_size": MIN_SAMPLE_SIZE,
             "auto_tuning_enabled": False, "groups": groups,
-            "calibration_recommendations": _calibration_recommendations(groups)}
+            "calibration_recommendations": recommendations, "walk_forward_validation": walk_forward}
