@@ -1,7 +1,7 @@
 """Capital.com Adapter 純函式測試(不打真實 API)。"""
 from datetime import datetime, timezone
 
-from app.providers.capital_com import candle_from_price_row, parse_snapshot_time
+from app.providers.capital_com import candle_from_price_row, parse_snapshot_time, safe_quote_time
 
 SAMPLE_ROW = {
     "snapshotTime": "2026-07-20T09:15:00",
@@ -17,6 +17,17 @@ SAMPLE_ROW = {
 def test_parse_snapshot_time_is_utc():
     t = parse_snapshot_time("2026-07-20T08:15:00")
     assert t == datetime(2026, 7, 20, 8, 15, tzinfo=timezone.utc)
+
+
+def test_future_quote_time_falls_back_to_receive_time():
+    received = datetime(2026, 8, 12, 18, 0, tzinfo=timezone.utc)
+    assert safe_quote_time("2026-08-13T02:00:00", received) == received
+
+
+def test_normal_quote_time_is_preserved():
+    received = datetime(2026, 8, 12, 18, 0, tzinfo=timezone.utc)
+    parsed = safe_quote_time("2026-08-12T17:59:30", received)
+    assert parsed == datetime(2026, 8, 12, 17, 59, 30, tzinfo=timezone.utc)
 
 
 def test_candle_from_price_row_mid_and_spread():

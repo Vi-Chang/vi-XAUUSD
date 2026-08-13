@@ -21,7 +21,18 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        run: python -m pip install -r requirements.txt
+        run: |
+          python -m pip install -r requirements.txt
+          python -m pip install ruff
+
+      - name: Lint production Python
+        run: python -m ruff check app
+
+      - name: Check frontend JavaScript syntax
+        run: |
+          node --check app/static/js/messages.js
+          node --check app/static/js/escape.js
+          node --check app/static/js/app.js
 
       - name: Run test suite
         run: python -m pytest -q
