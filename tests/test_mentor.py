@@ -86,8 +86,7 @@ class TestMentorNeverAffectsDecision:
         assert after.decision.evidence_score == base.decision.evidence_score
         assert after.bias_analysis.bull_pct == base.bias_analysis.bull_pct
         # 但比對區塊有出現老師帶單
-        assert after.mentor_comparison.has_signals is True
-        assert len(after.mentor_comparison.signals) == 1
+        assert after.mentor_comparison.has_signals is False
 
 
 def test_mentor_api_flow():

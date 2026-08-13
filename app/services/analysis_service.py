@@ -470,15 +470,6 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
     result.long_scenario = _stamped(result.long_scenario)
     result.short_scenario = _stamped(result.short_scenario)
 
-    # ── 9c. 老師帶單比對(純顯示;讀取最終 decision,絕不回饋影響決策/證據)──
-    try:
-        from app.schemas.analysis import MentorComparison
-        from app.services.mentor_service import comparison_block
-        result.mentor_comparison = MentorComparison(
-            **comparison_block(result.decision.action, tick.mid))
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("mentor comparison failed: %s", exc)
-
     # ── 9c2. 交易資格閘門(單一權威;必在 AI 呼叫前執行)──
     # 資料過期/異常、來源異常、休市、K 棒不足或證據不足 → 一律 NO_TRADE(資料不足,暫不交易),
     # 清除可執行劇本、市場層決策同步降級,並跳過付費 AI(省成本),
