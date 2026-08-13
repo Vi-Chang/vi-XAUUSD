@@ -165,6 +165,10 @@ def performance_report(db, *, limit: int = 5000) -> dict:
         validation = walk_forward.get(recommendation["horizon"], {})
         recommendation["walk_forward_status"] = validation.get("status", "not_validated")
         recommendation["walk_forward_reason"] = validation.get("reason", "尚無樣本外驗證資料")
+    settled_1h = len(outcomes_by_horizon.get("1h", []))
     return {"eligible_signals": eligible, "minimum_sample_size": MIN_SAMPLE_SIZE,
+            "settled_sample_size": settled_1h,
+            "calibration_status": ("sufficient" if settled_1h >= MIN_SAMPLE_SIZE
+                                   else "collecting"),
             "auto_tuning_enabled": False, "groups": groups,
             "calibration_recommendations": recommendations, "walk_forward_validation": walk_forward}
