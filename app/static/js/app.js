@@ -404,6 +404,7 @@ function applyAnalysis(a) {
 
   // 事件風險(全中文;僅倒數時間保留數字格式)
   renderEventRisk(a.event_risk);
+  renderEventOutcome(a.event_risk);
   renderBias(a.bias_analysis, n);
 
   if (a.offset_info) renderOffset(a.offset_info);
@@ -644,6 +645,27 @@ function renderEventRisk(er) {
   }
   detailEl.textContent = (er && er.reason) ||
     "事件清單來自 data/manual_events.json,請每週日更新本週高影響事件。";
+}
+
+function renderEventOutcome(er) {
+  const outcomeEl = $("event-outcome");
+  if (!outcomeEl) return;
+  const resultStatus = er && er.outcome_status || "not_available";
+  if (resultStatus === "available") {
+    const bias = { bullish_xauusd: "基本面傾向利多黃金", bearish_xauusd: "基本面傾向利空黃金", neutral: "基本面中性" }[er.fundamental_bias] || "基本面方向待確認";
+    outcomeEl.hidden = false;
+    const title = document.createElement("strong");
+    title.textContent = "事件結果";
+    outcomeEl.replaceChildren(title, document.createTextNode(`　實際 ${er.actual}／預期 ${er.forecast}`
+      + `${er.previous != null ? `／前值 ${er.previous}` : ""}`), document.createElement("br"),
+      document.createTextNode(`預期差 ${er.surprise}；${bias}${er.outcome_source ? `（來源：${er.outcome_source}）` : ""}`));
+  } else if (er && er.event_phase === "post_release") {
+    outcomeEl.hidden = false;
+    outcomeEl.textContent = "事件結果：資料來源尚未提供實際值與預期值；本次僅以已收盤 K 棒與跨市場反應確認，不輸出基本面方向。";
+  } else {
+    outcomeEl.hidden = true;
+    outcomeEl.textContent = "";
+  }
 }
 
 function renderBias(b, n) {

@@ -266,7 +266,8 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
     reaction = assess_event_reaction(
         post_event_wait=ev.post_event_wait, m15_closed_at=closed_times.get("15M", ""),
         macd_hist=ind.get("15M", {}).get("macd_hist"), dxy_chg_pct=cross.dxy_chg_pct,
-        us10y_chg=cross.us10y_chg)
+        us10y_chg=cross.us10y_chg, actual=ev.actual, forecast=ev.forecast,
+        previous=ev.previous, outcome_source=ev.outcome_source, event_name=ev.next_event)
 
     # API 與 normalized state 必須共用完全相同的快照價格與精度。
     snapshot_price = cast(float, fmt_price(tick.mid))
@@ -301,7 +302,10 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
                              dxy_confirmation=reaction.dxy_confirmation,
                              yield_confirmation=reaction.yield_confirmation,
                              actual=reaction.actual, forecast=reaction.forecast,
-                             previous=reaction.previous, reaction_message=reaction.message),
+                             previous=reaction.previous, reaction_message=reaction.message,
+                             outcome_status=reaction.outcome_status,
+                             outcome_source=reaction.outcome_source, surprise=reaction.surprise,
+                             fundamental_bias=cast(Literal["bullish_xauusd", "bearish_xauusd", "neutral", "unknown"], reaction.fundamental_bias)),
         market_state=state,
         timeframes=Timeframes(
             weekly=_tf_view(structures.get("1W"), ind.get("1W", {})),

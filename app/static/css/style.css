@@ -265,6 +265,8 @@ body {
   margin-top: 10px; font-size: .78rem; color: var(--text-dim);
   border-top: 1px solid var(--border); padding-top: 8px;
 }
+.event-outcome { margin-top: 8px; font-size: .76rem; color: var(--text-dim); line-height: 1.5; }
+.event-outcome strong { color: var(--text); }
 
 /* ═══ 系統卡 ═══ */
 .kv { display: flex; justify-content: space-between; font-size: .82rem; padding: 3px 0; }

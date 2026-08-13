@@ -57,6 +57,11 @@ class EventRiskState:
     data_updated_at: str = ""
     event_phase: str = "unknown"
     post_event_wait: bool = False
+    actual: float | None = None
+    forecast: float | None = None
+    previous: float | None = None
+    outcome_status: str = "not_available"
+    outcome_source: str = ""
 
 
 def _parse_time(value: str) -> datetime:
@@ -236,6 +241,28 @@ def _event_time(event: dict) -> datetime | None:
         return None
 
 
+def _number(value: object) -> float | None:
+    """Parse a provider value without treating missing data as zero."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    match = re.search(r"[-+]?\d+(?:\.\d+)?", str(value).replace(",", ""))
+    return float(match.group()) if match else None
+
+
+def _apply_outcome(state: EventRiskState, event: dict) -> None:
+    """Attach only provider-supplied event values; price action never fills them."""
+    state.actual = _number(event.get("actual"))
+    state.forecast = _number(event.get("forecast"))
+    state.previous = _number(event.get("previous"))
+    state.outcome_source = str(event.get("outcome_source") or "")
+    if state.actual is not None and state.forecast is not None:
+        state.outcome_status = "available"
+    elif state.forecast is not None or state.previous is not None:
+        state.outcome_status = "pending"
+
+
 def evaluate_event_risk(now: datetime | None = None) -> EventRiskState:
     s = get_settings()
     now = now or datetime.now(timezone.utc)
@@ -278,6 +305,7 @@ def evaluate_event_risk(now: datetime | None = None) -> EventRiskState:
         state.minutes_remaining = max(0, s.event_post_lockout_minutes - elapsed)
         state.reason = (f"{state.next_event} 已公布 {elapsed} 分鐘；等待至少 "
                         f"{s.event_post_lockout_minutes} 分鐘及一根已收盤 15 分K確認，暫停新倉與追價。")
+        _apply_outcome(state, event)
         return state
 
     if not upcoming:
@@ -289,6 +317,7 @@ def evaluate_event_risk(now: datetime | None = None) -> EventRiskState:
     t, event = upcoming[0]
     minutes = max(0, int((t - now).total_seconds() // 60))
     state.next_event = f"{translate_event_name(str(event.get('name', '')))}({event.get('country', 'US')})"
+    _apply_outcome(state, event)
     state.minutes_remaining = minutes
     state.event_phase = "upcoming"
     state.event_impact = str(event.get("impact", "UNKNOWN")).upper()
