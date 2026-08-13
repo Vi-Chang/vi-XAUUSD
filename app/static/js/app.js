@@ -1260,6 +1260,8 @@ async function loadPerformance() {
           <span>樣本<b class="num ${row.sufficient_sample ? "" : "sample-low"}">${row.sample_size}</b></span>
           <span>勝率<b class="num">${row.win_rate_pct == null ? "—" : row.win_rate_pct + "%"}</b></span>
           <span>平均報酬<b class="num">${row.average_return_pct == null ? "—" : row.average_return_pct + "%"}</b></span>
+          <span>平均順行<b class="num">${row.average_mfe_pct == null ? "—" : row.average_mfe_pct + "%"}</b></span>
+          <span>平均逆行<b class="num">${row.average_mae_pct == null ? "—" : row.average_mae_pct + "%"}</b></span>
         </div>${row.sufficient_sample ? "" : '<div class="sample-low">樣本不足，暫不可據此調參</div>'}</div>`);
     }
     body.innerHTML = h`<div class="performance-note">有效訊號 ${report.eligible_signals} 筆；最低可信樣本 ${report.minimum_sample_size} 筆。自動調參：關閉。</div>

@@ -41,10 +41,15 @@ def _summary(values: list[float]) -> dict:
             "average_return_pct": round(sum(values) / n, 5) if n else None}
 
 
+def _average(values: list[float]) -> float | None:
+    return round(sum(values) / len(values), 5) if values else None
+
+
 def performance_report(db, *, limit: int = 5000) -> dict:
     rows = db.execute(select(AnalysisRun).order_by(AnalysisRun.run_time.desc()).limit(limit)).scalars().all()
     buckets = {name: defaultdict(list) for name in
                ("overall", "direction", "score_band", "market_state", "session")}
+    excursions = {name: defaultdict(lambda: {"mfe": [], "mae": []}) for name in buckets}
     eligible = 0
     for row in rows:
         direction = _direction(row.decision_action)
@@ -60,11 +65,18 @@ def performance_report(db, *, limit: int = 5000) -> dict:
                 continue
             for group, key in keys.items():
                 buckets[group][f"{key}|{horizon}"].append(float(value))
+                path = ((row.result_json or {}).get("outcome_path") or {}).get(horizon) or {}
+                if isinstance(path.get("mfe_pct"), (int, float)):
+                    excursions[group][f"{key}|{horizon}"]["mfe"].append(float(path["mfe_pct"]))
+                if isinstance(path.get("mae_pct"), (int, float)):
+                    excursions[group][f"{key}|{horizon}"]["mae"].append(float(path["mae_pct"]))
     groups = {}
     for group, entries in buckets.items():
         groups[group] = [{"key": combined.rsplit("|", 1)[0],
                           "horizon": combined.rsplit("|", 1)[1].removeprefix("outcome_"),
-                          **_summary(values)}
+                          **_summary(values),
+                          "average_mfe_pct": _average(excursions[group][combined]["mfe"]),
+                          "average_mae_pct": _average(excursions[group][combined]["mae"])}
                          for combined, values in sorted(entries.items())]
     return {"eligible_signals": eligible, "minimum_sample_size": MIN_SAMPLE_SIZE,
             "auto_tuning_enabled": False, "groups": groups}

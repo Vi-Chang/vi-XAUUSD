@@ -23,6 +23,18 @@ def signed_return_pct(action: str, entry: float, current: float) -> float | None
     return round(direction * (current - entry) / entry * 100.0, 5)
 
 
+def excursion_pct(action: str, entry: float, highs: list[float], lows: list[float]) -> tuple[float, float] | None:
+    """Return direction-adjusted maximum favorable/adverse excursion in percent."""
+    if signed_return_pct(action, entry, entry) is None or not highs or not lows:
+        return None
+    direction = 1 if action.endswith("LONG") else -1
+    favorable_prices = highs if direction > 0 else lows
+    adverse_prices = lows if direction > 0 else highs
+    favorable = max(direction * (price - entry) / entry * 100 for price in favorable_prices)
+    adverse = min(direction * (price - entry) / entry * 100 for price in adverse_prices)
+    return round(favorable, 5), round(adverse, 5)
+
+
 def _entry_price(row: AnalysisRun) -> float | None:
     payload = row.result_json or {}
     value = (payload.get("current_price") or {}).get("mid")
@@ -60,16 +72,16 @@ def backfill_outcomes(db, *, now: datetime, current_price: float | None = None) 
         .order_by(AnalysisRun.run_time.asc()).limit(1000)
     ).scalars().all()
     candle_rows = db.execute(
-        select(Candle.close_time, Candle.close, Candle.received_at)
+        select(Candle.close_time, Candle.high, Candle.low, Candle.close, Candle.received_at)
         .where(Candle.symbol == "XAUUSD", Candle.timeframe == "15M",
                Candle.is_closed.is_(True), Candle.close_time >= oldest)
         .order_by(Candle.close_time.asc(), Candle.received_at.desc())
     ).all()
     # Providers may store several versions of one candle.  The query orders
     # newest received first, so setdefault keeps the newest version per close.
-    by_time: dict[datetime, float] = {}
-    for close_time, close, _received_at in candle_rows:
-        by_time.setdefault(_utc(close_time), float(close))
+    by_time: dict[datetime, tuple[float, float, float]] = {}
+    for close_time, high, low, close, _received_at in candle_rows:
+        by_time.setdefault(_utc(close_time), (float(high), float(low), float(close)))
     candles = sorted(by_time.items())
 
     updated = 0
@@ -82,9 +94,22 @@ def backfill_outcomes(db, *, now: datetime, current_price: float | None = None) 
         for field, horizon in HORIZONS.items():
             if age < horizon:
                 continue
-            close = first_close_at_or_after(candles, run_time + horizon)
+            closes = [(stamp, values[2]) for stamp, values in candles]
+            close = first_close_at_or_after(closes, run_time + horizon)
             value = signed_return_pct(row.decision_action, entry or 0.0, close or 0.0)
             if value is not None and getattr(row, field) != value:
                 setattr(row, field, value)
                 updated += 1
+            if close is not None:
+                reached = next((stamp for stamp, values in candles
+                                if values[2] == close and stamp >= run_time + horizon), None)
+                path = [values for stamp, values in candles if reached and run_time < stamp <= reached]
+                excursion = excursion_pct(row.decision_action, entry or 0.0,
+                                          [item[0] for item in path], [item[1] for item in path])
+                if excursion is not None:
+                    payload = dict(row.result_json or {})
+                    outcome_path = dict(payload.get("outcome_path") or {})
+                    outcome_path[field] = {"mfe_pct": excursion[0], "mae_pct": excursion[1]}
+                    payload["outcome_path"] = outcome_path
+                    row.result_json = payload
     return updated
