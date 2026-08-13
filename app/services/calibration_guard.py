@@ -5,7 +5,6 @@ from sqlalchemy import func, select
 
 from app.db.models import AnalysisRun
 
-
 ACTIONABLE = ("LONG", "SHORT", "PREPARE_LONG", "PREPARE_SHORT")
 
 
