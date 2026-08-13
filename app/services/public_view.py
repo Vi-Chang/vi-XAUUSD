@@ -38,6 +38,8 @@ PUBLIC_ALLOWLIST: tuple[str, ...] = (
     "long_scenario", "short_scenario",
     "bias_analysis", "normalized_analysis", "ai_strategy",
     "summary_zh_tw", "most_likely_user_mistake_now",
+    "calibration_status", "calibration_sample_size",
+    "calibration_min_sample_size", "calibration_message",
     "freshness",
 )
 
