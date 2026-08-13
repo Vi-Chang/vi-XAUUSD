@@ -1,8 +1,6 @@
 """P2:事件固有影響力(event_impact)與時間風險(time_risk)兩維度分離。"""
 from datetime import datetime, timedelta, timezone
 
-import pytest
-
 from app.services import event_service as es
 
 
@@ -55,3 +53,13 @@ class TestDimensionSplit:
         monkeypatch.setattr(es, "load_manual_events", lambda: _events(195 * 60))
         st = es.evaluate_event_risk()
         assert st.level == st.time_risk      # 相容別名
+
+
+def test_event_risk_preserves_source_update_time():
+    """事件資料時間必須留在 API schema，供前端顯示新鮮度。"""
+    from app.schemas.analysis import EventRisk
+
+    timestamp = "2026-08-13T00:00:00+00:00"
+    risk = EventRisk(source="manual", data_updated_at=timestamp)
+
+    assert risk.model_dump()["data_updated_at"] == timestamp

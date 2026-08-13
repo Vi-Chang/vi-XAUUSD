@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from typing import cast
 
 import pandas as pd
 
@@ -26,14 +27,19 @@ from app.engines.market_structure import StructureReport, analyze_structure
 from app.engines.normalized_analysis import build_normalized_state
 from app.engines.rule_engine import decide
 from app.i18n import state_zh
-from app.providers.base import MarketDataProvider
+from app.providers.base import MarketDataProvider, PriceTick
 from app.schemas.analysis import (
     AnalysisResult,
     BiasAnalysis,
+    ConfidenceGrade,
     CurrentPrice,
     DataQuality,
+    DataQualityStatus,
     Decision,
+    DecisionAction,
+    EventImpact,
     EventRisk,
+    EventSource,
     KeyLevels,
     Meta,
     PositionManagement,
@@ -148,7 +154,7 @@ def _apply_no_trade_gate(result: AnalysisResult, elig) -> None:
 
 
 async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
-                       symbol: str = "XAUUSD", tick=None,
+                       symbol: str = "XAUUSD", tick: PriceTick | None = None,
                        cached_only: bool = False) -> AnalysisResult:
     """執行一次完整分析並存入 analysis_runs。
 
@@ -266,15 +272,16 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
                                    mid=fmt_price(tick.mid), spread=fmt_price(tick.spread),
                                    provider=tick.provider,
                                    last_update=tick.quote_time.isoformat()),
-        data_quality=DataQuality(status=quality.status,
+        data_quality=DataQuality(status=cast(DataQualityStatus, quality.status),
                                  missing_candles=quality.missing_candles[:20],
                                  source_mismatch=quality.source_mismatch,
                                  warnings=quality.warnings[:20]),
-        event_risk=EventRisk(event_impact=ev.event_impact, time_risk=ev.time_risk,
-                             level=ev.level, event_lockout=ev.event_lockout,
+        event_risk=EventRisk(event_impact=cast(EventImpact, ev.event_impact),
+                             time_risk=cast(EventImpact, ev.time_risk),
+                             level=cast(EventImpact, ev.level), event_lockout=ev.event_lockout,
                              next_event=ev.next_event,
                              minutes_remaining=ev.minutes_remaining,
-                             source=ev.source, reason=ev.reason,
+                              source=cast(EventSource, ev.source), reason=ev.reason,
                              data_updated_at=ev.data_updated_at),
         market_state=state,
         timeframes=Timeframes(
@@ -296,8 +303,8 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
             bull_pct=decision.bull_pct, bear_pct=decision.bear_pct,
             bull_evidence=decision.bull_evidence, bear_evidence=decision.bear_evidence,
             chase_flags=decision.chase_flags),
-        decision=Decision(action=decision.action,
-                          confidence_grade=decision.confidence_grade,
+        decision=Decision(action=cast(DecisionAction, decision.action),
+                          confidence_grade=cast(ConfidenceGrade, decision.confidence_grade),
                           evidence_score=decision.evidence_score,
                           reason=decision.reason,
                           next_bullish_trigger="等 15 分K 收盤站上前高、而且不是追高的位置,才考慮做多",
@@ -315,7 +322,7 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
     # 唯一分析狀態：在 API/DB 回傳前完成，後續 UI 與相容欄位均由它回填。
     normalized = build_normalized_state(
         generated_at=now.isoformat(), market_timestamp=tick.quote_time.isoformat(),
-        current_price=fmt_price(tick.mid), market_state=state,
+        current_price=tick.mid, market_state=state,
         market_quality=quality.status, event_source=ev.source,
         event_stale=ev.manual_file_stale, structures=structures,
         m15_all=dfs_all.get("15M"), m15_closed=dfs_closed.get("15M"),
@@ -337,7 +344,7 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
     if normalized.entryTiming in ("wait", "invalid"):
         result.decision.action = "NO_TRADE" if normalized.entryTiming == "invalid" else "WATCH"
         result.decision.reason = normalized.consistencyMessage or normalized.tradingScript
-        safe_watch = {"status": "WATCH", "entry_zone_id": None, "stop_loss_id": None,
+        safe_watch: dict[str, object] = {"status": "WATCH", "entry_zone_id": None, "stop_loss_id": None,
                       "invalidation_id": None, "target_ids": [], "risk_reward": [],
                       "resolved_prices": {}}
         result.long_scenario = result.long_scenario.model_copy(update=safe_watch)
@@ -514,21 +521,21 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
             # 結構事件持久化(Dashboard 圖表標記用;以 tf+type+time 去重)
             from sqlalchemy import select as sa_select
             for tf, rep in structures.items():
-                for ev in rep.events[-10:]:
+                for structure_event in rep.events[-10:]:
                     row = db.execute(sa_select(MarketStructure).where(
                         MarketStructure.timeframe == tf,
-                        MarketStructure.event_type == ev.event_type,
-                        MarketStructure.event_time == ev.time,
+                        MarketStructure.event_type == structure_event.event_type,
+                        MarketStructure.event_time == structure_event.time,
                     )).scalar_one_or_none()
                     if row is None:
                         db.add(MarketStructure(
-                            symbol=symbol, timeframe=tf, event_type=ev.event_type,
-                            event_time=ev.time, price=ev.price,
-                            confirming_candles=[t.isoformat() for t in ev.confirming_candles],
-                            invalidation_price=ev.invalidation_price,
-                            still_valid=ev.still_valid, created_at=now))
-                    elif row.still_valid != ev.still_valid:
-                        row.still_valid = ev.still_valid
+                            symbol=symbol, timeframe=tf, event_type=structure_event.event_type,
+                            event_time=structure_event.time, price=structure_event.price,
+                            confirming_candles=[t.isoformat() for t in structure_event.confirming_candles],
+                            invalidation_price=structure_event.invalidation_price,
+                            still_valid=structure_event.still_valid, created_at=now))
+                    elif row.still_valid != structure_event.still_valid:
+                        row.still_valid = structure_event.still_valid
     except Exception as exc:  # noqa: BLE001
         logger.error("persist analysis failed: %s", exc)
 
