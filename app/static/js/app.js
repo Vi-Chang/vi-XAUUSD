@@ -467,6 +467,10 @@ function renderRiskPriority(n) {
     bearish: "大週期偏空", strong_bearish: "強勢空頭",
   };
   const contradictions = [];
+  const td = n.tradingDecision || {};
+  const marketAssessment = td.marketAssessment || {};
+  const newEntry = td.newEntryDecision || {};
+  const existing = td.existingPositionAssessment || {};
   if (["confirmed", "accelerating"].includes(n.shortTermWeakness) && n.longEntryAllowed) {
     contradictions.push("短線轉弱時仍允許新多單");
   }
@@ -479,6 +483,9 @@ function renderRiskPriority(n) {
   if (n.entryReadiness === "no_trade" && (n.longEntryAllowed || n.shortEntryAllowed)) {
     contradictions.push("暫停交易時仍允許新進場");
   }
+  if (existing.positionTimeframe === "unknown" && existing.action === "exit_confirmed") {
+    contradictions.push("持倉週期未知卻要求退出");
+  }
   const safe = contradictions.length > 0;
   if (safe) console.error("ANALYSIS_CONSISTENCY_ERROR", contradictions);
   $("priority-data").textContent = n.marketDataStatus !== "GOOD"
@@ -487,17 +494,21 @@ function renderRiskPriority(n) {
       ? `行情正常；事件 ${n.eventDataStatus}，事件風險未知`
       : "行情與事件資料正常";
   $("priority-existing-long").textContent = safe
-    ? "訊號矛盾，優先降低風險"
-    : (n.existingLongGuidance || "依結構管理，不因大週期偏多而續抱");
-  $("priority-new-long").textContent = !safe && n.longEntryAllowed ? "允許（條件已確認）" : "暫停";
-  $("priority-new-short").textContent = !safe && n.shortEntryAllowed ? "允許（條件已確認）" : "暫停";
+    ? "訊號矛盾，等待確認"
+    : (existing.message || n.existingLongGuidance || "缺少持倉背景，無法判定續抱或平倉");
+  $("priority-new-long").textContent = !safe && newEntry.longAllowed ? "允許（條件已確認）" : (newEntry.longReason || "暫停");
+  $("priority-new-short").textContent = !safe && newEntry.shortAllowed ? "允許（條件已確認）" : (newEntry.shortReason || "暫停");
+  const twoSided = { normal: "一般", downside_continuation: "續跌風險", oversold_rebound: "超賣急彈風險", high_whipsaw: "續跌與急彈並存" };
+  const reversal = { none: "尚無", oversold_without_reversal: "超賣但未反轉", selling_exhaustion_candidate: "賣壓衰竭候選", reclaim_attempt: "嘗試收復", reversal_confirmed: "反轉已確認", reversal_failed: "收復失敗" };
+  $("priority-two-sided").textContent = twoSided[marketAssessment.twoSidedRisk] || marketAssessment.twoSidedRisk || "–";
+  $("priority-reversal").textContent = reversal[marketAssessment.reversalState] || marketAssessment.reversalState || "–";
   $("priority-weakness").textContent = weakness[n.shortTermWeakness] || n.shortTermWeakness;
   $("priority-regime").textContent = regimes[n.marketRegime] || n.marketRegime;
   $("priority-message").textContent = safe
     ? "訊號尚未一致，等待下一根 15 分 K 收盤確認。"
     : (n.tradingScript || "等待條件完成。");
   const critical = safe || ["high", "critical"].includes(n.positionRisk)
-    || ["protect_existing_long", "protect_existing_short", "suspend_all_entries"].includes(n.riskOverride);
+    || n.riskOverride === "suspend_all_entries";
   $("risk-priority-card").classList.toggle("critical", critical);
 }
 
@@ -956,19 +967,20 @@ function posCard(p) {
       h`<li>${x.time.slice(5, 16).replace("T", " ")} 平倉 ${x.percent}% @ ${fmt(x.price)}(R=${x.r_at_exit ?? "–"})</li>`),
   ];
   const targets = (p.planned_targets || []).map((t) => fmt(t)).join(" / ") || "–";
+  const eventHold = p.allow_event_hold == null ? "未設定" : p.allow_event_hold ? "允許" : "不允許";
   const normalized = S.analysis && S.analysis.normalized_analysis;
   let positionAdvice = p.recommended_action || "";
   if (p.is_open && normalized) {
-    if (p.side === "LONG" && ["protect_existing_long", "suspend_all_entries"].includes(normalized.riskOverride)) {
-      positionAdvice = normalized.existingLongGuidance;
-    } else if (p.side === "SHORT" && ["protect_existing_short", "suspend_all_entries"].includes(normalized.riskOverride)) {
-      positionAdvice = normalized.existingShortGuidance;
+    const assessment = normalized.tradingDecision?.existingPositionAssessment;
+    if (assessment && assessment.direction === p.side.toLowerCase()) {
+      positionAdvice = assessment.message || positionAdvice;
     }
   }
   const actions = h`
     <div class="pos-actions">
       <button class="btn btn-sm btn-warn" data-act="pos-stop" data-id="${p.id}">改出場價</button>
       <button class="btn btn-sm" data-act="pos-partial" data-id="${p.id}">分批平倉</button>
+      <button class="btn btn-sm" data-act="pos-context" data-id="${p.id}">補交易背景</button>
       <button class="btn btn-sm btn-danger" data-act="pos-close" data-id="${p.id}">全部平倉</button>
     </div>`;
   return h`
@@ -983,6 +995,9 @@ function posCard(p) {
     <div class="pos-meta">
       <span>進場 <span class="num">${fmt(p.entry_price)}</span></span>
       <span>賠錢出場價 <span class="num">${fmt(p.stop_loss)}</span></span>
+      <span>交易週期 <b>${p.position_timeframe || "unknown"}</b></span>
+      <span>最大風險 <b>${p.max_loss_usd == null ? "未設定" : "USD " + fmt(p.max_loss_usd)}</b></span>
+      <span>重大事件續抱 <b>${eventHold}</b></span>
       <span>目標價 <span class="num">${targets}</span></span>
       <span>開倉 <span class="num">${p.open_time.slice(5, 16).replace("T", " ")}</span></span>
     </div>
@@ -991,6 +1006,7 @@ function posCard(p) {
       <span class="num">${r == null ? "沒設出場價" : fmt(r, 2) + " 倍"}</span></div>
       <div class="progress"><div class="fill" style="width:${rPct + "%"}"></div></div></div>
     ${positionAdvice ? h`<div class="pos-advice">${positionAdvice}</div>` : ""}
+    ${p.original_thesis ? h`<div class="pos-advice">原始理由：${p.original_thesis}</div>` : ""}
     ${actions}` : ""}
     ${histList.length ? h`<details class="pos-hist"><summary>操作歷史</summary><ul>${joinSafe(histList)}</ul></details>` : ""}
   </div>`;
@@ -1119,6 +1135,26 @@ async function actStop(id) {
     if (out.behavior_flag) alert("⚠ 交易教練:你把出場價往賠更多的方向挪了(凹單),要小心。");
   } catch (e) { alert("失敗:" + e.message); }
   loadPositions(); loadCoach();
+}
+
+async function actPositionContext(id) {
+  const timeframe = prompt("持倉判斷週期（15M / 1H / 4H / 1D）：", "1H");
+  if (!timeframe) return;
+  const thesis = prompt("原始進場理由（例如：1H 高低點持續墊高）：", "");
+  if (thesis == null) return;
+  const maxLoss = prompt("最大可承受損失（USD，可留空；若沒有原始停損則建議填寫）：", "");
+  const eventHold = prompt("重大事件期間是否允許續抱？輸入 yes / no；留空代表未設定：", "");
+  const normalizedEventHold = eventHold == null || eventHold.trim() === ""
+    ? null : ["yes", "y", "true", "是"].includes(eventHold.trim().toLowerCase());
+  try {
+    await postJSON(`/api/positions/${id}/context`, {
+      position_timeframe: timeframe.trim().toUpperCase(),
+      original_thesis: thesis.trim(),
+      max_loss_usd: maxLoss && maxLoss.trim() ? parseFloat(maxLoss) : null,
+      allow_event_hold: normalizedEventHold,
+    });
+  } catch (e) { alert("更新失敗：" + e.message); }
+  loadPositions();
 }
 
 async function actPartial(id) {
@@ -1288,6 +1324,10 @@ async function boot() {
         entry_price: parseFloat($("pf-entry").value),
         stop_loss: $("pf-stop").value ? parseFloat($("pf-stop").value) : null,
         lot_size: parseFloat($("pf-lot").value),
+        position_timeframe: $("pf-timeframe").value,
+        original_thesis: $("pf-thesis").value.trim(),
+        max_loss_usd: $("pf-max-loss").value ? parseFloat($("pf-max-loss").value) : null,
+        allow_event_hold: $("pf-event-hold").value === "" ? null : $("pf-event-hold").value === "true",
         planned_targets: targets,
         account_id: parseInt($("pf-account").value, 10) || null,
       });
@@ -1305,6 +1345,7 @@ async function boot() {
     if (act === "mentor-dismiss") dismissMentor(id);
     else if (act === "pos-stop") actStop(id);
     else if (act === "pos-partial") actPartial(id);
+    else if (act === "pos-context") actPositionContext(id);
     else if (act === "pos-close") actClose(id);
     else if (act === "admin-login") ensureLogin();
   });

@@ -37,13 +37,20 @@ def default_account_id() -> int | None:
 def create_position(*, side: str, entry_price: float, stop_loss: float | None,
                     lot_size: float, planned_targets: list[float] | None = None,
                     open_time: datetime | None = None,
-                    account_id: int | None = None) -> Position:
+                    account_id: int | None = None, position_timeframe: str = "unknown",
+                    original_thesis: str = "", max_loss_usd: float | None = None,
+                    allow_event_hold: bool | None = None) -> Position:
     """建立手動持倉(掛帳戶)。停損方向錯誤(多單停損高於進場等)直接拒絕。"""
     side = side.upper()
     if side not in ("LONG", "SHORT"):
         raise ValueError("side 必須是 LONG 或 SHORT")
     if lot_size <= 0:
         raise ValueError("lot_size 必須大於 0")
+    position_timeframe = position_timeframe.upper()
+    if position_timeframe not in ("15M", "1H", "4H", "1D", "UNKNOWN"):
+        raise ValueError("position_timeframe 必須是 15M、1H、4H、1D 或 unknown")
+    if max_loss_usd is not None and max_loss_usd <= 0:
+        raise ValueError("max_loss_usd 必須大於 0")
     if stop_loss is not None:
         if side == "LONG" and stop_loss >= entry_price:
             raise ValueError("多單停損必須低於進場價")
@@ -59,6 +66,10 @@ def create_position(*, side: str, entry_price: float, stop_loss: float | None,
     with db_session() as db:
         pos = Position(symbol="XAUUSD", side=side, entry_price=entry_price,
                        stop_loss=stop_loss, lot_size=lot_size,
+                       position_timeframe=("unknown" if position_timeframe == "UNKNOWN"
+                                           else position_timeframe),
+                       original_thesis=original_thesis.strip()[:500],
+                       max_loss_usd=max_loss_usd, allow_event_hold=allow_event_hold,
                        open_time=ensure_utc(open_time) if open_time else _now(),
                        planned_targets=planned_targets or [],
                        partial_exit_history=[], stop_modification_history=[],
@@ -169,6 +180,32 @@ def modify_stop(position_id: int, new_stop: float) -> tuple[Position, str | None
         return pos, flag
 
 
+def update_position_context(
+    position_id: int,
+    *,
+    position_timeframe: str,
+    original_thesis: str,
+    max_loss_usd: float | None,
+    allow_event_hold: bool | None,
+) -> Position:
+    """補齊既有持倉的決策背景，不改動交易價格或部位。"""
+    if position_timeframe not in {"15M", "1H", "4H", "1D", "unknown"}:
+        raise ValueError("position_timeframe 必須是 15M、1H、4H、1D 或 unknown")
+    if max_loss_usd is not None and max_loss_usd <= 0:
+        raise ValueError("max_loss_usd 必須大於 0")
+    with db_session() as db:
+        pos = db.get(Position, position_id)
+        if pos is None or not pos.is_open:
+            raise ValueError("找不到未平倉部位")
+        pos.position_timeframe = position_timeframe
+        pos.original_thesis = original_thesis.strip()
+        pos.max_loss_usd = max_loss_usd
+        pos.allow_event_hold = allow_event_hold
+        db.flush()
+        db.refresh(pos)
+        return pos
+
+
 def partial_exit(position_id: int, percent: float, price: float) -> tuple[Position, str | None]:
     """分批平倉;未達 1R 即平掉 >50% → 記 EARLY_EXIT(spec 十九)。"""
     if not 0 < percent <= 100:
@@ -216,6 +253,10 @@ def position_view(pos: Position, current_price: float | None) -> dict:
         "id": pos.id, "account_id": pos.account_id,
         "side": pos.side, "entry_price": fmt_price(pos.entry_price),
         "stop_loss": fmt_price(pos.stop_loss), "lot_size": pos.lot_size,
+        "position_timeframe": pos.position_timeframe or "unknown",
+        "original_thesis": pos.original_thesis or "",
+        "max_loss_usd": pos.max_loss_usd,
+        "allow_event_hold": pos.allow_event_hold,
         "open_time": ensure_utc(pos.open_time).isoformat(),
         "close_time": ensure_utc(pos.close_time).isoformat() if pos.close_time else None,
         "is_open": pos.is_open,

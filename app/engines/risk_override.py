@@ -104,7 +104,7 @@ def apply_risk_priority(*, weakness: WeaknessResult, market_status: str,
     elif weakness.recovery_candidate:
         override, position_risk, readiness = "block_new_long", "elevated", "wait_confirmation"
     elif weakness.state == "accelerating":
-        override, position_risk, readiness = "protect_existing_long", "high", "no_trade"
+        override, position_risk, readiness = "protect_existing_long", "elevated", "no_trade"
     elif weakness.state == "confirmed":
         override, position_risk, readiness = "protect_existing_long", "elevated", "wait_confirmation"
     elif weakness.state == "early_warning":
@@ -128,9 +128,10 @@ def apply_risk_priority(*, weakness: WeaknessResult, market_status: str,
         "block_new_long", "protect_existing_long", "suspend_all_entries")
     short_allowed = readiness == "ready" and market_regime in ("bearish", "strong_bearish") \
         and override not in ("block_new_short", "protect_existing_short", "suspend_all_entries")
-    long_guidance = ("短線空方動能擴大；若已有多單，優先降低曝險並依原定帳戶風險處理，禁止攤平。"
+    long_guidance = ("短線空方動能擴大；請檢查原始停損、倉位大小及結構失效條件。"
+                     "這是風險提醒，不代表已產生立即平倉訊號。"
                      if weakness.state == "accelerating" else
-                     "短線已轉弱；若已有多單，進入防守模式並觀察結構失效區。"
+                     "短線已轉弱；觀察結構失效與收復狀態，不以短線指標直接判定平倉。"
                      if weakness.state in ("confirmed", "early_warning") else
                      "若已有多單，依原交易計畫管理；大週期偏多不等於保證可續抱。")
     short_guidance = ("若已有空單，依已收盤結構管理，不因超賣單獨平倉或反手。"

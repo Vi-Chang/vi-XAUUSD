@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Literal
 
 from fastapi import (
     Depends,
@@ -467,10 +468,21 @@ class PositionCreateReq(BaseModel):
     lot_size: float = Field(gt=0)
     planned_targets: list[float] = Field(default_factory=list)
     account_id: int | None = None  # 未指定時掛預設 SELF 帳戶
+    position_timeframe: Literal["15M", "1H", "4H", "1D", "unknown"] = "unknown"
+    original_thesis: str = Field(default="", max_length=500)
+    max_loss_usd: float | None = Field(default=None, gt=0)
+    allow_event_hold: bool | None = None
 
 
 class StopModifyReq(BaseModel):
     stop_loss: float
+
+
+class PositionContextReq(BaseModel):
+    position_timeframe: Literal["15M", "1H", "4H", "1D", "unknown"]
+    original_thesis: str = Field(max_length=500)
+    max_loss_usd: float | None = Field(default=None, gt=0)
+    allow_event_hold: bool | None = None
 
 
 class PartialExitReq(BaseModel):
@@ -523,7 +535,11 @@ async def create_position_api(req: PositionCreateReq) -> dict:
         pos = create_position(side=req.side, entry_price=req.entry_price,
                               stop_loss=req.stop_loss, lot_size=req.lot_size,
                               planned_targets=req.planned_targets,
-                              account_id=req.account_id)
+                              account_id=req.account_id,
+                              position_timeframe=req.position_timeframe,
+                              original_thesis=req.original_thesis,
+                              max_loss_usd=req.max_loss_usd,
+                              allow_event_hold=req.allow_event_hold)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     cur = await _price_or_market(None) if state.provider else None
@@ -545,6 +561,23 @@ async def modify_stop_api(position_id: int, req: StopModifyReq) -> dict:
                                     f"交易教練:偵測到 {flag}(停損往虧損方向移動)。"
                                     f"請恢復原結構失效點停損。")
     return out
+
+
+@app.post("/api/positions/{position_id}/context", dependencies=[Depends(require_admin)])
+async def update_position_context_api(position_id: int, req: PositionContextReq) -> dict:
+    from app.services.position_service import position_view, update_position_context
+    try:
+        pos = update_position_context(
+            position_id,
+            position_timeframe=req.position_timeframe,
+            original_thesis=req.original_thesis,
+            max_loss_usd=req.max_loss_usd,
+            allow_event_hold=req.allow_event_hold,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    cur = await _price_or_market(None)
+    return position_view(pos, cur)
 
 
 @app.post("/api/positions/{position_id}/partial_exit", dependencies=[Depends(require_admin)])

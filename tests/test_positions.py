@@ -73,8 +73,14 @@ def test_positions_api_flow():
     with TestClient(app) as c:
         r = c.post("/api/positions", json={
             "side": "LONG", "entry_price": 4000.0, "stop_loss": 3990.0,
-            "lot_size": 0.1, "planned_targets": [4020.0, 4040.0]})
+            "lot_size": 0.1, "planned_targets": [4020.0, 4040.0],
+            "position_timeframe": "1H", "original_thesis": "1H higher low",
+            "max_loss_usd": 100.0, "allow_event_hold": False})
         assert r.status_code == 200
+        assert r.json()["position_timeframe"] == "1H"
+        assert r.json()["original_thesis"] == "1H higher low"
+        assert r.json()["max_loss_usd"] == 100.0
+        assert r.json()["allow_event_hold"] is False
         pid = r.json()["id"]
         assert r.json()["remaining_percent"] == 100.0
 
@@ -84,6 +90,15 @@ def test_positions_api_flow():
 
         r = c.post(f"/api/positions/{pid}/stop", json={"stop_loss": 3985.0})
         assert r.json()["behavior_flag"] == "STOP_WIDENING"
+
+        r = c.post(f"/api/positions/{pid}/context", json={
+            "position_timeframe": "4H", "original_thesis": "4H trend continuation",
+            "max_loss_usd": 80.0, "allow_event_hold": True})
+        assert r.status_code == 200
+        assert r.json()["position_timeframe"] == "4H"
+        assert r.json()["original_thesis"] == "4H trend continuation"
+        assert r.json()["max_loss_usd"] == 80.0
+        assert r.json()["allow_event_hold"] is True
 
         r = c.post(f"/api/positions/{pid}/partial_exit",
                    json={"percent": 30, "price": 4015.0})

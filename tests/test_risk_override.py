@@ -41,9 +41,11 @@ def test_case_b_4406_accelerating_weakness_is_no_trade():
     assert weakness.state == "accelerating"
     assert weakness.oversold is True
     assert policy["riskOverride"] == "protect_existing_long"
-    assert policy["positionRisk"] == "high"
+    assert policy["positionRisk"] == "elevated"
     assert policy["entryReadiness"] == "no_trade"
     assert policy["longEntryAllowed"] is False
+    assert "不代表已產生立即平倉訊號" in policy["existingLongGuidance"]
+    assert "優先降低曝險" not in policy["existingLongGuidance"]
 
 
 def test_case_c_oversold_recovery_candidate_still_waits():

@@ -45,7 +45,8 @@ def _align_with_normalized(strategy: AiStrategy, normalized) -> AiStrategy:
         strategy.trade_plan = AiTradePlan()
         strategy.one_liner = normalized.tradingScript
     if normalized.riskOverride == "protect_existing_long":
-        strategy.risk_warning = normalized.existingLongGuidance
+        assessment = normalized.tradingDecision.existingPositionAssessment
+        strategy.risk_warning = assessment.message or normalized.existingLongGuidance
         strategy.one_liner = normalized.tradingScript
     elif normalized.riskOverride == "protect_existing_short":
         strategy.risk_warning = normalized.existingShortGuidance

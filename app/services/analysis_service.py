@@ -370,11 +370,32 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
         open_positions = list_positions(include_closed=False, limit=5)
         if open_positions:
             v = position_view(open_positions[0], tick.mid)
-            position_action = v["recommended_action"]
-            if v["side"] == "LONG" and normalized.riskOverride == "protect_existing_long":
-                position_action = normalized.existingLongGuidance
-            elif v["side"] == "SHORT" and normalized.riskOverride == "protect_existing_short":
-                position_action = normalized.existingShortGuidance
+            from app.engines.position_assessment import (
+                PositionContext,
+                assess_trading_decision,
+            )
+            context = PositionContext(
+                direction=v["side"].lower(), entry_price=v["entry_price"],
+                size=v["lot_size"], original_stop=v.get("stop_loss"),
+                max_loss_usd=v.get("max_loss_usd"),
+                timeframe=v.get("position_timeframe", "unknown"),
+                thesis=v.get("original_thesis", ""),
+                allow_event_hold=v.get("allow_event_hold"))
+            position_decision = assess_trading_decision(
+                market_regime=normalized.marketRegime,
+                weakness=normalized.shortTermWeakness,
+                oversold=(normalized.tradingDecision.marketAssessment.twoSidedRisk
+                          in ("oversold_rebound", "high_whipsaw")),
+                reversal_state=normalized.tradingDecision.marketAssessment.reversalState,
+                readiness=normalized.entryReadiness,
+                long_allowed=normalized.longEntryAllowed,
+                short_allowed=normalized.shortEntryAllowed,
+                position_risk=normalized.positionRisk,
+                context=context)
+            normalized.tradingDecision.existingPositionAssessment = (
+                position_decision.existingPositionAssessment)
+            result.normalized_analysis = normalized
+            position_action = position_decision.existingPositionAssessment.message
             result.position_management = PositionManagement(
                 has_position=True, position_side=v["side"],
                 entry_price=v["entry_price"],
