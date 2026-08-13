@@ -467,6 +467,10 @@ function renderRiskPriority(n) {
     bearish: "大週期偏空", strong_bearish: "強勢空頭",
   };
   const contradictions = [];
+  const td = n.tradingDecision || {};
+  const marketAssessment = td.marketAssessment || {};
+  const newEntry = td.newEntryDecision || {};
+  const existing = td.existingPositionAssessment || {};
   if (["confirmed", "accelerating"].includes(n.shortTermWeakness) && n.longEntryAllowed) {
     contradictions.push("短線轉弱時仍允許新多單");
   }
@@ -479,6 +483,9 @@ function renderRiskPriority(n) {
   if (n.entryReadiness === "no_trade" && (n.longEntryAllowed || n.shortEntryAllowed)) {
     contradictions.push("暫停交易時仍允許新進場");
   }
+  if (existing.positionTimeframe === "unknown" && existing.action === "exit_confirmed") {
+    contradictions.push("持倉週期未知卻要求退出");
+  }
   const safe = contradictions.length > 0;
   if (safe) console.error("ANALYSIS_CONSISTENCY_ERROR", contradictions);
   $("priority-data").textContent = n.marketDataStatus !== "GOOD"
@@ -487,17 +494,21 @@ function renderRiskPriority(n) {
       ? `行情正常；事件 ${n.eventDataStatus}，事件風險未知`
       : "行情與事件資料正常";
   $("priority-existing-long").textContent = safe
-    ? "訊號矛盾，優先降低風險"
-    : (n.existingLongGuidance || "依結構管理，不因大週期偏多而續抱");
-  $("priority-new-long").textContent = !safe && n.longEntryAllowed ? "允許（條件已確認）" : "暫停";
-  $("priority-new-short").textContent = !safe && n.shortEntryAllowed ? "允許（條件已確認）" : "暫停";
+    ? "訊號矛盾，等待確認"
+    : (existing.message || n.existingLongGuidance || "缺少持倉背景，無法判定續抱或平倉");
+  $("priority-new-long").textContent = !safe && newEntry.longAllowed ? "允許（條件已確認）" : (newEntry.longReason || "暫停");
+  $("priority-new-short").textContent = !safe && newEntry.shortAllowed ? "允許（條件已確認）" : (newEntry.shortReason || "暫停");
+  const twoSided = { normal: "一般", downside_continuation: "續跌風險", oversold_rebound: "超賣急彈風險", high_whipsaw: "續跌與急彈並存" };
+  const reversal = { none: "尚無", oversold_without_reversal: "超賣但未反轉", selling_exhaustion_candidate: "賣壓衰竭候選", reclaim_attempt: "嘗試收復", reversal_confirmed: "反轉已確認", reversal_failed: "收復失敗" };
+  $("priority-two-sided").textContent = twoSided[marketAssessment.twoSidedRisk] || marketAssessment.twoSidedRisk || "–";
+  $("priority-reversal").textContent = reversal[marketAssessment.reversalState] || marketAssessment.reversalState || "–";
   $("priority-weakness").textContent = weakness[n.shortTermWeakness] || n.shortTermWeakness;
   $("priority-regime").textContent = regimes[n.marketRegime] || n.marketRegime;
   $("priority-message").textContent = safe
     ? "訊號尚未一致，等待下一根 15 分 K 收盤確認。"
     : (n.tradingScript || "等待條件完成。");
   const critical = safe || ["high", "critical"].includes(n.positionRisk)
-    || ["protect_existing_long", "protect_existing_short", "suspend_all_entries"].includes(n.riskOverride);
+    || n.riskOverride === "suspend_all_entries";
   $("risk-priority-card").classList.toggle("critical", critical);
 }
 
@@ -959,10 +970,9 @@ function posCard(p) {
   const normalized = S.analysis && S.analysis.normalized_analysis;
   let positionAdvice = p.recommended_action || "";
   if (p.is_open && normalized) {
-    if (p.side === "LONG" && ["protect_existing_long", "suspend_all_entries"].includes(normalized.riskOverride)) {
-      positionAdvice = normalized.existingLongGuidance;
-    } else if (p.side === "SHORT" && ["protect_existing_short", "suspend_all_entries"].includes(normalized.riskOverride)) {
-      positionAdvice = normalized.existingShortGuidance;
+    const assessment = normalized.tradingDecision?.existingPositionAssessment;
+    if (assessment && assessment.direction === p.side.toLowerCase()) {
+      positionAdvice = assessment.message || positionAdvice;
     }
   }
   const actions = h`

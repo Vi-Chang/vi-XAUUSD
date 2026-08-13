@@ -9,6 +9,10 @@ import pandas as pd
 
 from app.engines.market_dimensions import dimensions
 from app.engines.market_structure import StructureEvent, StructureReport
+from app.engines.position_assessment import (
+    assess_trading_decision,
+    classify_reversal_state,
+)
 from app.engines.risk_override import apply_risk_priority, detect_short_term_weakness
 from app.i18n import state_zh
 from app.schemas.analysis import AnalysisEvidence, NormalizedAnalysisState
@@ -122,6 +126,19 @@ def validate_consistency(state: NormalizedAnalysisState) -> NormalizedAnalysisSt
     if state.supportState in ("confirmed_breakdown", "retest_rejected") \
             and not state.lastClosedCandleTimestamp:
         errors.append("沒有已收盤 K 棒時間卻標示有效跌破")
+    position = state.tradingDecision.existingPositionAssessment
+    market = state.tradingDecision.marketAssessment
+    new_entry = state.tradingDecision.newEntryDecision
+    if position.positionTimeframe == "unknown" and position.action == "exit_confirmed":
+        errors.append("持倉週期未知卻輸出 exit_confirmed")
+    if not position.contextComplete and position.action != "insufficient_context":
+        errors.append("持倉背景不足卻輸出個人化處置")
+    if market.twoSidedRisk == "high_whipsaw" and not any(
+            "急彈" in text for text in position.warnings + [state.tradingScript]):
+        errors.append("超賣且空方動能擴大卻未揭露急彈風險")
+    if not new_entry.longAllowed and position.action == "exit_confirmed" \
+            and position.thesisStatus != "invalidated":
+        errors.append("禁止新多被誤譯為既有多單退出")
     if errors:
         return state.model_copy(update={"entryTiming": "wait", "riskDirection": "wait",
             "riskLabel": "等待確認", "riskMessage": WAIT_MESSAGE,
@@ -198,6 +215,14 @@ def build_normalized_state(*, generated_at: str, market_timestamp: str, current_
         event_status=event_status, event_lockout=event_lockout,
         market_regime=dims["marketRegime"], entry_readiness=dims["entryReadiness"],
         support_state=dims["supportState"], levels=dims["confirmationLevels"])
+    reversal_state = classify_reversal_state(
+        m15_closed=m15_closed, indicators=indicators.get("15M", {}),
+        support_state=dims["supportState"], oversold=weakness.oversold)
+    trading_decision = assess_trading_decision(
+        market_regime=dims["marketRegime"], weakness=weakness.state,
+        oversold=weakness.oversold, reversal_state=reversal_state,
+        readiness=priority["entryReadiness"], long_allowed=priority["longEntryAllowed"],
+        short_allowed=priority["shortEntryAllowed"], position_risk=priority["positionRisk"])
     dims["entryReadiness"] = priority["entryReadiness"]
     trend: TrendBias = ("bullish" if dims["marketRegime"] in ("bullish", "strong_bullish") else
                         "bearish" if dims["marketRegime"] in ("bearish", "strong_bearish") else "neutral")
@@ -267,9 +292,13 @@ def build_normalized_state(*, generated_at: str, market_timestamp: str, current_
     resistance_text = (f"15M swing 壓力 {resistance_level.price:.2f}（緩衝 {resistance_level.buffer:.2f}）"
                        if resistance_level else "15M 動態壓力")
     if weakness.state == "accelerating":
-        script = ("短線空方動能擴大。超賣不等於止跌，禁止追多或攤平。"
-                  "若已有多單，優先處理風險；等待已收盤 K 棒形成止跌結構後再評估。")
-        mistake = "因為指標超賣就攤平多單，忽略價格仍在創低與負動能擴大。"
+        if weakness.oversold:
+            script = ("大週期偏多，但短線明顯轉弱。新多單暫停；短線空方仍占優勢，"
+                      "但已進入超賣區，續跌與急彈風險並存。此處不適合追空，也不能只憑超賣搶多。")
+        else:
+            script = ("短線空方動能擴大。暫停新多單並等待已收盤 K 棒形成止跌與收復結構。"
+                      "既有持倉須依原始交易週期與停損計畫判斷，不自動推導平倉。")
+        mistake = "把暫停新多單誤當成既有多單必須平倉，或只憑超賣搶反彈。"
     elif weakness.state in ("confirmed", "early_warning") and dims["marketRegime"] in ("bullish", "strong_bullish"):
         script = "大週期偏多，但短線已轉弱；暫停新多單。若已有多單，優先處理風險。"
         mistake = "把大週期偏多誤認為多單可以放心續抱或繼續追多。"
@@ -321,6 +350,7 @@ def build_normalized_state(*, generated_at: str, market_timestamp: str, current_
         existingShortGuidance=priority["existingShortGuidance"],
         structuralInvalidationNote=("以上僅為 swing、ATR 與已收盤 K 棒推導的結構失效區；"
                                     "不是個人帳戶停損價，未提供持倉與可承受風險時不產生精準停損。"),
+        tradingDecision=trading_decision,
         sourceTimestamps={k: market_timestamp for k in
             ("marketState", "evidence", "risk", "tradingScript", "dataQuality")},
         sourcePrices={k: current_price for k in

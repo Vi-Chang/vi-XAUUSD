@@ -227,6 +227,55 @@ class InvalidationCondition(BaseModel):
     source: str = ""
 
 
+class MarketAssessment(BaseModel):
+    regime: Literal[
+        "strong_bullish", "bullish", "range", "bearish", "strong_bearish"
+    ] = "range"
+    shortTermWeakness: Literal[
+        "none", "early_warning", "confirmed", "accelerating"
+    ] = "none"
+    twoSidedRisk: Literal[
+        "normal", "downside_continuation", "oversold_rebound", "high_whipsaw"
+    ] = "normal"
+    reversalState: Literal[
+        "none", "oversold_without_reversal", "selling_exhaustion_candidate",
+        "reclaim_attempt", "reversal_confirmed", "reversal_failed"
+    ] = "none"
+
+
+class NewEntryDecision(BaseModel):
+    readiness: Literal["ready", "wait_confirmation", "avoid_chasing", "no_trade"] = "no_trade"
+    longAllowed: bool = False
+    shortAllowed: bool = False
+    longReason: str = ""
+    shortReason: str = ""
+
+
+class ExistingPositionAssessment(BaseModel):
+    direction: Literal["long", "short", "unknown"] = "unknown"
+    positionTimeframe: Literal["15M", "1H", "4H", "1D", "unknown"] = "unknown"
+    riskLevel: Literal["normal", "elevated", "high", "critical"] = "normal"
+    action: Literal[
+        "insufficient_context", "follow_original_plan", "monitor_reclaim",
+        "reduce_risk_if_needed", "exit_on_confirmed_invalidation", "exit_confirmed"
+    ] = "insufficient_context"
+    thesisStatus: Literal[
+        "intact", "under_pressure", "invalidation_testing", "invalidated", "unknown"
+    ] = "unknown"
+    warnings: list[str] = Field(default_factory=list)
+    invalidationEvidence: list[AnalysisEvidence] = Field(default_factory=list)
+    recoveryEvidence: list[AnalysisEvidence] = Field(default_factory=list)
+    contextComplete: bool = False
+    message: str = ""
+
+
+class TradingDecision(BaseModel):
+    marketAssessment: MarketAssessment = Field(default_factory=MarketAssessment)
+    newEntryDecision: NewEntryDecision = Field(default_factory=NewEntryDecision)
+    existingPositionAssessment: ExistingPositionAssessment = Field(
+        default_factory=ExistingPositionAssessment)
+
+
 class NormalizedAnalysisState(BaseModel):
     """畫面判斷的唯一來源；所有欄位屬同一報價與同一根已收盤 K 棒。"""
     generatedAt: str = ""
@@ -289,6 +338,7 @@ class NormalizedAnalysisState(BaseModel):
     existingLongGuidance: str = ""
     existingShortGuidance: str = ""
     structuralInvalidationNote: str = ""
+    tradingDecision: TradingDecision = Field(default_factory=TradingDecision)
 
 
 class MentorSignalView(BaseModel):

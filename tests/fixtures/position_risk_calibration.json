@@ -1,0 +1,9 @@
+[
+  {"id":"oversold_rebound","weakness":"accelerating","oversold":true,"context_complete":false,"expected_exit":false,"mae":-7.62,"mfe":43.76,"returns":[0.2,0.7,1.8,3.4]},
+  {"id":"oversold_continuation","weakness":"accelerating","oversold":true,"context_complete":false,"expected_exit":false,"mae":-28.0,"mfe":4.0,"returns":[-0.4,-0.9,-1.7,-2.3]},
+  {"id":"failed_break_reclaim","weakness":"confirmed","oversold":true,"context_complete":false,"expected_exit":false,"mae":-5.0,"mfe":25.0,"returns":[0.1,0.6,1.2,2.0]},
+  {"id":"break_retest_failed","weakness":"accelerating","oversold":false,"context_complete":true,"confirmed_invalidation":true,"expected_exit":true,"mae":-35.0,"mfe":2.0,"returns":[-0.6,-1.1,-2.0,-3.1]},
+  {"id":"bullish_pullback","weakness":"confirmed","oversold":false,"context_complete":true,"confirmed_invalidation":false,"expected_exit":false,"mae":-12.0,"mfe":31.0,"returns":[-0.2,0.2,0.9,2.4]},
+  {"id":"true_regime_reversal","weakness":"accelerating","oversold":false,"context_complete":true,"confirmed_invalidation":true,"expected_exit":true,"mae":-48.0,"mfe":1.0,"returns":[-0.8,-1.5,-2.8,-4.0]},
+  {"id":"event_whipsaw","weakness":"accelerating","oversold":true,"context_complete":false,"expected_exit":false,"mae":-22.0,"mfe":24.0,"returns":[-0.7,0.8,-0.3,1.1]}
+]
