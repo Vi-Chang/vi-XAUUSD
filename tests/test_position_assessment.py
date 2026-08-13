@@ -99,6 +99,15 @@ def test_accelerating_weakness_with_complete_context_only_monitors_reclaim():
     assert out.existingPositionAssessment.thesisStatus == "under_pressure"
 
 
+def test_max_loss_can_complete_context_when_original_stop_is_missing():
+    ctx = PositionContext(direction="long", entry_price=4429.13, size=0.1,
+                          timeframe="1H", max_loss_usd=100.0,
+                          thesis="1H higher-low trend", allow_event_hold=False)
+    assert ctx.complete is True
+    out = decision(weakness="accelerating", oversold=True, context=ctx)
+    assert out.existingPositionAssessment.action == "monitor_reclaim"
+
+
 def test_exit_confirmed_requires_complete_context_and_confirmed_invalidation():
     incomplete = decision(weakness="accelerating", oversold=True, invalidation=True)
     assert incomplete.existingPositionAssessment.action == "insufficient_context"

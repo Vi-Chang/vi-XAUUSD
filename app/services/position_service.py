@@ -180,6 +180,32 @@ def modify_stop(position_id: int, new_stop: float) -> tuple[Position, str | None
         return pos, flag
 
 
+def update_position_context(
+    position_id: int,
+    *,
+    position_timeframe: str,
+    original_thesis: str,
+    max_loss_usd: float | None,
+    allow_event_hold: bool | None,
+) -> Position:
+    """補齊既有持倉的決策背景，不改動交易價格或部位。"""
+    if position_timeframe not in {"15M", "1H", "4H", "1D", "unknown"}:
+        raise ValueError("position_timeframe 必須是 15M、1H、4H、1D 或 unknown")
+    if max_loss_usd is not None and max_loss_usd <= 0:
+        raise ValueError("max_loss_usd 必須大於 0")
+    with db_session() as db:
+        pos = db.get(Position, position_id)
+        if pos is None or not pos.is_open:
+            raise ValueError("找不到未平倉部位")
+        pos.position_timeframe = position_timeframe
+        pos.original_thesis = original_thesis.strip()
+        pos.max_loss_usd = max_loss_usd
+        pos.allow_event_hold = allow_event_hold
+        db.flush()
+        db.refresh(pos)
+        return pos
+
+
 def partial_exit(position_id: int, percent: float, price: float) -> tuple[Position, str | None]:
     """分批平倉;未達 1R 即平掉 >50% → 記 EARLY_EXIT(spec 十九)。"""
     if not 0 < percent <= 100:

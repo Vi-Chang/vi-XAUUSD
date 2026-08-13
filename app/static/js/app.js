@@ -980,6 +980,7 @@ function posCard(p) {
     <div class="pos-actions">
       <button class="btn btn-sm btn-warn" data-act="pos-stop" data-id="${p.id}">改出場價</button>
       <button class="btn btn-sm" data-act="pos-partial" data-id="${p.id}">分批平倉</button>
+      <button class="btn btn-sm" data-act="pos-context" data-id="${p.id}">補交易背景</button>
       <button class="btn btn-sm btn-danger" data-act="pos-close" data-id="${p.id}">全部平倉</button>
     </div>`;
   return h`
@@ -1134,6 +1135,26 @@ async function actStop(id) {
     if (out.behavior_flag) alert("⚠ 交易教練:你把出場價往賠更多的方向挪了(凹單),要小心。");
   } catch (e) { alert("失敗:" + e.message); }
   loadPositions(); loadCoach();
+}
+
+async function actPositionContext(id) {
+  const timeframe = prompt("持倉判斷週期（15M / 1H / 4H / 1D）：", "1H");
+  if (!timeframe) return;
+  const thesis = prompt("原始進場理由（例如：1H 高低點持續墊高）：", "");
+  if (thesis == null) return;
+  const maxLoss = prompt("最大可承受損失（USD，可留空；若沒有原始停損則建議填寫）：", "");
+  const eventHold = prompt("重大事件期間是否允許續抱？輸入 yes / no；留空代表未設定：", "");
+  const normalizedEventHold = eventHold == null || eventHold.trim() === ""
+    ? null : ["yes", "y", "true", "是"].includes(eventHold.trim().toLowerCase());
+  try {
+    await postJSON(`/api/positions/${id}/context`, {
+      position_timeframe: timeframe.trim().toUpperCase(),
+      original_thesis: thesis.trim(),
+      max_loss_usd: maxLoss && maxLoss.trim() ? parseFloat(maxLoss) : null,
+      allow_event_hold: normalizedEventHold,
+    });
+  } catch (e) { alert("更新失敗：" + e.message); }
+  loadPositions();
 }
 
 async function actPartial(id) {
@@ -1324,6 +1345,7 @@ async function boot() {
     if (act === "mentor-dismiss") dismissMentor(id);
     else if (act === "pos-stop") actStop(id);
     else if (act === "pos-partial") actPartial(id);
+    else if (act === "pos-context") actPositionContext(id);
     else if (act === "pos-close") actClose(id);
     else if (act === "admin-login") ensureLogin();
   });

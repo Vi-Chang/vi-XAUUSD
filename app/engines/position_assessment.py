@@ -26,6 +26,7 @@ class PositionContext:
     size: float | None = None
     timeframe: str = "unknown"
     original_stop: float | None = None
+    max_loss_usd: float | None = None
     thesis: str = ""
     allow_event_hold: bool | None = None
 
@@ -36,7 +37,7 @@ class PositionContext:
             and self.entry_price is not None
             and self.size is not None
             and self.timeframe in ("15M", "1H", "4H", "1D")
-            and self.original_stop is not None
+            and (self.original_stop is not None or self.max_loss_usd is not None)
             and self.thesis
             and self.allow_event_hold is not None
         )

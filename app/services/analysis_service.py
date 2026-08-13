@@ -377,6 +377,7 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
             context = PositionContext(
                 direction=v["side"].lower(), entry_price=v["entry_price"],
                 size=v["lot_size"], original_stop=v.get("stop_loss"),
+                max_loss_usd=v.get("max_loss_usd"),
                 timeframe=v.get("position_timeframe", "unknown"),
                 thesis=v.get("original_thesis", ""),
                 allow_event_hold=v.get("allow_event_hold"))

@@ -91,6 +91,15 @@ def test_positions_api_flow():
         r = c.post(f"/api/positions/{pid}/stop", json={"stop_loss": 3985.0})
         assert r.json()["behavior_flag"] == "STOP_WIDENING"
 
+        r = c.post(f"/api/positions/{pid}/context", json={
+            "position_timeframe": "4H", "original_thesis": "4H trend continuation",
+            "max_loss_usd": 80.0, "allow_event_hold": True})
+        assert r.status_code == 200
+        assert r.json()["position_timeframe"] == "4H"
+        assert r.json()["original_thesis"] == "4H trend continuation"
+        assert r.json()["max_loss_usd"] == 80.0
+        assert r.json()["allow_event_hold"] is True
+
         r = c.post(f"/api/positions/{pid}/partial_exit",
                    json={"percent": 30, "price": 4015.0})
         assert r.status_code == 200

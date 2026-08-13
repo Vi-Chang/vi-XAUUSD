@@ -478,6 +478,13 @@ class StopModifyReq(BaseModel):
     stop_loss: float
 
 
+class PositionContextReq(BaseModel):
+    position_timeframe: Literal["15M", "1H", "4H", "1D", "unknown"]
+    original_thesis: str = Field(max_length=500)
+    max_loss_usd: float | None = Field(default=None, gt=0)
+    allow_event_hold: bool | None = None
+
+
 class PartialExitReq(BaseModel):
     percent: float = Field(gt=0, le=100)
     price: float | None = None  # 未提供時使用當前市價
@@ -554,6 +561,23 @@ async def modify_stop_api(position_id: int, req: StopModifyReq) -> dict:
                                     f"交易教練:偵測到 {flag}(停損往虧損方向移動)。"
                                     f"請恢復原結構失效點停損。")
     return out
+
+
+@app.post("/api/positions/{position_id}/context", dependencies=[Depends(require_admin)])
+async def update_position_context_api(position_id: int, req: PositionContextReq) -> dict:
+    from app.services.position_service import position_view, update_position_context
+    try:
+        pos = update_position_context(
+            position_id,
+            position_timeframe=req.position_timeframe,
+            original_thesis=req.original_thesis,
+            max_loss_usd=req.max_loss_usd,
+            allow_event_hold=req.allow_event_hold,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    cur = await _price_or_market(None)
+    return position_view(pos, cur)
 
 
 @app.post("/api/positions/{position_id}/partial_exit", dependencies=[Depends(require_admin)])
