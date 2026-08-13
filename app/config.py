@@ -205,6 +205,8 @@ class Settings(BaseSettings):
     tier1_fail_alert_after: int = 5          # 連續失敗 N 次才發一則系統警告
     # 第 2 層:結構層(純程式邏輯,禁 AI)
     tier2_check_seconds: int = 300
+    candle_close_refresh_delay_seconds: int = 90   # 15M 收盤後等待資料源完成 K 棒
+    candle_close_refresh_max_attempts: int = 2     # 同一根 K 最多補試一次
     tier2_touch_pct: float = 0.0005          # 觸及候選價位:距離 ≤ 0.05%
     tier2_anomaly_range_mult: float = 2.5    # 5 分鐘振幅 > 近 20 根 5 分桶平均 × 此倍數
     tier2_level_cooldown_minutes: int = 60   # 同一價位觸及事件冷卻

@@ -44,6 +44,8 @@ class AppState:
         self.quote_cache = QuoteCache()
         self.event_cooldown = EventCooldown()
         self.last_full_analysis: datetime | None = None
+        self.candle_refresh_bucket: datetime | None = None
+        self.candle_refresh_attempts = 0
         self.l1_fail_count = 0
         self.l1_alerted = False
         self.td_degraded_alerted = False
@@ -115,6 +117,52 @@ def l1_interval_seconds() -> int:
         return s.tier1_quote_seconds
     provider_min = getattr(state.provider, "min_poll_seconds", 0) or 0
     return max(s.tier1_quote_seconds, provider_min)
+
+
+def expected_closed_15m(now: datetime | None = None, delay_seconds: int | None = None) -> datetime:
+    """Open timestamp of the latest 15M candle expected to be closed and available."""
+    now = now or datetime.now(timezone.utc)
+    delay = (get_settings().candle_close_refresh_delay_seconds
+             if delay_seconds is None else delay_seconds)
+    eligible = now - timedelta(seconds=max(0, delay))
+    close_boundary = eligible.replace(
+        minute=(eligible.minute // 15) * 15, second=0, microsecond=0)
+    return close_boundary - timedelta(minutes=15)
+
+
+def _analysis_closed_15m() -> datetime | None:
+    raw = ((state.latest_result or {}).get("normalized_analysis") or {}).get(
+        "lastClosedCandleTimestamp")
+    try:
+        parsed = datetime.fromisoformat(raw)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+async def job_candle_close_refresh() -> None:
+    """Refresh once a newly closed 15M candle should be available."""
+    if not market_is_open():
+        return
+    state.mark("candle_close_refresh")
+    s = get_settings()
+    expected = expected_closed_15m()
+    current = _analysis_closed_15m()
+    if current is not None and current >= expected:
+        state.candle_refresh_bucket = expected
+        state.candle_refresh_attempts = 0
+        return
+    if state.candle_refresh_bucket != expected:
+        state.candle_refresh_bucket = expected
+        state.candle_refresh_attempts = 0
+    if state.candle_refresh_attempts >= s.candle_close_refresh_max_attempts:
+        return
+    state.candle_refresh_attempts += 1
+    await broadcast_all({"type": "analysis_refreshing", "timeframe": "15M",
+                         "expected_close": expected.isoformat()})
+    await run_full_analysis(trigger="candle_close", reason_zh="15 分鐘 K 棒已收盤，更新判斷")
+    if (_analysis_closed_15m() or datetime.min.replace(tzinfo=timezone.utc)) >= expected:
+        state.candle_refresh_attempts = 0
 
 
 async def job_quote_l1() -> None:
@@ -322,6 +370,9 @@ def build_scheduler() -> AsyncIOScheduler:
     sched.add_job(job_structure_l2, "interval", seconds=s.tier2_check_seconds,
                   id="structure_l2", max_instances=1, coalesce=True,
                   next_run_time=startup + timedelta(seconds=10))
+    sched.add_job(job_candle_close_refresh, "interval", seconds=30,
+                  id="candle_close_refresh", max_instances=1, coalesce=True,
+                  next_run_time=startup + timedelta(seconds=20))
     sched.add_job(job_cross_check, "cron", minute="7,22,37,52", id="cross_check",
                   max_instances=1, coalesce=True)
     sched.add_job(job_heartbeat, "interval", minutes=s.heartbeat_minutes,
