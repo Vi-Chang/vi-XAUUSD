@@ -627,7 +627,8 @@ function renderEventRisk(er) {
     // P2:固有影響力(靜態 chip)與時間風險(動態文字)分開顯示
     const timeRisk = er.time_risk || er.level;
     nameEl.textContent = `${er.next_event}　${TIME_RISK_ZH[timeRisk] || ""}`
-      + (er.event_lockout ? "・鎖定中" : "");
+      + (er.event_lockout ? "・鎖定中" : "")
+      + (er.post_event_wait ? "・發布後等待確認" : "");
     impactChip.style.display = "";
     const impact = er.event_impact || "UNKNOWN";
     impactChip.textContent = IMPACT_ZH[impact] || impact;

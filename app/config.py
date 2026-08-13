@@ -71,6 +71,12 @@ class Settings(BaseSettings):
     fred_api_key: str = ""
     manual_events_path: str = "data/manual_events.json"
     manual_events_stale_days: int = 7
+    official_event_sync_enabled: bool = True
+    official_events_cache_path: str = "data/official_events_cache.json"
+    official_events_cache_hours: int = 24
+    official_events_url: str = "https://www.bls.gov/schedule/news_release/bls.ics"
+    official_fomc_events_url: str = "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
+    official_events_timeout_seconds: int = 5
 
     # ── 通知 ──
     telegram_bot_token: str = ""
@@ -169,6 +175,7 @@ class Settings(BaseSettings):
 
     # ── 事件風控 ──
     event_lockout_minutes: int = 30
+    event_post_lockout_minutes: int = 15
     post_event_wait_m15_bars: int = 1
 
     # ── 風控預設(spec 十六)──
