@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
@@ -263,6 +264,87 @@ def _apply_outcome(state: EventRiskState, event: dict) -> None:
         state.outcome_status = "pending"
 
 
+def _event_identity(name: str) -> str:
+    """Map provider wording to a conservative high-impact event family."""
+    text = re.sub(r"[^a-z0-9]+", " ", name.lower())
+    if "fomc" in text or "fed funds" in text or "interest rate" in text:
+        return "fomc"
+    if "nonfarm" in text or "payroll" in text or "employment situation" in text:
+        return "employment"
+    if "core pce" in text or "personal income" in text or "pce" in text:
+        return "pce"
+    if "consumer price" in text or "cpi" in text:
+        return "cpi"
+    if "producer price" in text or "ppi" in text:
+        return "ppi"
+    if "gross domestic" in text or re.search(r"\bgdp\b", text):
+        return "gdp"
+    return ""
+
+
+def _provider_time(item: dict) -> datetime | None:
+    for key in ("time", "datetime", "date"):
+        value = item.get(key)
+        if isinstance(value, (int, float)):
+            return datetime.fromtimestamp(value, tz=timezone.utc)
+        if value:
+            try:
+                return _parse_time(str(value))
+            except ValueError:
+                try:
+                    return datetime.fromisoformat(str(value)).replace(tzinfo=timezone.utc)
+                except ValueError:
+                    continue
+    return None
+
+
+def enrich_event_outcome(event: dict, now: datetime, *, fetcher=None) -> dict:
+    """Supplement a scheduled event with Finnhub's published calendar values.
+
+    The result is deliberately best-effort: a provider error, a name/date mismatch,
+    or an incomplete result leaves the trusted scheduling record unchanged.
+    """
+    settings = get_settings()
+    if not settings.finnhub_api_key or event.get("actual") is not None:
+        return event
+    event_time = _event_time(event)
+    family = _event_identity(str(event.get("name", "")))
+    if event_time is None or not family:
+        return event
+    start = (event_time - timedelta(days=1)).date().isoformat()
+    end = min(now.date(), (event_time + timedelta(days=1)).date()).isoformat()
+    query = urlencode({"from": start, "to": end, "token": settings.finnhub_api_key})
+    url = f"{settings.finnhub_economic_calendar_url}?{query}"
+    try:
+        if fetcher is not None:
+            payload = fetcher(url)
+        else:
+            request = Request(url, headers={"User-Agent": "XAUUSD-event-risk/1.0"})
+            with urlopen(request, timeout=settings.official_events_timeout_seconds) as response:  # nosec B310
+                payload = response.read().decode("utf-8")
+        rows = json.loads(payload).get("economicCalendar", [])
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Finnhub economic calendar result lookup failed: %s", exc)
+        return event
+
+    for row in rows:
+        if _event_identity(str(row.get("event", row.get("name", "")))) != family:
+            continue
+        provider_time = _provider_time(row)
+        if provider_time is None or abs((provider_time - event_time).total_seconds()) > 36 * 3600:
+            continue
+        actual = _number(row.get("actual"))
+        forecast = _number(row.get("estimate", row.get("forecast")))
+        previous = _number(row.get("prev", row.get("previous")))
+        if actual is None and forecast is None and previous is None:
+            continue
+        enriched = dict(event)
+        enriched.update({"actual": actual, "forecast": forecast, "previous": previous,
+                         "outcome_source": "Finnhub economic calendar"})
+        return enriched
+    return event
+
+
 def evaluate_event_risk(now: datetime | None = None) -> EventRiskState:
     s = get_settings()
     now = now or datetime.now(timezone.utc)
@@ -295,6 +377,7 @@ def evaluate_event_risk(now: datetime | None = None) -> EventRiskState:
 
     if post:
         t, event = post
+        event = enrich_event_outcome(event, now)
         elapsed = max(0, int((now - t).total_seconds() // 60))
         name = translate_event_name(str(event.get("name", "")))
         state.event_impact = "HIGH"
