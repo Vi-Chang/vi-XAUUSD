@@ -64,6 +64,9 @@ async def lifespan(app: FastAPI):
         state.secondary = TwelveDataProvider()
     from datetime import datetime, timezone
     state.started_at = datetime.now(timezone.utc)
+    # 容器重啟後從持久化分析恢復健康狀態，避免 API 有資料但
+    # last_full_analysis 仍為空的跨程序／滾動部署不一致。
+    _load_last_analysis_from_db()
     # 組態安全檢查:production 寫入權限組態有誤 → 明確在啟動時失敗(不等到 mutation 才發現)。
     # 不中止行程(讓公開 dashboard/health 仍可服務),但 readiness 會回報 not-ready。
     from app.security import production_auth_misconfigured
@@ -217,7 +220,12 @@ def _load_last_analysis_from_db() -> dict | None:
             row = db.execute(select(AnalysisRun)
                              .order_by(AnalysisRun.run_time.desc())
                              .limit(1)).scalars().first()
-            return dict(row.result_json) if row and row.result_json else None
+            if not row or not row.result_json:
+                return None
+            raw = dict(row.result_json)
+            state.latest_result = raw
+            state.last_full_analysis = ensure_utc(row.run_time)
+            return raw
     except Exception as exc:  # noqa: BLE001
         logger.warning("load last analysis failed: %s", exc)
         return None

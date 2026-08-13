@@ -145,3 +145,37 @@ def test_health_payload_no_sensitive_and_has_monitoring_fields(monkeypatch):
     assert "llm" in out and set(out["llm"]) >= {
         "last_success_at", "last_error_at", "last_error_type"}
     assert out["tiered"]["quote_age_minutes"] is not None
+def test_db_read_through_restores_analysis_heartbeat(monkeypatch):
+    """重啟後讀回分析時，API 快取與健康時間必須同步。"""
+    from types import SimpleNamespace
+
+    from app import main
+
+    run_time = datetime(2026, 8, 13, 1, 2, 3, tzinfo=timezone.utc)
+    row = SimpleNamespace(run_time=run_time, result_json={"version": 42})
+
+    class _Result:
+        def scalars(self):
+            return self
+
+        def first(self):
+            return row
+
+    class _Db:
+        def execute(self, _query):
+            return _Result()
+
+    class _Context:
+        def __enter__(self):
+            return _Db()
+
+        def __exit__(self, *_args):
+            return None
+
+    monkeypatch.setattr("app.db.session.db_session", lambda: _Context())
+    monkeypatch.setattr(main.state, "latest_result", None)
+    monkeypatch.setattr(main.state, "last_full_analysis", None)
+
+    assert main._load_last_analysis_from_db() == {"version": 42}
+    assert main.state.latest_result == {"version": 42}
+    assert main.state.last_full_analysis == run_time
