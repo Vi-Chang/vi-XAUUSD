@@ -204,6 +204,10 @@ class Settings(BaseSettings):
     tier1_quote_seconds: int = 60
     tier1_fail_alert_after: int = 5          # 連續失敗 N 次才發一則系統警告
     # 第 2 層:結構層(純程式邏輯,禁 AI)
+    outcome_backfill_seconds: int = 300
+    outcome_backfill_lookback_days: int = 30
+    outcome_backfill_batch_size: int = 5000
+    calibration_min_sample_size: int = 30
     tier2_check_seconds: int = 300
     candle_close_refresh_delay_seconds: int = 90   # 15M 收盤後等待資料源完成 K 棒
     candle_close_refresh_max_attempts: int = 2     # 同一根 K 最多補試一次

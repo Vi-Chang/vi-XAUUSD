@@ -374,6 +374,17 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
         result.short_scenario = result.short_scenario.model_copy(update=safe_watch)
     # 市場層決策快照(在持倉 MANAGE 覆寫之前捕捉);公開投影用此,避免洩露個人持倉。
     result.market_decision = result.decision.model_copy()
+    try:
+        from app.services.calibration_guard import (
+            apply_calibration_guard,
+            settled_sample_size,
+        )
+        with db_session() as db:
+            apply_calibration_guard(
+                result, sample_size=settled_sample_size(db),
+                minimum=s.calibration_min_sample_size)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("calibration guard unavailable: %s", exc)
     # 隱私邊界戳記:本 pipeline 為 position-free / public-safe,標記為可公開自由文字。
     from app.services.public_view import PRIVACY_BOUNDARY_VERSION
     result.privacy_boundary_version = PRIVACY_BOUNDARY_VERSION
@@ -531,7 +542,10 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
     try:
         with db_session() as db:
             from app.services.outcome_tracker import backfill_outcomes
-            backfill_outcomes(db, now=now, current_price=tick.mid)
+            backfill_outcomes(
+                db, now=now, current_price=tick.mid,
+                lookback_days=s.outcome_backfill_lookback_days,
+                limit=s.outcome_backfill_batch_size)
             run = AnalysisRun(
                 run_time=now, trigger=trigger, market_state=state,
                 decision_action=result.decision.action,

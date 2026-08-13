@@ -423,6 +423,10 @@ class AnalysisResult(BaseModel):
     """spec 二十二之完整固定輸出。"""
     version: int = 0                # BUGFIX R6:遞增版本號(=analysis_runs.id)
     # 隱私邊界戳記:標記本結果由 position-free / public-safe pipeline 產生(0 = 舊資料,不可公開自由文字)
+    calibration_status: Literal["collecting", "sufficient"] = "collecting"
+    calibration_sample_size: int = 0
+    calibration_min_sample_size: int = 30
+    calibration_message: str = ""
     privacy_boundary_version: int = 0
     snapshot_ts: str = ""           # 本次分析使用的價格數據時間戳
     timestamp_utc: str = ""
