@@ -49,6 +49,14 @@ class EventRisk(BaseModel):
     data_updated_at: str = ""
     event_phase: Literal["upcoming", "post_release", "unknown"] = "unknown"
     post_event_wait: bool = False
+    reaction_status: Literal["not_applicable", "awaiting_close", "confirmed", "mixed"] = "not_applicable"
+    xauusd_confirmation: str = "not_checked"
+    dxy_confirmation: str = "not_available"
+    yield_confirmation: str = "not_available"
+    actual: float | None = None
+    forecast: float | None = None
+    previous: float | None = None
+    reaction_message: str = ""
 
 
 class CrossMarketContext(BaseModel):
