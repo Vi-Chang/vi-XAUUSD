@@ -26,8 +26,7 @@ const S = {
 };
 
 // 私人面板(登入後才載入;登出/過期時清空 DOM)
-const PRIVATE_PANELS = ["position-list", "mentor-body", "mentor-history",
-                        "coach-body", "compare-body"];
+const PRIVATE_PANELS = ["position-list", "coach-body"];
 
 const $ = (id) => document.getElementById(id);
 const unskel = (el) => el && el.classList.remove("skel");
@@ -829,7 +828,8 @@ const accountName = (id) => {
 
 async function loadAccounts() {
   try {
-    S.accounts = (await getPrivate("/api/accounts", null)) || [];
+    S.accounts = ((await getPrivate("/api/accounts", null)) || [])
+      .filter((account) => account.strategy_source !== "TEACHER");
     const sel = $("pf-account");
     sel.innerHTML = S.accounts.map((a) =>
       h`<option value="${a.id}"${a.strategy_source === "SELF" ? trusted(" selected") : ""}>${a.name}</option>`).join("");
@@ -1104,9 +1104,7 @@ function reloadPrivatePanels() {
   const tab = active ? active.dataset.tab : "";
   loadAccounts();
   if (tab === "position") loadPositions();
-  else if (tab === "mentor") { loadMentor(); loadMentorHistory(); }
   else if (tab === "coach") loadCoach();
-  else if (tab === "compare") loadComparison();
 }
 
 // 私人資料 GET:帶 cookie;未登入 → 鎖定面板(不自動跳登入,由使用者按登入鈕觸發共享流程)。
@@ -1318,26 +1316,8 @@ async function boot() {
       if (t.dataset.tab === "history") loadHistory();
       if (t.dataset.tab === "performance") loadPerformance();
       if (t.dataset.tab === "position") loadPositions();
-      if (t.dataset.tab === "mentor") { loadMentor(); loadMentorHistory(); }
       if (t.dataset.tab === "coach") loadCoach();
-      if (t.dataset.tab === "compare") loadComparison();
     }));
-
-  $("mentor-form").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    try {
-      const tgt = $("mf-target").value ? [parseFloat($("mf-target").value)] : [];
-      await postJSON("/api/mentor/signals", {
-        direction: $("mf-dir").value,
-        entry_price: parseFloat($("mf-entry").value),
-        stop_loss: $("mf-stop").value ? parseFloat($("mf-stop").value) : null,
-        targets: tgt,
-        note: $("mf-note").value || null,
-      });
-      e.target.reset();
-      loadMentor();
-    } catch (err) { alert("新增失敗:" + err); }
-  });
 
   $("pos-form").addEventListener("submit", async (e) => {
     e.preventDefault();
