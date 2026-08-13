@@ -16,7 +16,7 @@ from app.schemas.ai import AiStrategy
 
 DataQualityStatus = Literal["GOOD", "DEGRADED", "STALE", "FAILED"]
 EventImpact = Literal["LOW", "MEDIUM", "HIGH", "UNKNOWN"]
-EventSource = Literal["finnhub", "fmp", "manual", "none"]
+EventSource = Literal["official", "finnhub", "fmp", "manual", "none"]
 ConfidenceGrade = Literal["S", "A", "B", "C", "X"]
 
 
@@ -44,9 +44,11 @@ class EventRisk(BaseModel):
     event_lockout: bool = False
     next_event: str = ""
     minutes_remaining: int | None = None
-    source: Literal["finnhub", "fmp", "manual", "none"] = "none"
+    source: EventSource = "none"
     reason: str = ""
     data_updated_at: str = ""
+    event_phase: Literal["upcoming", "post_release", "unknown"] = "unknown"
+    post_event_wait: bool = False
 
 
 class CrossMarketContext(BaseModel):

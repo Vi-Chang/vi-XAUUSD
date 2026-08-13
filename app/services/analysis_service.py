@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import cast
+from typing import Literal, cast
 
 import pandas as pd
 
@@ -285,7 +285,9 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
                              next_event=ev.next_event,
                              minutes_remaining=ev.minutes_remaining,
                               source=cast(EventSource, ev.source), reason=ev.reason,
-                             data_updated_at=ev.data_updated_at),
+                             data_updated_at=ev.data_updated_at,
+                             event_phase=cast(Literal["upcoming", "post_release", "unknown"], ev.event_phase),
+                             post_event_wait=ev.post_event_wait),
         market_state=state,
         timeframes=Timeframes(
             weekly=_tf_view(structures.get("1W"), ind.get("1W", {})),
@@ -327,7 +329,7 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
         generated_at=now.isoformat(), market_timestamp=tick.quote_time.isoformat(),
         current_price=snapshot_price, market_state=state,
         market_quality=quality.status, event_source=ev.source,
-        event_stale=ev.manual_file_stale, structures=structures,
+        event_stale=ev.data_stale, structures=structures,
         m15_all=dfs_all.get("15M"), m15_closed=dfs_closed.get("15M"),
         bull_evidence=decision.bull_evidence, bear_evidence=decision.bear_evidence,
         chase_flags=decision.chase_flags, indicators=ind, closed_times=closed_times,
