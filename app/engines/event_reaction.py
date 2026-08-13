@@ -1,4 +1,4 @@
-"""公布後只看可驗證的市場反應；不把新聞的理論方向當成交易指令。"""
+"""Conservative post-event confirmation for the trading analysis."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -13,25 +13,50 @@ class EventReaction:
     actual: float | None = None
     forecast: float | None = None
     previous: float | None = None
+    outcome_status: str = "not_available"
+    outcome_source: str = ""
+    surprise: float | None = None
+    fundamental_bias: str = "unknown"
     message: str = ""
 
 
 def assess_event_reaction(*, post_event_wait: bool, m15_closed_at: str,
                           macd_hist: float | None, dxy_chg_pct: float | None,
-                          us10y_chg: float | None) -> EventReaction:
-    """事件窗內一律等已收盤 15 分K；資料不足則維持等待而不是猜方向。"""
+                          us10y_chg: float | None, actual: float | None = None,
+                          forecast: float | None = None, previous: float | None = None,
+                          outcome_source: str = "", event_name: str = "") -> EventReaction:
+    """Separate provider-supplied macro results from technical confirmation.
+
+    The function deliberately never infers actual or forecast numbers from a price
+    move.  A missing result means the analysis remains technically confirmed only.
+    """
+    outcome_status = ("available" if actual is not None and forecast is not None
+                      else "pending" if forecast is not None or previous is not None
+                      else "not_available")
+    surprise = round(actual - forecast, 6) if outcome_status == "available" else None
+    stronger_us = any(term in event_name.lower() for term in
+                      ("cpi", "ppi", "pce", "employment", "payroll", "gdp", "fomc"))
+    fundamental_bias = ("bearish_xauusd" if surprise is not None and surprise > 0 and stronger_us
+                        else "bullish_xauusd" if surprise is not None and surprise < 0 and stronger_us
+                        else "neutral" if surprise == 0 else "unknown")
+    common = dict(actual=actual, forecast=forecast, previous=previous,
+                  outcome_status=outcome_status, outcome_source=outcome_source,
+                  surprise=surprise, fundamental_bias=fundamental_bias)
     if not post_event_wait:
-        return EventReaction(message="目前不在高影響事件發布後確認期。")
+        return EventReaction(**common, message="目前沒有進入事件公布後確認窗口。")
     if not m15_closed_at:
-        return EventReaction(status="awaiting_close", xauusd_confirmation="awaiting_close",
-                             message="高影響事件已發布；尚無可用的已收盤 15 分K，等待確認。")
+        return EventReaction(**common, status="awaiting_close", xauusd_confirmation="awaiting_close",
+                             message="事件後等待第一根 15 分鐘 K 棒收盤確認。")
+
     xauusd = "bullish" if (macd_hist or 0) > 0 else "bearish" if (macd_hist or 0) < 0 else "neutral"
     dxy = "available" if dxy_chg_pct is not None else "not_available"
     yields = "available" if us10y_chg is not None else "not_available"
     available = sum(value != "not_available" for value in (dxy, yields))
     status = "confirmed" if available == 2 else "mixed"
-    message = ("已取得發布後 15 分K與美元、殖利率確認資料；仍須以價格結構與進場條件決定。"
+    message = ("事件後 15 分鐘 K 棒已收盤，跨市場資料可用，等待價格結構確認後再評估。"
                if status == "confirmed" else
-               "已取得發布後 15 分K，但跨市場資料不完整；維持等待，不以新聞方向直接進場。")
-    return EventReaction(status=status, xauusd_confirmation=xauusd,
+               "事件後 15 分鐘 K 棒已收盤，但美元或美債資料不足；維持等待確認。")
+    if outcome_status != "available":
+        message += " 事件實際值或預期值尚未由資料來源提供；目前僅確認技術面反應。"
+    return EventReaction(**common, status=status, xauusd_confirmation=xauusd,
                          dxy_confirmation=dxy, yield_confirmation=yields, message=message)

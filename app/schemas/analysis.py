@@ -57,6 +57,10 @@ class EventRisk(BaseModel):
     forecast: float | None = None
     previous: float | None = None
     reaction_message: str = ""
+    outcome_status: Literal["not_available", "pending", "available"] = "not_available"
+    outcome_source: str = ""
+    surprise: float | None = None
+    fundamental_bias: Literal["bullish_xauusd", "bearish_xauusd", "neutral", "unknown"] = "unknown"
 
 
 class CrossMarketContext(BaseModel):
