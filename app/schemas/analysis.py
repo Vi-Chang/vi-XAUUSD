@@ -14,6 +14,11 @@ from pydantic import BaseModel, Field
 
 from app.schemas.ai import AiStrategy
 
+DataQualityStatus = Literal["GOOD", "DEGRADED", "STALE", "FAILED"]
+EventImpact = Literal["LOW", "MEDIUM", "HIGH", "UNKNOWN"]
+EventSource = Literal["finnhub", "fmp", "manual", "none"]
+ConfidenceGrade = Literal["S", "A", "B", "C", "X"]
+
 
 class CurrentPrice(BaseModel):
     bid: float | None = None
@@ -41,6 +46,7 @@ class EventRisk(BaseModel):
     minutes_remaining: int | None = None
     source: Literal["finnhub", "fmp", "manual", "none"] = "none"
     reason: str = ""
+    data_updated_at: str = ""
 
 
 class CrossMarketContext(BaseModel):
