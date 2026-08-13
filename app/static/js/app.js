@@ -22,6 +22,7 @@ const S = {
   zonePrims: [], priceLines: [], eventPrims: [],
   analysis: null, events: [],
   prevBid: null, countdownTarget: null,
+  showAllMarkers: false,
   authed: false, privWs: null,   // 管理登入狀態 + 私人 WebSocket
 };
 
@@ -170,7 +171,8 @@ async function applyOverlays() {
     const evs = await (await fetch(`/api/structure/events?timeframe=${S.tf}&limit=40`)).json();
     const barSet = new Set(S.barTimes);
     const markers = [];
-    for (const ev of evs) {
+    const visibleEvents = S.showAllMarkers ? evs : evs.slice(-6);
+    for (const ev of visibleEvents) {
       let t = ev.time - (ev.time % TF_SEC[S.tf]);
       if (!barSet.has(t)) {
         t = S.barTimes.findLast((b) => b <= ev.time);
@@ -337,6 +339,7 @@ function applyAnalysis(a) {
   const reason = $("decision-reason");
   unskel(reason);
   reason.textContent = a.decision.reason;
+  renderQuickAction(a);
 
   // 資料不足 → 醒目「暫不交易」橫幅(資料過期/異常/休市/證據不足時系統一律 NO_TRADE)
   const ntBanner = $("no-trade-banner");
@@ -412,6 +415,48 @@ function applyAnalysis(a) {
   renderScenario($("scenario-short"), a.short_scenario, "做空劇本", offVal);
   renderAiStrategy(a.ai_strategy);
   applyOverlays().catch(console.error);
+}
+
+function renderQuickAction(a) {
+  const n = a.normalized_analysis || {};
+  const action = a.decision && a.decision.action;
+  const titles = {
+    NO_TRADE: "現在先不要交易", WATCH: "先觀察，暫不進場",
+    PREPARE_LONG: "等確認後再考慮做多", PREPARE_SHORT: "等確認後再考慮做空",
+    LONG: "可依計畫考慮做多", SHORT: "可依計畫考慮做空",
+  };
+  const why = n.marketDataStatus !== "GOOD" ? "行情資料需要再確認。"
+    : n.eventDataStatus === "FAILED" ? "事件資料不完整，這次只依技術面判斷。"
+    : n.shortTermMomentum === "pullback" ? "大方向未必改變，但短線正在回落。"
+    : n.entryReadiness === "avoid_chasing" ? "方向可能正確，但現在追價的風險較高。"
+    : (a.decision && a.decision.reason) || "正在整理最新市場訊號。";
+  const next = n.entryReadiness === "no_trade" || n.entryReadiness === "wait_confirmation"
+    ? "等下一根 15 分鐘 K 棒收盤確認"
+    : n.entryReadiness === "avoid_chasing" ? "等價格回到較佳位置，或收盤確認突破"
+    : action === "LONG" || action === "SHORT" ? "先設定停損，再依計畫執行"
+    : "等條件完成後再判斷";
+  $("quick-action-title").textContent = titles[action] || "先等待確認";
+  $("quick-action-why").textContent = why;
+  $("quick-action-next").textContent = next;
+  $("quick-action-card").dataset.action = action || "WATCH";
+}
+
+function collapseSideCard(anchorId, label) {
+  const anchor = $(anchorId);
+  const card = anchor && anchor.closest(".card");
+  if (!card || card.dataset.collapsed) return;
+  card.dataset.collapsed = "true";
+  const title = card.querySelector(".card-title");
+  const details = document.createElement("details");
+  details.className = "side-details";
+  const summary = document.createElement("summary");
+  summary.textContent = label;
+  details.append(summary);
+  for (const child of [...card.children]) {
+    if (child !== title) details.append(child);
+  }
+  if (title) title.replaceWith(details);
+  else card.append(details);
 }
 
 function renderNormalized(n) {
@@ -1310,8 +1355,16 @@ function connectWS() {
 /* ═══ 啟動 ═══ */
 async function boot() {
   initChart();
+  [["trend-bias", "市場細節"], ["technical-bias", "技術證據與分數"],
+   ["event-countdown", "事件資訊"], ["sys-provider", "資料與風險細節"]]
+    .forEach(([id, label]) => collapseSideCard(id, label));
   document.querySelectorAll(".tf-btn").forEach((b) =>
     b.addEventListener("click", () => switchTF(b.dataset.tf)));
+  $("chart-detail-toggle").addEventListener("click", () => {
+    S.showAllMarkers = !S.showAllMarkers;
+    $("chart-detail-toggle").textContent = S.showAllMarkers ? "只看關鍵標記" : "顯示全部標記";
+    applyOverlays().catch(console.error);
+  });
   document.querySelectorAll(".tab").forEach((t) =>
     t.addEventListener("click", () => {
       document.querySelectorAll(".tab").forEach((x) => x.classList.remove("active"));
