@@ -289,3 +289,25 @@ class TestSnapshotCoherence:
         assert v13 != v14
         assert "接多" in v14          # 空方情境:提醒別逆勢接多
         assert "偏多" in v13
+def test_api_validator_accepts_shared_rounded_snapshot_price():
+    """三位即時價不得因不同區塊的顯示精度而產生假矛盾。"""
+    from app.engines.normalized_analysis import validate_api_payload
+    from app.schemas.analysis import NormalizedAnalysisState
+
+    price = 4418.72
+    state = NormalizedAnalysisState(
+        marketDataTimestamp="2026-08-13T01:00:00+00:00",
+        currentPrice=price,
+        sourceTimestamps={"analysis": "2026-08-13T01:00:00+00:00"},
+        sourcePrices={"analysis": price},
+    )
+    payload = {
+        "snapshot_ts": state.marketDataTimestamp,
+        "current_price": {"mid": price},
+        "normalized_analysis": state.model_dump(),
+    }
+
+    checked = validate_api_payload(payload)
+
+    assert checked["normalized_analysis"]["consistencyValid"] is True
+    assert checked["normalized_analysis"]["consistencyErrors"] == []
