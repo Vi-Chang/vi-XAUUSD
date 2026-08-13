@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Literal
 
 from fastapi import (
     Depends,
@@ -467,6 +468,10 @@ class PositionCreateReq(BaseModel):
     lot_size: float = Field(gt=0)
     planned_targets: list[float] = Field(default_factory=list)
     account_id: int | None = None  # 未指定時掛預設 SELF 帳戶
+    position_timeframe: Literal["15M", "1H", "4H", "1D", "unknown"] = "unknown"
+    original_thesis: str = Field(default="", max_length=500)
+    max_loss_usd: float | None = Field(default=None, gt=0)
+    allow_event_hold: bool | None = None
 
 
 class StopModifyReq(BaseModel):
@@ -523,7 +528,11 @@ async def create_position_api(req: PositionCreateReq) -> dict:
         pos = create_position(side=req.side, entry_price=req.entry_price,
                               stop_loss=req.stop_loss, lot_size=req.lot_size,
                               planned_targets=req.planned_targets,
-                              account_id=req.account_id)
+                              account_id=req.account_id,
+                              position_timeframe=req.position_timeframe,
+                              original_thesis=req.original_thesis,
+                              max_loss_usd=req.max_loss_usd,
+                              allow_event_hold=req.allow_event_hold)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     cur = await _price_or_market(None) if state.provider else None

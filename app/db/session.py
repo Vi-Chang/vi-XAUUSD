@@ -57,7 +57,13 @@ def init_db() -> None:
 
     # 輕量遷移:既有 DB 補新欄位(create_all 不會改既有表)
     migrations: dict[str, dict[str, str]] = {
-        "positions": {"account_id": "INTEGER"},
+        "positions": {
+            "account_id": "INTEGER",
+            "position_timeframe": "VARCHAR(8) DEFAULT 'unknown'",
+            "original_thesis": "VARCHAR(500) DEFAULT ''",
+            "max_loss_usd": "FLOAT",
+            "allow_event_hold": "BOOLEAN",
+        },
         "trade_journal": {"account_id": "INTEGER"},
         "mentor_signals": {   # IMPORT-MENTOR-HISTORY 歷史紀錄擴充
             "status": "VARCHAR(8) DEFAULT 'OPEN'",

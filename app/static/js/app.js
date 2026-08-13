@@ -967,6 +967,7 @@ function posCard(p) {
       h`<li>${x.time.slice(5, 16).replace("T", " ")} 平倉 ${x.percent}% @ ${fmt(x.price)}(R=${x.r_at_exit ?? "–"})</li>`),
   ];
   const targets = (p.planned_targets || []).map((t) => fmt(t)).join(" / ") || "–";
+  const eventHold = p.allow_event_hold == null ? "未設定" : p.allow_event_hold ? "允許" : "不允許";
   const normalized = S.analysis && S.analysis.normalized_analysis;
   let positionAdvice = p.recommended_action || "";
   if (p.is_open && normalized) {
@@ -993,6 +994,9 @@ function posCard(p) {
     <div class="pos-meta">
       <span>進場 <span class="num">${fmt(p.entry_price)}</span></span>
       <span>賠錢出場價 <span class="num">${fmt(p.stop_loss)}</span></span>
+      <span>交易週期 <b>${p.position_timeframe || "unknown"}</b></span>
+      <span>最大風險 <b>${p.max_loss_usd == null ? "未設定" : "USD " + fmt(p.max_loss_usd)}</b></span>
+      <span>重大事件續抱 <b>${eventHold}</b></span>
       <span>目標價 <span class="num">${targets}</span></span>
       <span>開倉 <span class="num">${p.open_time.slice(5, 16).replace("T", " ")}</span></span>
     </div>
@@ -1001,6 +1005,7 @@ function posCard(p) {
       <span class="num">${r == null ? "沒設出場價" : fmt(r, 2) + " 倍"}</span></div>
       <div class="progress"><div class="fill" style="width:${rPct + "%"}"></div></div></div>
     ${positionAdvice ? h`<div class="pos-advice">${positionAdvice}</div>` : ""}
+    ${p.original_thesis ? h`<div class="pos-advice">原始理由：${p.original_thesis}</div>` : ""}
     ${actions}` : ""}
     ${histList.length ? h`<details class="pos-hist"><summary>操作歷史</summary><ul>${joinSafe(histList)}</ul></details>` : ""}
   </div>`;
@@ -1298,6 +1303,10 @@ async function boot() {
         entry_price: parseFloat($("pf-entry").value),
         stop_loss: $("pf-stop").value ? parseFloat($("pf-stop").value) : null,
         lot_size: parseFloat($("pf-lot").value),
+        position_timeframe: $("pf-timeframe").value,
+        original_thesis: $("pf-thesis").value.trim(),
+        max_loss_usd: $("pf-max-loss").value ? parseFloat($("pf-max-loss").value) : null,
+        allow_event_hold: $("pf-event-hold").value === "" ? null : $("pf-event-hold").value === "true",
         planned_targets: targets,
         account_id: parseInt($("pf-account").value, 10) || null,
       });
