@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import copy
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from app.config import get_settings
 
@@ -61,6 +61,32 @@ def _downgrade_decision(result: dict, reason: str) -> None:
     result["decision_downgraded"] = True
 
 
+def _expected_closed_15m(now: datetime, delay_seconds: int) -> datetime:
+    eligible = now - timedelta(seconds=max(0, delay_seconds))
+    boundary = eligible.replace(minute=(eligible.minute // 15) * 15,
+                                second=0, microsecond=0)
+    return boundary - timedelta(minutes=15)
+
+
+def _protect_while_candle_refreshes(result: dict, reason: str) -> None:
+    _downgrade_decision(result, reason)
+    normalized = result.get("normalized_analysis")
+    if not isinstance(normalized, dict):
+        return
+    normalized["entryReadiness"] = "no_trade"
+    normalized["entryTiming"] = "wait"
+    normalized["longEntryAllowed"] = False
+    normalized["shortEntryAllowed"] = False
+    normalized["riskOverride"] = "suspend_all_entries"
+    normalized["consistencyMessage"] = reason
+    trading = normalized.get("tradingDecision")
+    if isinstance(trading, dict) and isinstance(trading.get("newEntryDecision"), dict):
+        trading["newEntryDecision"].update({
+            "readiness": "no_trade", "longAllowed": False, "shortAllowed": False,
+            "longReason": reason, "shortReason": reason,
+        })
+
+
 def annotate_freshness(result: dict, current_mid: float | None = None,
                        now: datetime | None = None) -> dict:
     """回傳附時效標記(且已剝除失效價位)的結果副本。所有讀取路徑必經。"""
@@ -83,6 +109,24 @@ def annotate_freshness(result: dict, current_mid: float | None = None,
         "snapshot_expired": snapshot_expired,
         "stale_deviation_pct": s.setup_stale_deviation_pct,
     }
+
+    normalized = out.get("normalized_analysis") or {}
+    refresh_pending = False
+    expected_candle = _expected_closed_15m(now, s.candle_close_refresh_delay_seconds)
+    try:
+        last_closed = datetime.fromisoformat(normalized.get("lastClosedCandleTimestamp", ""))
+        if last_closed.tzinfo is None:
+            last_closed = last_closed.replace(tzinfo=timezone.utc)
+        from app.services.market_calendar import market_is_open
+        refresh_pending = market_is_open(now) and last_closed < expected_candle
+    except (TypeError, ValueError):
+        refresh_pending = False
+    out["freshness"]["candle_refresh_pending"] = refresh_pending
+    out["freshness"]["expected_closed_15m"] = expected_candle.isoformat()
+    out["freshness"]["last_closed_15m"] = normalized.get("lastClosedCandleTimestamp", "")
+    if refresh_pending:
+        _protect_while_candle_refreshes(
+            out, "新一根 15 分鐘 K 棒已收盤，判斷更新中，暫停進場。")
 
     action = (out.get("decision") or {}).get("action", "")
     dominant_dir = ("LONG" if action in ("PREPARE_LONG", "LONG")
@@ -143,7 +187,7 @@ def annotate_freshness(result: dict, current_mid: float | None = None,
 
     if dominant_bad_reason:
         _downgrade_decision(out, dominant_bad_reason)
-    if snapshot_expired and action not in ("NO_TRADE", "WATCH"):
+    if snapshot_expired and action not in ("NO_TRADE", "WATCH") and not refresh_pending:
         _downgrade_decision(out, f"分析快照已過期({out['freshness']['age_minutes']:.0f} 分鐘未更新),"
                                  "不得依過期內容操作,等待新版本。")
     elif snapshot_expired:

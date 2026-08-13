@@ -316,6 +316,7 @@ function applyAnalysis(a) {
     version: a.version || 0,
     ts: Date.parse(a.timestamp_utc || "") || Date.now(),
     serverExpired: !!(a.freshness && a.freshness.snapshot_expired),
+    candleRefreshPending: !!(a.freshness && a.freshness.candle_refresh_pending),
   };
   updateFreshnessUI();
   // TC-11:四大區塊一律標記本次快照版本(單一來源渲染)
@@ -420,22 +421,25 @@ function applyAnalysis(a) {
 function renderQuickAction(a) {
   const n = a.normalized_analysis || {};
   const action = a.decision && a.decision.action;
+  const refreshing = !!(a.freshness && a.freshness.candle_refresh_pending);
   const titles = {
     NO_TRADE: "現在先不要交易", WATCH: "先觀察，暫不進場",
     PREPARE_LONG: "等確認後再考慮做多", PREPARE_SHORT: "等確認後再考慮做空",
     LONG: "可依計畫考慮做多", SHORT: "可依計畫考慮做空",
   };
-  const why = n.marketDataStatus !== "GOOD" ? "行情資料需要再確認。"
+  const why = refreshing ? "新一根 15 分鐘 K 棒已收盤，系統正在重新判斷。"
+    : n.marketDataStatus !== "GOOD" ? "行情資料需要再確認。"
     : n.eventDataStatus === "FAILED" ? "事件資料不完整，這次只依技術面判斷。"
     : n.shortTermMomentum === "pullback" ? "大方向未必改變，但短線正在回落。"
     : n.entryReadiness === "avoid_chasing" ? "方向可能正確，但現在追價的風險較高。"
     : (a.decision && a.decision.reason) || "正在整理最新市場訊號。";
-  const next = n.entryReadiness === "no_trade" || n.entryReadiness === "wait_confirmation"
+  const next = refreshing ? "更新完成前先不要進場"
+    : n.entryReadiness === "no_trade" || n.entryReadiness === "wait_confirmation"
     ? "等下一根 15 分鐘 K 棒收盤確認"
     : n.entryReadiness === "avoid_chasing" ? "等價格回到較佳位置，或收盤確認突破"
     : action === "LONG" || action === "SHORT" ? "先設定停損，再依計畫執行"
     : "等條件完成後再判斷";
-  $("quick-action-title").textContent = titles[action] || "先等待確認";
+  $("quick-action-title").textContent = refreshing ? "判斷更新中" : (titles[action] || "先等待確認");
   $("quick-action-why").textContent = why;
   $("quick-action-next").textContent = next;
   $("quick-action-card").dataset.action = action || "WATCH";
@@ -1347,6 +1351,12 @@ function connectWS() {
       const msg = JSON.parse(e.data);
       if (msg.type === "tick") onTick(msg);
       else if (msg.type === "analysis") applyAnalysis(msg.data);
+      else if (msg.type === "analysis_refreshing") {
+        $("quick-action-title").textContent = "判斷更新中";
+        $("quick-action-why").textContent = "新一根 15 分鐘 K 棒已收盤，系統正在重新判斷。";
+        $("quick-action-next").textContent = "更新完成前先不要進場";
+        $("quick-action-card").dataset.action = "NO_TRADE";
+      }
       else if (msg.type === "candle_closed") loadCandles(S.tf, true).catch(console.error);
     } catch (err) { console.warn("ws message error", err); }
   };

@@ -1,0 +1,76 @@
+from datetime import datetime, timezone
+from types import SimpleNamespace
+
+from app.services.freshness import annotate_freshness
+from app.services.scheduler import expected_closed_15m
+
+
+def test_expected_closed_15m_uses_candle_open_timestamp_after_grace():
+    now = datetime(2026, 8, 13, 17, 1, 30, tzinfo=timezone.utc)
+    assert expected_closed_15m(now, delay_seconds=90) == datetime(
+        2026, 8, 13, 16, 45, tzinfo=timezone.utc)
+    before_grace = datetime(2026, 8, 13, 17, 1, 29, tzinfo=timezone.utc)
+    assert expected_closed_15m(before_grace, delay_seconds=90) == datetime(
+        2026, 8, 13, 16, 30, tzinfo=timezone.utc)
+
+
+def test_scheduler_checks_candle_close_every_30_seconds():
+    from app.services.scheduler import build_scheduler
+
+    scheduler = build_scheduler()
+    job = scheduler.get_job("candle_close_refresh")
+    assert job is not None
+    assert job.trigger.interval.total_seconds() == 30
+
+
+async def test_close_refresh_runs_once_and_marks_current(monkeypatch):
+    from app.services import scheduler
+
+    expected = datetime(2026, 8, 13, 16, 45, tzinfo=timezone.utc)
+    monkeypatch.setattr(scheduler.state, "latest_result", {
+        "normalized_analysis": {"lastClosedCandleTimestamp": "2026-08-13T16:30:00+00:00"}})
+    monkeypatch.setattr(scheduler.state, "candle_refresh_bucket", None)
+    monkeypatch.setattr(scheduler.state, "candle_refresh_attempts", 0)
+    calls = []
+
+    monkeypatch.setattr(scheduler, "market_is_open", lambda: True)
+    monkeypatch.setattr(scheduler, "expected_closed_15m", lambda: expected)
+    monkeypatch.setattr(scheduler, "get_settings", lambda: SimpleNamespace(
+        candle_close_refresh_max_attempts=2))
+
+    async def fake_broadcast(payload):
+        calls.append(payload["type"])
+
+    async def fake_analysis(*, trigger, reason_zh):
+        calls.append(trigger)
+        scheduler.state.latest_result["normalized_analysis"][
+            "lastClosedCandleTimestamp"] = expected.isoformat()
+
+    monkeypatch.setattr(scheduler, "broadcast_all", fake_broadcast)
+    monkeypatch.setattr(scheduler, "run_full_analysis", fake_analysis)
+    await scheduler.job_candle_close_refresh()
+    await scheduler.job_candle_close_refresh()
+    assert calls == ["analysis_refreshing", "candle_close"]
+    assert scheduler.state.candle_refresh_attempts == 0
+
+
+def test_freshness_blocks_entry_while_new_closed_candle_is_pending():
+    now = datetime(2026, 8, 13, 17, 3, tzinfo=timezone.utc)
+    payload = {
+        "timestamp_utc": now.isoformat(),
+        "decision": {"action": "LONG", "confidence_grade": "A", "evidence_score": 80,
+                     "reason": "ready"},
+        "normalized_analysis": {
+            "lastClosedCandleTimestamp": "2026-08-13T16:30:00+00:00",
+            "entryReadiness": "ready", "entryTiming": "favorable",
+            "longEntryAllowed": True, "shortEntryAllowed": False,
+            "riskOverride": "none",
+            "tradingDecision": {"newEntryDecision": {
+                "readiness": "ready", "longAllowed": True, "shortAllowed": False}},
+        },
+    }
+    out = annotate_freshness(payload, now=now)
+    assert out["freshness"]["candle_refresh_pending"] is True
+    assert out["decision"]["action"] == "WATCH"
+    assert out["normalized_analysis"]["entryReadiness"] == "no_trade"
+    assert out["normalized_analysis"]["longEntryAllowed"] is False
