@@ -360,6 +360,24 @@ async def job_heartbeat() -> None:
     await run_monitor(state)
 
 
+async def job_outcome_backfill() -> None:
+    """Recover settled outcomes even when no full analysis ran at a horizon."""
+    state.mark("outcome_backfill")
+    s = get_settings()
+    try:
+        from app.db.session import db_session
+        from app.services.outcome_tracker import backfill_outcomes
+        with db_session() as db:
+            updated = backfill_outcomes(
+                db, now=datetime.now(timezone.utc),
+                lookback_days=s.outcome_backfill_lookback_days,
+                limit=s.outcome_backfill_batch_size)
+        if updated:
+            logger.info("outcome backfill updated %d horizon values", updated)
+    except Exception:
+        logger.exception("outcome backfill failed")
+
+
 def build_scheduler() -> AsyncIOScheduler:
     s = get_settings()
     sched = AsyncIOScheduler(timezone="UTC")
@@ -373,6 +391,9 @@ def build_scheduler() -> AsyncIOScheduler:
     sched.add_job(job_candle_close_refresh, "interval", seconds=30,
                   id="candle_close_refresh", max_instances=1, coalesce=True,
                   next_run_time=startup + timedelta(seconds=20))
+    sched.add_job(job_outcome_backfill, "interval", seconds=s.outcome_backfill_seconds,
+                  id="outcome_backfill", max_instances=1, coalesce=True,
+                  next_run_time=startup + timedelta(seconds=60))
     sched.add_job(job_cross_check, "cron", minute="7,22,37,52", id="cross_check",
                   max_instances=1, coalesce=True)
     sched.add_job(job_heartbeat, "interval", minutes=s.heartbeat_minutes,

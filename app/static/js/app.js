@@ -334,6 +334,11 @@ function applyAnalysis(a) {
   unskel(grade);
   grade.textContent = a.decision.confidence_grade;
   grade.className = "grade-badge g-" + a.decision.confidence_grade;
+  const calibrationNote = $("calibration-note");
+  if (calibrationNote) {
+    calibrationNote.textContent = a.calibration_message || "";
+    calibrationNote.hidden = !a.calibration_message;
+  }
 
   $("evidence-bar").style.width = `${a.decision.evidence_score}%`;
   $("evidence-num").textContent = a.decision.evidence_score;

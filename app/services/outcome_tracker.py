@@ -4,7 +4,7 @@ from __future__ import annotations
 from bisect import bisect_left
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app.db.models import AnalysisRun, Candle
 
@@ -59,17 +59,22 @@ def first_close_at_or_after(candles: list[tuple[datetime, float]],
     return candles[index][1] if index < len(candles) else None
 
 
-def backfill_outcomes(db, *, now: datetime, current_price: float | None = None) -> int:
+def backfill_outcomes(db, *, now: datetime, current_price: float | None = None,
+                      lookback_days: int = 30, limit: int = 5000) -> int:
     """Recompute each horizon from its own first closed 15M candle.
 
     ``current_price`` remains accepted for call-site compatibility but is
     deliberately unused: one late live quote must not populate several
     horizons with the same value.
     """
-    oldest = now - max(HORIZONS.values()) - timedelta(hours=1)
+    oldest = now - timedelta(days=max(2, lookback_days))
     rows = db.execute(
-        select(AnalysisRun).where(AnalysisRun.run_time >= oldest)
-        .order_by(AnalysisRun.run_time.asc()).limit(1000)
+        select(AnalysisRun).where(
+            AnalysisRun.run_time >= oldest,
+            AnalysisRun.decision_action.in_(
+                ("LONG", "SHORT", "PREPARE_LONG", "PREPARE_SHORT")),
+            or_(*(getattr(AnalysisRun, field).is_(None) for field in HORIZONS)),
+        ).order_by(AnalysisRun.run_time.asc()).limit(max(1, limit))
     ).scalars().all()
     candle_rows = db.execute(
         select(Candle.close_time, Candle.high, Candle.low, Candle.close, Candle.received_at)
@@ -84,6 +89,7 @@ def backfill_outcomes(db, *, now: datetime, current_price: float | None = None) 
         by_time.setdefault(_utc(close_time), (float(high), float(low), float(close)))
     candles = sorted(by_time.items())
 
+    closes = [(stamp, values[2]) for stamp, values in candles]
     updated = 0
     for row in rows:
         entry = _entry_price(row)
@@ -94,7 +100,6 @@ def backfill_outcomes(db, *, now: datetime, current_price: float | None = None) 
         for field, horizon in HORIZONS.items():
             if age < horizon:
                 continue
-            closes = [(stamp, values[2]) for stamp, values in candles]
             close = first_close_at_or_after(closes, run_time + horizon)
             value = signed_return_pct(row.decision_action, entry or 0.0, close or 0.0)
             if value is not None and getattr(row, field) != value:
