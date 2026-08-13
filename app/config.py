@@ -76,6 +76,7 @@ class Settings(BaseSettings):
     official_events_cache_hours: int = 24
     official_events_url: str = "https://www.bls.gov/schedule/news_release/bls.ics"
     official_fomc_events_url: str = "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
+    official_bea_events_url: str = "https://www.bea.gov/news/schedule"
     official_events_timeout_seconds: int = 5
 
     # ── 通知 ──
