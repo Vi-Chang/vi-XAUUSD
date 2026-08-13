@@ -172,6 +172,8 @@ body {
 .tf-btn:hover { color: var(--text); border-color: var(--text-dim); }
 .tf-btn.active { background: var(--info); border-color: var(--info); color: #0D1117; font-weight: 700; }
 .chart-legend { margin-left: auto; display: flex; gap: 14px; align-items: center; font-size: .74rem; color: var(--text-dim); }
+.chart-detail-toggle { border: 1px solid var(--border); border-radius: 6px; background: transparent; color: var(--text-dim); font-size: .74rem; padding: 4px 9px; cursor: pointer; }
+.chart-detail-toggle:hover { color: var(--text); border-color: var(--info); }
 .legend-item { display: inline-flex; align-items: center; gap: 5px; }
 .sw { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
 .legend-note { opacity: .7; }
@@ -220,6 +222,17 @@ body {
 .risk-priority { border-color: rgba(240,160,32,.55); }
 .risk-priority.critical { border-color: var(--danger); box-shadow: 0 0 0 1px rgba(248,81,73,.2); }
 .risk-priority-message { margin-top: 8px; color: var(--warn); font-weight: 650; font-size: .82rem; }
+.quick-action { border-color: rgba(88,166,255,.5); background: linear-gradient(135deg, rgba(88,166,255,.11), var(--card) 65%); }
+.quick-action[data-action="NO_TRADE"] { border-color: rgba(248,81,73,.65); background: linear-gradient(135deg, rgba(248,81,73,.11), var(--card) 65%); }
+.quick-action-title { display: block; font-size: 1.2rem; color: var(--text); margin-bottom: 6px; }
+.quick-action-why { color: var(--text-dim); font-size: .86rem; min-height: 2.6em; }
+.quick-action-next { display: flex; flex-direction: column; gap: 2px; margin-top: 10px; padding: 8px 10px; border-radius: 6px; background: rgba(13,17,23,.58); font-size: .74rem; color: var(--text-dim); }
+.quick-action-next b { color: var(--info); font-size: .86rem; }
+.side-details { display: block; }
+.side-details summary { cursor: pointer; color: var(--text-dim); font-size: .78rem; letter-spacing: .8px; list-style: none; }
+.side-details summary::after { content: "＋"; float: right; color: var(--info); font-size: 1rem; }
+.side-details[open] summary { margin-bottom: 10px; color: var(--text); }
+.side-details[open] summary::after { content: "－"; }
 
 /* ═══ 多週期膠囊 ═══ */
 .tf-capsules { display: flex; gap: 8px; margin-bottom: 12px; }
@@ -420,6 +433,8 @@ body {
   .price-block { order: 3; width: 100%; justify-content: space-between; }
   .top-chips { margin-left: 0; }
   .scenario-grid { grid-template-columns: 1fr; }
+  .quick-action-title { font-size: 1.1rem; }
+  .chart-legend { margin-left: 0; width: 100%; }
   .pq .big { font-size: 1.2rem; }
   .tabs { overflow-x: auto; }
   .tab { padding: 10px 14px; white-space: nowrap; }
