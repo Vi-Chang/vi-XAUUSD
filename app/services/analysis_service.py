@@ -260,6 +260,14 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
                       previous_action=previous_action,
                       m15_df=dfs_closed.get("15M"))
 
+    from app.engines.event_reaction import assess_event_reaction
+    from app.services.cross_market import get_cross_market
+    cross = await get_cross_market()
+    reaction = assess_event_reaction(
+        post_event_wait=ev.post_event_wait, m15_closed_at=closed_times.get("15M", ""),
+        macd_hist=ind.get("15M", {}).get("macd_hist"), dxy_chg_pct=cross.dxy_chg_pct,
+        us10y_chg=cross.us10y_chg)
+
     # API 與 normalized state 必須共用完全相同的快照價格與精度。
     snapshot_price = cast(float, fmt_price(tick.mid))
 
@@ -287,7 +295,13 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
                               source=cast(EventSource, ev.source), reason=ev.reason,
                              data_updated_at=ev.data_updated_at,
                              event_phase=cast(Literal["upcoming", "post_release", "unknown"], ev.event_phase),
-                             post_event_wait=ev.post_event_wait),
+                             post_event_wait=ev.post_event_wait,
+                             reaction_status=cast(Literal["not_applicable", "awaiting_close", "confirmed", "mixed"], reaction.status),
+                             xauusd_confirmation=reaction.xauusd_confirmation,
+                             dxy_confirmation=reaction.dxy_confirmation,
+                             yield_confirmation=reaction.yield_confirmation,
+                             actual=reaction.actual, forecast=reaction.forecast,
+                             previous=reaction.previous, reaction_message=reaction.message),
         market_state=state,
         timeframes=Timeframes(
             weekly=_tf_view(structures.get("1W"), ind.get("1W", {})),
@@ -501,8 +515,6 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
                 bias=result.bias_analysis, position=None,
                 no_signal=not off.get("calibrated", False), normalized=normalized)
             # 跨市場資料同步填入顯示欄位(讀快取,不重複抓)
-            from app.services.cross_market import get_cross_market
-            cross = await get_cross_market()
             cm = result.cross_market_context
             cm.dxy = (f"{cross.dxy}({cross.dxy_chg_pct:+.2f}%)"
                       if cross.dxy is not None and cross.dxy_chg_pct is not None
