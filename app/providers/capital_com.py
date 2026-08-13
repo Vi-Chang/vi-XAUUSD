@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
@@ -36,6 +36,20 @@ MAX_PER_REQUEST = 1000
 def parse_snapshot_time(s: str) -> datetime:
     """snapshotTimeUTC 形如 2026-07-20T08:15:00 → UTC datetime。"""
     return datetime.fromisoformat(s.replace("Z", "")).replace(tzinfo=timezone.utc)
+
+
+def safe_quote_time(raw: str | None, received_at: datetime) -> datetime:
+    """解析供應商時間；拒絕明顯位於未來的錯標時區值。"""
+    if not raw:
+        return received_at
+    try:
+        parsed = parse_snapshot_time(raw)
+    except (TypeError, ValueError):
+        return received_at
+    if parsed > received_at + timedelta(minutes=5):
+        logger.warning("Capital.com quote timestamp is in the future; using receive time")
+        return received_at
+    return parsed
 
 
 def candle_from_price_row(row: dict, symbol: str, timeframe: str,
@@ -120,10 +134,7 @@ class CapitalComProvider(MarketDataProvider):
             data = await self._get(f"/markets/{self._epic}")
             snap = data["snapshot"]
             ts = snap.get("updateTimeUTC") or snap.get("updateTime")
-            try:
-                quote_time = parse_snapshot_time(ts)
-            except (TypeError, ValueError):
-                quote_time = datetime.now(timezone.utc)
+            quote_time = safe_quote_time(ts, datetime.now(timezone.utc))
             return PriceTick(symbol=symbol, bid=float(snap["bid"]),
                             ask=float(snap["offer"]), quote_time=quote_time,
                             provider=self.name)
