@@ -1,4 +1,10 @@
-from app.services.performance_service import MIN_SAMPLE_SIZE, _score_band, _session, _summary
+from app.services.performance_service import (
+    MIN_SAMPLE_SIZE,
+    _calibration_recommendations,
+    _score_band,
+    _session,
+    _summary,
+)
 
 
 def test_summary_marks_small_sample_insufficient():
@@ -25,3 +31,15 @@ def test_sessions_use_utc_hours():
     assert _session(9) == "LONDON"
     assert _session(15) == "NEW_YORK"
     assert _session(22) == "OFF_HOURS"
+
+
+def test_calibration_recommendations_need_sufficient_sample():
+    groups = {"overall": [{"key": "ALL", "horizon": "1h", "sample_size": 29, "sufficient_sample": False, "average_mae_pct": -1.0, "average_planned_risk_pct": 1.0, "average_mfe_pct": 0.2, "average_target_distance_pct": 1.0}], "score_band": [], "session": [], "market_state": []}
+    assert _calibration_recommendations(groups) == []
+
+
+def test_calibration_recommendations_are_review_only():
+    groups = {"overall": [{"key": "ALL", "horizon": "1h", "sample_size": 30, "sufficient_sample": True, "average_mae_pct": -0.9, "average_planned_risk_pct": 1.0, "average_mfe_pct": 0.6, "average_target_distance_pct": 1.0}], "score_band": [{"key": "70-79", "horizon": "1h", "sample_size": 30, "sufficient_sample": True, "win_rate_pct": 40.0, "average_return_pct": -0.1}], "session": [], "market_state": []}
+    recommendations = _calibration_recommendations(groups)
+    assert {item["kind"] for item in recommendations} == {"stop_buffer_review", "target_distance_review", "signal_filter_review"}
+    assert all(item["review_required"] is True for item in recommendations)

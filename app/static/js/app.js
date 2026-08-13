@@ -1251,6 +1251,11 @@ async function loadPerformance() {
     const labels = { overall: "整體", direction: "方向", score_band: "分數區間",
       market_state: "市場狀態", session: "交易時段" };
     const cards = [];
+    const recommendations = report.calibration_recommendations || [];
+    if (recommendations.length) cards.push(h`<div class="performance-card calibration-card">
+      <h4>校正建議（僅供人工檢視）</h4>
+      ${joinSafe(recommendations.map((item) => h`<p><b>${item.scope}・${item.horizon}</b><br>${item.message}</p>`))}
+    </div>`);
     for (const [group, rows] of Object.entries(report.groups || {})) {
       for (const row of rows) cards.push(h`<div class="performance-card">
         <h4>${labels[group] || group}：${row.key} · ${row.horizon}</h4>
