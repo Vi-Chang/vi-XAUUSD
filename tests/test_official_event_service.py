@@ -40,6 +40,21 @@ def test_parse_bea_schedule_keeps_headline_gdp_and_pce():
     assert all(event["time_utc"] == "2026-07-30T12:30:00Z" for event in events)
 
 
+def test_one_official_source_failure_does_not_discard_other_events(monkeypatch, tmp_path):
+    now = datetime(2026, 8, 13, 12, tzinfo=timezone.utc)
+    monkeypatch.setattr(es.get_settings(), "official_events_cache_path", str(tmp_path / "events.json"))
+    monkeypatch.setattr(es.get_settings(), "app_env", "production")
+
+    def fetch(url):
+        if "bls.gov" in url:
+            return "BEGIN:VEVENT\nDTSTART:20260814T123000Z\nSUMMARY:Consumer Price Index\nEND:VEVENT"
+        raise OSError("source unavailable")
+
+    events, stale, _ = es.load_official_events(now, fetcher=fetch)
+    assert stale is False
+    assert [event["source"] for event in events] == ["BLS"]
+
+
 def test_post_release_window_locks_new_entries(monkeypatch):
     now = datetime(2026, 8, 13, 12, 40, tzinfo=timezone.utc)
     event = {"name": "Consumer Price Index", "country": "US", "impact": "HIGH",

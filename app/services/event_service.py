@@ -193,25 +193,40 @@ def load_official_events(now: datetime | None = None, *, fetcher=None) -> tuple[
     fresh = bool(updated and now - updated <= timedelta(hours=s.official_events_cache_hours))
     if fresh or not s.official_event_sync_enabled or s.app_env == "test":
         return events, not fresh, updated.isoformat() if updated else ""
-    try:
-        def fetch(url: str) -> str:
-            if fetcher is not None:
-                return fetcher(url)
-            request = Request(url, headers={"User-Agent": "XAUUSD-event-risk/1.0"})
-            with urlopen(request, timeout=s.official_events_timeout_seconds) as response:  # nosec B310
-                return response.read().decode("utf-8")
+    def fetch(url: str) -> str:
+        if fetcher is not None:
+            return fetcher(url)
+        request = Request(url, headers={"User-Agent": "XAUUSD-event-risk/1.0"})
+        with urlopen(request, timeout=s.official_events_timeout_seconds) as response:  # nosec B310
+            return response.read().decode("utf-8")
 
-        parsed = parse_bls_ics(fetch(s.official_events_url))
-        parsed.extend(parse_fomc_calendar(fetch(s.official_fomc_events_url), now.year))
-        parsed.extend(parse_bea_schedule(fetch(s.official_bea_events_url), now.year))
-        parsed = list({(item["name"], item["time_utc"]): item for item in parsed}.values())
-        if not parsed:
-            raise ValueError("official calendar had no supported high-impact events")
-        _write_catalog(path, parsed, now)
-        return parsed, False, now.isoformat()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("official event calendar refresh failed: %s", exc)
+    # 每個官方來源獨立容錯：Fed／BEA 暫時失效時，仍保留 BLS 等可用來源，
+    # 不讓單一網頁格式變動導致整個事件風險面板退回過期手動資料。
+    parsed: list[dict] = []
+    failed_sources: list[str] = []
+    source_jobs = (
+        ("BLS", s.official_events_url, parse_bls_ics),
+        ("Federal Reserve", s.official_fomc_events_url,
+         lambda raw: parse_fomc_calendar(raw, now.year)),
+        ("BEA", s.official_bea_events_url, lambda raw: parse_bea_schedule(raw, now.year)),
+    )
+    for source_name, url, parser in source_jobs:
+        try:
+            source_events = parser(fetch(url))
+            if not source_events:
+                raise ValueError("no supported high-impact events")
+            parsed.extend(source_events)
+        except Exception as exc:  # noqa: BLE001
+            failed_sources.append(source_name)
+            logger.warning("official %s calendar refresh failed: %s", source_name, exc)
+
+    parsed = list({(item["name"], item["time_utc"]): item for item in parsed}.values())
+    if not parsed:
         return events, True, updated.isoformat() if updated else ""
+    if failed_sources:
+        logger.warning("official event sources partially unavailable: %s", ", ".join(failed_sources))
+    _write_catalog(path, parsed, now)
+    return parsed, False, now.isoformat()
 
 
 def _event_time(event: dict) -> datetime | None:
