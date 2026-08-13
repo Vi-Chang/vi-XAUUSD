@@ -30,6 +30,16 @@ def test_parse_fomc_calendar_uses_eastern_release_time():
     assert events[1]["time_utc"] == "2026-03-18T18:00:00Z"
 
 
+def test_parse_bea_schedule_keeps_headline_gdp_and_pce():
+    page = """Year 2026 | July 30 8:30 AM | News | GDP (Advance Estimate), 2nd Quarter 2026 |
+    July 30 8:30 AM | News | Personal Income and Outlays, June 2026 |
+    August 4 8:30 AM | News | U.S. International Trade in Goods and Services |"""
+    events = es.parse_bea_schedule(page, 2026)
+    assert [event["name"] for event in events] == ["GDP", "Personal Income and Outlays (PCE)"]
+    # 夏令時間的 08:30 ET 應為 12:30 UTC。
+    assert all(event["time_utc"] == "2026-07-30T12:30:00Z" for event in events)
+
+
 def test_post_release_window_locks_new_entries(monkeypatch):
     now = datetime(2026, 8, 13, 12, 40, tzinfo=timezone.utc)
     event = {"name": "Consumer Price Index", "country": "US", "impact": "HIGH",

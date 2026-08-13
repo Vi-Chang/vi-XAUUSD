@@ -24,6 +24,7 @@ EVENT_NAME_ZH: dict[str, str] = {
     "nonfarm payrolls": "非農就業人數",
     "core cpi": "核心消費者物價指數",
     "core pce": "核心PCE",
+    "personal income and outlays": "個人所得與支出／PCE",
     "cpi": "消費者物價指數",
     "ppi": "生產者物價指數(PPI)",
     "pce": "個人消費支出(PCE)",
@@ -143,6 +144,34 @@ def parse_fomc_calendar(html: str, year: int) -> list[dict]:
     return events
 
 
+def parse_bea_schedule(html: str, year: int) -> list[dict]:
+    """擷取 BEA 官方發布表的 GDP 與 Personal Income and Outlays（含 PCE）。"""
+    plain = re.sub(r"<[^>]+>", " ", html)
+    plain = re.sub(r"\s+", " ", plain)
+    eastern = ZoneInfo("America/New_York")
+    date_prefix = (
+        r"(January|February|March|April|May|June|July|August|September|October|November|December)"
+        r"\s+(\d{1,2})\s+(\d{1,2}):(\d{2})\s*(AM|PM)"
+    )
+    matches = list(re.finditer(date_prefix, plain, re.IGNORECASE))
+    events: list[dict] = []
+    for index, match in enumerate(matches):
+        title = plain[match.end(): matches[index + 1].start() if index + 1 < len(matches) else None]
+        title = re.sub(r"^(?:\s*\|?\s*[NDA]\s*\|?\s*)+", "", title).strip(" |")
+        is_pce = "personal income and outlays" in title.lower()
+        is_gdp = bool(re.search(r"(?:^|\s)GDP\s*\(|Gross Domestic Product,", title, re.IGNORECASE))
+        if not (is_pce or is_gdp):
+            continue
+        hour = int(match.group(3)) % 12 + (12 if match.group(5).upper() == "PM" else 0)
+        local = datetime(year, _MONTHS[match.group(1).title()], int(match.group(2)), hour,
+                         int(match.group(4)), tzinfo=eastern)
+        name = "Personal Income and Outlays (PCE)" if is_pce else "GDP"
+        events.append({"name": name, "country": "US", "impact": "HIGH",
+                       "time_utc": local.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+                       "source": "BEA"})
+    return events
+
+
 def _write_catalog(path: Path, events: list[dict], now: datetime) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {"updated_at": now.isoformat().replace("+00:00", "Z"), "source": "BLS",
@@ -174,6 +203,7 @@ def load_official_events(now: datetime | None = None, *, fetcher=None) -> tuple[
 
         parsed = parse_bls_ics(fetch(s.official_events_url))
         parsed.extend(parse_fomc_calendar(fetch(s.official_fomc_events_url), now.year))
+        parsed.extend(parse_bea_schedule(fetch(s.official_bea_events_url), now.year))
         parsed = list({(item["name"], item["time_utc"]): item for item in parsed}.values())
         if not parsed:
             raise ValueError("official calendar had no supported high-impact events")
