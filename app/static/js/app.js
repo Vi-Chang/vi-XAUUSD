@@ -1311,7 +1311,8 @@ async function loadPerformance() {
   try {
     const report = await (await fetch("/api/performance")).json();
     const labels = { overall: "整體", direction: "方向", score_band: "分數區間",
-      market_state: "市場狀態", session: "交易時段" };
+      market_state: "市場狀態", session: "交易時段", setup_state: "戰術狀態",
+      signal_mode: "訊號類型" };
     const cards = [];
     const shadow = report.shadow_mode || {};
     cards.push(h`<div class="performance-card calibration-card">
@@ -1329,7 +1330,9 @@ async function loadPerformance() {
       ${joinSafe(recommendations.map((item) => h`<p><b>${item.scope}・${item.horizon}</b><br>${item.message}<br><small>${item.walk_forward_status === "validated" ? "樣本外驗證：已通過" : "樣本外驗證：尚未通過（僅供檢視）"}</small></p>`))}
     </div>`);
     for (const [group, rows] of Object.entries(report.groups || {})) {
-      for (const row of rows) cards.push(h`<div class="performance-card">
+      for (const row of rows) {
+        if ((group === "setup_state" || group === "signal_mode") && row.key === "LIVE") continue;
+        cards.push(h`<div class="performance-card">
         <h4>${labels[group] || group}：${row.key} · ${row.horizon}</h4>
         <div class="performance-metrics">
           <span>樣本<b class="num ${row.sufficient_sample ? "" : "sample-low"}">${row.sample_size}</b></span>
@@ -1338,6 +1341,7 @@ async function loadPerformance() {
           <span>平均順行<b class="num">${row.average_mfe_pct == null ? "—" : row.average_mfe_pct + "%"}</b></span>
           <span>平均逆行<b class="num">${row.average_mae_pct == null ? "—" : row.average_mae_pct + "%"}</b></span>
         </div>${row.sufficient_sample ? "" : '<div class="sample-low">樣本不足，暫不可據此調參</div>'}</div>`);
+      }
     }
     body.innerHTML = h`<div class="performance-note">有效訊號 ${report.eligible_signals} 筆；最低可信樣本 ${report.minimum_sample_size} 筆。自動調參：關閉。</div>
       <div class="performance-grid">${joinSafe(cards) || '<div class="empty">尚無已完成的訊號結果</div>'}</div>`;
