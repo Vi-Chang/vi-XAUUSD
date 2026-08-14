@@ -34,6 +34,8 @@ def test_aug13_confirmed_breakdown_becomes_short_watch_despite_bullish_4h():
     assert setup.setup_state == "SHORT_WATCH"
     assert setup.tactical_bias == "bearish"
     assert setup.trigger_level == 4370.02
+    assert setup.next_check_time == "2026-08-13T16:30:00+00:00"
+    assert setup.expires_at == "2026-08-13T17:15:00+00:00"
     assert "不否決短空" in setup.message
 
 
