@@ -354,6 +354,9 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
         atr15=atr15, event_timestamp=ev.data_updated_at,
         event_risk=(ev.time_risk or "UNKNOWN").lower(), event_lockout=ev.event_lockout)
     result.normalized_analysis = normalized
+    from app.services.tactical_shadow import build_tactical_shadow
+    result.tactical_shadow = build_tactical_shadow(
+        normalized, current_price=tick.mid, created_at=now.isoformat(), settings=s)
     if normalized.setupState == "SHORT_READY" and normalized.shortEntryAllowed:
         result.decision.action = "PREPARE_SHORT"
         result.decision.reason = normalized.tradingScript
