@@ -475,8 +475,16 @@ function renderNormalized(n) {
   const breakout = { confirmed: "已收盤確認", testing: "盤中測試", failed: "突破失敗", none: "無突破" };
   const timing = { favorable: "條件有利", chase: "不宜追價", wait: "等待確認", invalid: "資料無效" };
   $("trend-bias").textContent = trend[n.trendBias] || n.trendBias;
+  $("tactical-bias").textContent = trend[n.tacticalBias] || n.tacticalBias;
+  const setupLabels = { OBSERVE: "觀望", LONG_WATCH: "留意多方", SHORT_WATCH: "留意空方",
+    LONG_READY: "多方條件完成", SHORT_READY: "空方條件完成", NO_CHASE: "方向成立但不追價" };
+  $("setup-state").textContent = setupLabels[n.setupState] || n.setupState || "觀望";
   $("breakout-state").textContent = breakout[n.breakoutState] || n.breakoutState;
   $("entry-timing").textContent = timing[n.entryTiming] || n.entryTiming;
+  $("bearish-trigger-level").textContent = n.bearishTriggerLevel == null ? "–" : Number(n.bearishTriggerLevel).toFixed(2);
+  $("setup-invalidation-level").textContent = n.invalidationLevel == null ? "–" : Number(n.invalidationLevel).toFixed(2);
+  $("setup-missing-condition").textContent = n.missingCondition || "無";
+  $("setup-next-check").textContent = fmtTs(n.nextCheckTime);
   $("analysis-data-time").textContent = fmtTs(n.marketDataTimestamp);
   $("last-closed-time").textContent = fmtTs(n.lastClosedCandleTimestamp);
   $("analysis-generated-time").textContent = fmtTs(n.generatedAt);

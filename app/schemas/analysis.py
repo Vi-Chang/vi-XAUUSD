@@ -296,6 +296,19 @@ class NormalizedAnalysisState(BaseModel):
     marketDataTimestamp: str = ""
     currentPrice: float | None = None
     trendBias: Literal["bullish", "bearish", "neutral"] = "neutral"
+    tacticalBias: Literal["bullish", "bearish", "neutral"] = "neutral"
+    setupState: Literal[
+        "OBSERVE", "LONG_WATCH", "SHORT_WATCH", "LONG_READY", "SHORT_READY", "NO_CHASE"
+    ] = "OBSERVE"
+    triggerLevel: float | None = None
+    invalidationLevel: float | None = None
+    expiresAt: str = ""
+    missingCondition: str = ""
+    nextCheckTime: str = ""
+    bullishTriggerLevel: float | None = None
+    bearishTriggerLevel: float | None = None
+    falseBreakProtectionLevel: float | None = None
+    falseBreakProtectionExpiresAt: str = ""
     breakoutState: Literal["confirmed", "testing", "failed", "none"] = "none"
     entryTiming: Literal["favorable", "chase", "wait", "invalid"] = "wait"
     longEvidence: list[AnalysisEvidence] = Field(default_factory=list)
