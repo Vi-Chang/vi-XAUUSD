@@ -176,13 +176,13 @@ def _build_scenario(direction: str, conditions: list[str], *, price: float,
     """
     up = direction == "LONG"
     entry = nearest_zone(levels, price, "SUP_ZONE" if up else "RES_ZONE", "STRONG")
+    # 停損來源必須位於整個進場區外側；不可先挑最新 swing 再交給安全閘報錯。
+    # 多個合法 swing 時選距進場區最近者，保留結構意義並避免不必要的超寬停損。
     stop_ref = None
-    structures.get("15M")
-    for lv in levels:
-        if up and lv.kind == "SWING_LOW_15M":
-            stop_ref = lv
-        if not up and lv.kind == "SWING_HIGH_15M":
-            stop_ref = lv
+    if entry:
+        from app.engines.scenario_safety import PriceZone, select_structural_stop
+        stop_ref = select_structural_stop(
+            direction, entry=PriceZone(entry.price_low, entry.price_high), levels=levels)
     targets = [lv for lv in levels
                if (lv.kind == ("RES_ZONE" if up else "SUP_ZONE"))]
     targets.sort(key=lambda lv: lv.mid, reverse=not up)
