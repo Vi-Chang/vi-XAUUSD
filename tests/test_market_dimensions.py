@@ -64,6 +64,12 @@ def test_closed_breakdown_then_reclaim_is_failed_breakdown():
     assert state == "failed_breakdown"
 
 
+def test_first_closed_breakdown_remains_pending_confirmation():
+    candles = df([100.4, 99.3], highs=[100.8, 99.8], lows=[100.0, 99.0])
+    state, _ = support_state(rep(), candles, candles, 2, 100)
+    assert state == "testing_support"
+
+
 def test_closed_breakdown_and_failed_retest_is_rejected():
     candles = df([99.3, 99.2], highs=[99.6, 99.8], lows=[99.0, 98.9])
     state, _ = support_state(rep(), candles, candles, 2, 100)

@@ -287,6 +287,52 @@ def build_normalized_state(*, generated_at: str, market_timestamp: str, current_
         mistake = "在條件尚未齊全前搶先進場。"
     support_level = next((x for x in dims["confirmationLevels"] if x.kind == "support"), None)
     resistance_level = next((x for x in dims["confirmationLevels"] if x.kind == "resistance"), None)
+    from app.config import get_settings
+    from app.engines.tactical_setup import classify_tactical_setup
+    next_support = None
+    rr_to_next_support = None
+    if support_level and structures.get("15M"):
+        lower_lows = [float(x.price) for x in structures["15M"].swings
+                      if x.kind == "SWING_LOW" and x.price < support_level.price]
+        next_support = max(lower_lows) if lower_lows else None
+        invalidation = support_level.price + support_level.buffer
+        risk_distance = invalidation - current_price
+        if next_support is not None and risk_distance > 0 and current_price > next_support:
+            rr_to_next_support = (current_price - next_support) / risk_distance
+    bullish_breakout_active = bool(
+        breakout == "confirmed" and ev and ev.event_type.endswith("_UP"))
+    tactical = classify_tactical_setup(
+        support_state=dims["supportState"], weakness_state=weakness.state,
+        weakness_families=weakness.families, trend_bias=trend,
+        current_price=current_price,
+        support=support_level.price if support_level else None,
+        buffer=support_level.buffer if support_level else 0.0,
+        atr15=atr15, last_closed_at=closed_times.get("15M", ""),
+        rr_to_next_support=rr_to_next_support,
+        bullish_breakout_active=bullish_breakout_active,
+        retest_failed=dims["supportState"] == "retest_rejected",
+        chase_atr_mult=get_settings().tactical_short_chase_atr_mult,
+        min_rr=get_settings().tactical_min_rr,
+        expiry_bars=get_settings().tactical_setup_expiry_bars)
+    if tactical.setup_state == "SHORT_READY":
+        dims["entryReadiness"] = "ready"
+        priority["entryReadiness"] = "ready"
+        priority["shortEntryAllowed"] = True
+        priority["longEntryAllowed"] = False
+        entry, risk = "favorable", "short"
+    elif tactical.setup_state == "SHORT_WATCH":
+        priority["shortEntryAllowed"] = False
+        entry, risk = "wait", "short"
+    elif tactical.setup_state == "NO_CHASE":
+        dims["entryReadiness"] = "avoid_chasing"
+        priority["entryReadiness"] = "avoid_chasing"
+        priority["shortEntryAllowed"] = False
+        entry, risk = "chase", "short"
+    trading_decision = assess_trading_decision(
+        market_regime=dims["marketRegime"], weakness=weakness.state,
+        oversold=weakness.oversold, reversal_state=reversal_state,
+        readiness=priority["entryReadiness"], long_allowed=priority["longEntryAllowed"],
+        short_allowed=priority["shortEntryAllowed"], position_risk=priority["positionRisk"])
     support_text = (f"15M swing 支撐 {support_level.price:.2f}（緩衝 {support_level.buffer:.2f}）"
                     if support_level else "15M 動態支撐")
     resistance_text = (f"15M swing 壓力 {resistance_level.price:.2f}（緩衝 {resistance_level.buffer:.2f}）"
@@ -322,13 +368,25 @@ def build_normalized_state(*, generated_at: str, market_timestamp: str, current_
         ("low", "medium", "high", "unknown") else "unknown")
     state = NormalizedAnalysisState(generatedAt=generated_at,
         marketDataTimestamp=market_timestamp, currentPrice=current_price,
-        trendBias=trend, breakoutState=breakout, entryTiming=entry,
+        trendBias=trend, tacticalBias=tactical.tactical_bias,
+        setupState=tactical.setup_state, triggerLevel=tactical.trigger_level,
+        invalidationLevel=tactical.invalidation_level, expiresAt=tactical.expires_at,
+        missingCondition=tactical.missing_condition,
+        nextCheckTime=tactical.next_check_time,
+        bullishTriggerLevel=resistance_level.price if resistance_level else None,
+        bearishTriggerLevel=support_level.price if support_level else None,
+        falseBreakProtectionLevel=(support_level.price if support_level and
+                                   dims["supportState"] == "failed_breakdown" else None),
+        falseBreakProtectionExpiresAt=(tactical.expires_at if
+                                       dims["supportState"] == "failed_breakdown" else ""),
+        breakoutState=breakout, entryTiming=entry,
         longEvidence=longs, shortEvidence=shorts, invalidatedEvidence=invalid,
         eventDataStatus=event_status,
         marketDataStatus=market_status, bullPct=dims["trendScore"],
         bearPct=100 - dims["trendScore"], evidenceTotal=total, riskDirection=risk,
         riskLabel=labels[risk], riskMessage=risk_msg, marketStateCode=market_state,
-        marketStateLabel=state_zh(market_state), tradingScript=script,
+        marketStateLabel=state_zh(market_state),
+        tradingScript=(tactical.message if tactical.setup_state != "OBSERVE" else script),
         mostLikelyMistake=mistake,
         marketRegime=dims["marketRegime"], shortTermMomentum=dims["shortTermMomentum"],
         entryReadiness=dims["entryReadiness"], dataConfidence=dims["dataConfidence"],

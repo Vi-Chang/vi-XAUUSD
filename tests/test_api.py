@@ -41,6 +41,9 @@ def test_history_and_structure_events():
         hist = c.get("/api/analysis/history?limit=5").json()
         assert len(hist) >= 1
         assert {"run_time", "market_state", "action", "grade"} <= set(hist[0])
+        assert {"current_price", "market_data_timestamp", "trend_bias", "tactical_bias",
+                "setup_state", "missing_condition", "next_check_time",
+                "long_evidence", "short_evidence", "invalidated_evidence"} <= set(hist[0])
         evs = c.get("/api/structure/events?timeframe=15M").json()
         for ev in evs:
             assert {"event_type", "time", "price", "still_valid"} <= set(ev)

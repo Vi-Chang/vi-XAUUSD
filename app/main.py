@@ -364,12 +364,36 @@ async def analysis_history(limit: int = 20) -> list[dict]:
         rows = db.execute(select(AnalysisRun)
                           .order_by(AnalysisRun.run_time.desc())
                           .limit(limit)).scalars().all()
-    return [{
-        "run_time": ensure_utc(r.run_time).isoformat(),
-        "trigger": r.trigger, "market_state": r.market_state,
-        "action": r.decision_action, "grade": r.confidence_grade,
-        "evidence_score": r.evidence_score, "quality": r.data_quality_status,
-    } for r in rows]
+    out = []
+    for r in rows:
+        payload = r.result_json or {}
+        normalized = payload.get("normalized_analysis") or {}
+        price = payload.get("current_price") or {}
+        decision = payload.get("market_decision") or payload.get("decision") or {}
+        out.append({
+            "run_time": ensure_utc(r.run_time).isoformat(),
+            "trigger": r.trigger, "market_state": r.market_state,
+            "action": r.decision_action, "grade": r.confidence_grade,
+            "evidence_score": r.evidence_score, "quality": r.data_quality_status,
+            "current_price": price.get("mid"),
+            "market_data_timestamp": normalized.get("marketDataTimestamp"),
+            "trend_bias": normalized.get("trendBias"),
+            "tactical_bias": normalized.get("tacticalBias"),
+            "setup_state": normalized.get("setupState"),
+            "breakout_state": normalized.get("breakoutState"),
+            "support_state": normalized.get("supportState"),
+            "trigger_level": normalized.get("triggerLevel"),
+            "invalidation_level": normalized.get("invalidationLevel"),
+            "expires_at": normalized.get("expiresAt"),
+            "missing_condition": normalized.get("missingCondition"),
+            "next_check_time": normalized.get("nextCheckTime"),
+            "long_evidence": [x.get("label") for x in normalized.get("longEvidence", [])],
+            "short_evidence": [x.get("label") for x in normalized.get("shortEvidence", [])],
+            "invalidated_evidence": normalized.get("invalidatedEvidence", []),
+            "decision_reason": decision.get("reason"),
+            "timeframes": normalized.get("timeframeAssessments", []),
+        })
+    return out
 
 
 @app.get("/api/performance")

@@ -171,6 +171,9 @@ class Settings(BaseSettings):
 
     # ── 追價規則(spec 十五)──
     chase_atr_mult: float = 1.5
+    tactical_short_chase_atr_mult: float = 1.5
+    tactical_setup_expiry_bars: int = 4
+    tactical_min_rr: float = 1.5
     no_chase_near_level_atr_mult: float = 0.75  # 0.5~1.0 之間,預設 0.75
     opposing_zone_hard_gate_atr_mult: float = 0.75
     breakout_close_buffer_atr_mult: float = 0.10

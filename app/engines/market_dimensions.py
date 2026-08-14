@@ -150,7 +150,8 @@ def support_state(m15: StructureReport | None, all_df: pd.DataFrame | None,
             latest = closed_df.iloc[-1]
             if float(latest["high"]) >= support - atr15 * s.structure_retest_atr:
                 return "retest_rejected", levels
-        return "confirmed_breakdown", levels
+            return "confirmed_breakdown", levels
+        return "testing_support", levels
     if abs(closes[-1] - support) <= buffer:
         return "testing_support", levels
     return "none", levels

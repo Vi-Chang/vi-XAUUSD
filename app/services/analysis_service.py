@@ -354,6 +354,14 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
         atr15=atr15, event_timestamp=ev.data_updated_at,
         event_risk=(ev.time_risk or "UNKNOWN").lower(), event_lockout=ev.event_lockout)
     result.normalized_analysis = normalized
+    if normalized.setupState == "SHORT_READY" and normalized.shortEntryAllowed:
+        result.decision.action = "PREPARE_SHORT"
+        result.decision.reason = normalized.tradingScript
+        result.short_scenario = result.short_scenario.model_copy(
+            update={"status": "PREPARE"})
+    elif normalized.setupState in ("SHORT_WATCH", "NO_CHASE"):
+        result.decision.action = "WATCH"
+        result.decision.reason = normalized.tradingScript
     # 舊 API 欄位保留，但不可再自行判斷；全部鏡射 normalized state。
     result.bias_analysis = BiasAnalysis(
         bull_pct=normalized.bullPct, bear_pct=normalized.bearPct,
