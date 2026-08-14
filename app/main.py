@@ -370,6 +370,7 @@ async def analysis_history(limit: int = 20) -> list[dict]:
         normalized = payload.get("normalized_analysis") or {}
         price = payload.get("current_price") or {}
         decision = payload.get("market_decision") or payload.get("decision") or {}
+        trace = payload.get("decision_trace") or {}
         out.append({
             "run_time": ensure_utc(r.run_time).isoformat(),
             "trigger": r.trigger, "market_state": r.market_state,
@@ -392,6 +393,13 @@ async def analysis_history(limit: int = 20) -> list[dict]:
             "invalidated_evidence": normalized.get("invalidatedEvidence", []),
             "decision_reason": decision.get("reason"),
             "timeframes": normalized.get("timeframeAssessments", []),
+            "setup_id": trace.get("setupId"),
+            "lifecycle_status": trace.get("lifecycleStatus"),
+            "direction": trace.get("direction"),
+            "breakout_at": trace.get("breakoutAt"),
+            "closed_bars_since_breakout": trace.get("closedBarsSinceBreakout", 0),
+            "blocking_reasons": trace.get("blockingReasons", []),
+            "market_snapshot_at": trace.get("marketSnapshotAt"),
         })
     return out
 

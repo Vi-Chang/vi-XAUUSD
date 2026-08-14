@@ -167,7 +167,8 @@ def _latest_structure_event_id(direction: str,
 
 def _build_scenario(direction: str, conditions: list[str], *, price: float,
                     levels: list[CandidateLevel], atr15: float,
-                    structures: dict[str, StructureReport]) -> tuple[Scenario, list[float]]:
+                    structures: dict[str, StructureReport],
+                    spread: float = 0.0) -> tuple[Scenario, list[float]]:
     """組劇本(欄位全為候選 ID)並由 Python 計算 R/R(spec 十六)。
 
     BUGFIX R1/R2:單一函數一次性輸出完整物件(Scenario 為 frozen,禁止逐欄修改);
@@ -191,64 +192,82 @@ def _build_scenario(direction: str, conditions: list[str], *, price: float,
         targets.sort(key=lambda lv: abs(lv.mid - entry.mid))
     targets = targets[:3]
 
-    rr: list[float] = []
-    if entry and stop_ref:
-        entry_px = entry.mid
-        stop_px = stop_ref.mid - (0.25 * atr15 if up else -0.25 * atr15)
-        risk = abs(entry_px - stop_px)
-        if risk > 0:
-            rr = [round(abs(t.mid - entry_px) / risk, 2) for t in targets]
-
     structure_confirmed = any(c.startswith("STRUCT") for c in conditions)
     n = len(conditions)
-    if n >= 3 and structure_confirmed:
-        status = "PREPARE"
-    else:
-        status = "WATCH"
+    confirmations_passed = n >= 3 and structure_confirmed
+    status = "PREPARE" if confirmations_passed else "WATCH"
 
     # ── P1 產生端不變式:產不出合法 SL 就不產出停損(不硬湊、不送出矛盾組合)──
+    from app.engines.scenario_safety import (
+        PriceZone,
+        calculate_risk_reward,
+        conservative_entry,
+        lifecycle_status,
+        stable_setup_id,
+        validate_price_structure,
+    )
     from app.engines.setup_validator import (
         has_fatal,
         log_invalid,
-        stop_side_ok,
         validate_prices_detailed,
     )
-    entry_px = entry.mid if entry else None
+    entry_zone = PriceZone(entry.price_low, entry.price_high) if entry else None
+    entry_px = conservative_entry(direction, entry_zone) if entry_zone else None
     stop_px = (stop_ref.mid - (0.25 * atr15 if up else -0.25 * atr15)) if stop_ref else None
-    stop_dropped = False
-    if entry_px is not None and stop_px is not None and \
-            not stop_side_ok(direction, entry_px, stop_px):
-        logger.info("SETUP_STOP_DROPPED direction=%s entry=%.2f structural_sl=%.2f "
-                    "(結構停損點在進場區錯誤一側,拒絕產出停損)",
-                    direction, entry_px, stop_px)
-        stop_ref = None
-        stop_px = None
-        stop_dropped = True
-        status = "WATCH"   # 無合法停損 → 不得為可執行方案
+    target_zones = [PriceZone(t.price_low, t.price_high) for t in targets]
+    structure_reasons = (["缺少進場區或停損，價格結構無效"]
+                         if entry_zone is None or stop_px is None else
+                         validate_price_structure(
+                             direction, entry=entry_zone, planned_entry=entry_px,
+                             stop_loss=stop_px, targets=target_zones))
+    rr_details = [] if structure_reasons else [
+        calculate_risk_reward(
+            direction, evaluation_entry_price=entry_px, stop_loss=stop_px,
+            target_price=(target.low if up else target.high), spread=spread)
+        for target in target_zones
+    ]
+    rr = [detail["ratio"] for detail in rr_details if detail.get("available")]
     tp_mids = [t.mid for t in targets]
-    if stop_px is None:
-        rr = []   # 無停損 → 風報比不可計算,不得顯示殘留數字
 
     # ── BUGFIX R2:Invariant 驗證(進 UI/決策評分之前;防禦縱深)──
     detailed = validate_prices_detailed(direction, entry=entry_px, sl=stop_px,
                                         tps=tp_mids, current_price=price)
-    fatal = has_fatal(detailed)
+    fatal = bool(structure_reasons) or has_fatal(detailed)
     event_id = _latest_structure_event_id(direction, structures)
+    breakout_at = event_id.split(":", 2)[2] if event_id and event_id.count(":") >= 2 else ""
+    setup_id = stable_setup_id(
+        symbol="XAUUSD", direction=direction, timeframe="15M",
+        # 同一結構事件不可因滾動進場區重新編號而重設 setupId。
+        trigger_level=event_id or "NO_EVENT",
+        breakout_at=breakout_at or "NO_EVENT")
 
     # 只有 FATAL(方向次序矛盾/非正數/幻覺價位)才是「自相矛盾」→ 攔截並剝除價位。
     if fatal:
-        fatal_reasons = [r["msg"] for r in detailed if r["severity"] == "FATAL"]
+        fatal_reasons = structure_reasons or [
+            r["msg"] for r in detailed if r["severity"] == "FATAL"]
         log_invalid(direction, {
             "entry": entry_px, "sl": stop_px, "tps": tp_mids, "rr": rr,
             "price": price, "structure_event_id": event_id,
-        }, fatal_reasons, fatal=True)
+        }, fatal_reasons, fatal=has_fatal(detailed) and not structure_reasons)
         scenario = Scenario(
             status="INVALID",
             setup=("偵測到自相矛盾的價位組合,已攔截;"
                    "等待下一次結構更新後重新計算"),
             invalid_reasons=fatal_reasons,
-            invalid_fatal=True,
+            invalid_fatal=False,
             structure_event_id=event_id,
+            lifecycle_status="INVALID", planned_entry=entry_px,
+            stop_loss_price=stop_px, rr_details=rr_details,
+            rr_calculation_basis="進場區最不利端（多單上界／空單下界）",
+            blocking_reasons=["STRUCTURE_INVALID"],
+            setup_id=setup_id, breakout_at=breakout_at,
+            raw_price_debug={
+                "entryZone": ({"low": entry.price_low, "high": entry.price_high}
+                              if entry else None),
+                "stopLoss": stop_px,
+                "targetZones": [{"low": t.price_low, "high": t.price_high}
+                                for t in targets],
+            },
         )
         return scenario, []
 
@@ -258,6 +277,24 @@ def _build_scenario(direction: str, conditions: list[str], *, price: float,
     if reject:
         status = "WATCH"
 
+    lifecycle = "NO_SETUP"
+    if entry_zone and target_zones:
+        lifecycle = lifecycle_status(
+            direction, current_price=price, entry=entry_zone,
+            first_target=target_zones[0], structure_valid=True,
+            confirmations_passed=confirmations_passed)
+    if lifecycle in ("EXPIRED", "MISSED_ENTRY_WAIT_RETEST", "WAITING_FOR_ENTRY",
+                     "BREAKOUT_PENDING"):
+        status = "WATCH"
+    elif lifecycle == "READY" and not reject:
+        status = "PREPARE"
+    lifecycle_blocks = {
+        "EXPIRED": "SETUP_EXPIRED",
+        "MISSED_ENTRY_WAIT_RETEST": "ENTRY_ALREADY_MISSED",
+        "WAITING_FOR_ENTRY": "PRICE_OUTSIDE_ENTRY_ZONE",
+        "BREAKOUT_PENDING": "BREAKOUT_NOT_CONFIRMED",
+    }
+
     scenario = Scenario(
         status=status,
         setup=f"{'多方' if up else '空方'}:{'; '.join(conditions[:3]) if conditions else '條件未成立,等待'}",
@@ -266,8 +303,10 @@ def _build_scenario(direction: str, conditions: list[str], *, price: float,
             ([] if status == "PREPARE" else
              [f"等待 15M 已收線{'突破局部高點/形成 HL' if up else '跌破局部低點/形成 LH'}",
               "等待價格回到理想進場區(非追價位置)"])
-            + (["結構停損點位於進場區錯誤一側,暫無法定位合法停損,等待結構更新"]
-               if stop_dropped else [])
+            + (["原進場機會已錯過，等待重新回踩形成有效劇本"]
+               if lifecycle == "MISSED_ENTRY_WAIT_RETEST" else [])
+            + (["價格已到達第一目標區，原進場劇本已失效"]
+               if lifecycle == "EXPIRED" else [])
             + (["此處進場賺賠比不足(第一目標未達 1.5 倍),等待回到更有優勢的進場位置"]
                if reject else [])),
         stop_loss_id=stop_ref.level_id if stop_ref else None,
@@ -275,6 +314,12 @@ def _build_scenario(direction: str, conditions: list[str], *, price: float,
         risk_reward=rr,
         invalidation_id=stop_ref.level_id if stop_ref else None,
         structure_event_id=event_id,
+        lifecycle_status=lifecycle, planned_entry=entry_px,
+        stop_loss_price=stop_px, rr_details=rr_details,
+        rr_calculation_basis="進場區最不利端（多單上界／空單下界）",
+        blocking_reasons=([lifecycle_blocks[lifecycle]] if lifecycle in lifecycle_blocks else [])
+                         + (["RISK_REWARD_TOO_LOW"] if reject else []),
+        setup_id=setup_id, breakout_at=breakout_at,
     )
     return scenario, rr
 
@@ -283,7 +328,7 @@ def decide(*, quality: DataQualityReport, structures: dict[str, StructureReport]
            indicators_h1: dict, market_state: str, price: float, atr15: float,
            levels: list[CandidateLevel], event_lockout: bool = False,
            previous_action: str | None = None,
-           m15_df: pd.DataFrame | None = None) -> RuleDecision:
+           m15_df: pd.DataFrame | None = None, spread: float = 0.0) -> RuleDecision:
     """主決策。硬性風控(資料品質、事件鎖定)由此層強制執行,AI 無權推翻(spec 十三 D)。"""
     s = get_settings()
     empty_long, empty_short = Scenario(), Scenario()
@@ -329,9 +374,9 @@ def decide(*, quality: DataQualityReport, structures: dict[str, StructureReport]
                                         indicators_h1=indicators_h1, price=price,
                                         levels=levels, atr15=atr15)
     long_sc, long_rr = _build_scenario("LONG", long_conds, price=price, levels=levels,
-                                       atr15=atr15, structures=structures)
+                                       atr15=atr15, structures=structures, spread=spread)
     short_sc, short_rr = _build_scenario("SHORT", short_conds, price=price, levels=levels,
-                                         atr15=atr15, structures=structures)
+                                         atr15=atr15, structures=structures, spread=spread)
     chase = detect_chase("LONG", price=price, atr15=atr15, structures=structures, levels=levels) \
         + detect_chase("SHORT", price=price, atr15=atr15, structures=structures, levels=levels)
 
@@ -372,7 +417,16 @@ def decide(*, quality: DataQualityReport, structures: dict[str, StructureReport]
         sc = long_sc if dominant == "LONG" else short_sc
         chase_this = [f for f in chase if dominant in f]
         gate = None
-        if sc.status == "PREPARE" and rr_ok and not chase_this:
+        if sc.lifecycle_status == "EXPIRED":
+            action, grade = "WATCH", "C"
+            reason = "原進場機會已到達第一目標區，劇本已失效；先觀察，等待重新計算。"
+        elif sc.lifecycle_status == "MISSED_ENTRY_WAIT_RETEST":
+            action, grade = "WATCH", "C"
+            reason = "價格已離開理想進場區，不追價；等待重新回踩形成有效劇本。"
+        elif sc.lifecycle_status == "WAITING_FOR_ENTRY":
+            action, grade = "WATCH", "C"
+            reason = "方向條件存在，但價格尚未進入理想進場區。"
+        elif sc.status == "PREPARE" and rr_ok and not chase_this:
             from app.engines.entry_trigger import evaluate_entry_gate
             gate = evaluate_entry_gate(
                 dominant, price=price, atr15=atr15, levels=levels,
@@ -381,7 +435,9 @@ def decide(*, quality: DataQualityReport, structures: dict[str, StructureReport]
                 opposing_zone_atr_mult=s.opposing_zone_hard_gate_atr_mult,
                 breakout_buffer_atr_mult=s.breakout_close_buffer_atr_mult,
             )
-        if gate is not None and gate.blocked:
+        if sc.lifecycle_status in ("EXPIRED", "MISSED_ENTRY_WAIT_RETEST", "WAITING_FOR_ENTRY"):
+            pass
+        elif gate is not None and gate.blocked:
             action, grade, reason = "WATCH", "C", gate.reason
         elif gate is not None and gate.triggered:
             action = dominant

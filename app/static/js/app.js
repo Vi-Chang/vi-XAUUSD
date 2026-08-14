@@ -158,11 +158,19 @@ async function applyOverlays() {
       S.priceLines.push(S.candles.createPriceLine({
         price, color, lineWidth: 1,
         lineStyle: LightweightCharts.LineStyle.Dashed,
+        axisLabelVisible: true, title: `${tag}${title}區中位`,
+      }));
+    };
+    const mkExact = (price, color, title) => {
+      if (price == null) return;
+      S.priceLines.push(S.candles.createPriceLine({
+        price, color, lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dashed,
         axisLabelVisible: true, title: `${tag}${title}`,
       }));
     };
     mk(sc.entry_zone_id, C.info, "進場");
-    mk(sc.stop_loss_id, C.danger, "賠錢出場");
+    if (sc.stop_loss_price != null) mkExact(sc.stop_loss_price, C.danger, "停損價");
+    else mk(sc.stop_loss_id, C.danger, "停損參考");
     (sc.target_ids || []).forEach((tid, i) => mk(tid, C.bull, `目標${i + 1}`));
   }
 
@@ -332,7 +340,7 @@ function applyAnalysis(a) {
 
   const grade = $("grade-badge");
   unskel(grade);
-  grade.textContent = a.decision.confidence_grade;
+  grade.textContent = gradeZh(a.decision.confidence_grade);
   grade.className = "grade-badge g-" + a.decision.confidence_grade;
   const calibrationNote = $("calibration-note");
   if (calibrationNote) {
@@ -394,7 +402,7 @@ function applyAnalysis(a) {
   const q = a.data_quality.status;
   const qChip = $("chip-quality");
   unskel(qChip);
-  qChip.textContent = "資料品質 " + q;
+  qChip.textContent = "資料品質 " + qualityZh(q);
   qChip.className = "chip " + (q === "GOOD" ? "good" : q === "DEGRADED" ? "warn" : "bad");
   renderNormalized(n);
   $("sys-provider").textContent = a.current_price.provider || "–";
@@ -505,7 +513,7 @@ function renderNormalized(n) {
   $("data-confidence").textContent = confidence[n.dataConfidence] || n.dataConfidence;
   $("support-state").textContent = support[n.supportState] || n.supportState;
   const setQuality = (id, status) => {
-    const el = $(id); el.textContent = status;
+    const el = $(id); el.textContent = qualityZh(status);
     el.className = "chip " + (status === "GOOD" ? "good" : status === "STALE" ? "warn" : "bad");
   };
   setQuality("sys-market-quality", n.marketDataStatus);
@@ -513,7 +521,7 @@ function renderNormalized(n) {
   $("event-data-time").textContent = fmtTs(n.eventDataTimestamp);
   $("quality-summary").textContent = n.marketDataStatus === "GOOD" && n.eventDataStatus === "FAILED"
     ? "行情資料正常；事件資料失效，本次分析未納入事件風險。"
-    : `行情資料 ${n.marketDataStatus}；事件資料 ${n.eventDataStatus}。`;
+    : `行情資料 ${qualityZh(n.marketDataStatus)}；事件資料 ${qualityZh(n.eventDataStatus)}。`;
   $("risk-label").textContent = n.riskLabel;
   $("risk-label").className = "chip " + (n.riskDirection === "none" ? "good" : "warn");
   $("risk-message").textContent = n.riskMessage || "";
@@ -795,15 +803,17 @@ function renderScenario(el, sc, title, offset) {
   const targets = (sc.target_ids || []).map((t) => lv(t)).filter((x) => x !== "–").join(" / ") || "–";
   el.innerHTML = h`
     <div class="sc-head"><span class="sc-dir">${title}</span>
-      <span class="sc-status ${sc.status}">${SC_STATUS_ZH[sc.status] || sc.status}</span>${staleTag}${tag}
+      <span class="sc-status ${sc.status}">${LIFECYCLE_ZH[sc.lifecycle_status] || SC_STATUS_ZH[sc.status] || "未知狀態"}</span>${staleTag}${tag}
       ${createdAge ? h`<span class="sc-meta-age">建立於 ${createdAge}</span>` : ""}</div>
     <div class="${sc.stale ? "sc-body-stale" : ""}">
     <div class="sc-levels">
       <div class="kv"><span>進場區</span><span class="num">${lv(sc.entry_zone_id)}</span></div>
-      <div class="kv"><span>賠錢出場價</span><span class="num">${lv(sc.stop_loss_id)}</span></div>
+      <div class="kv"><span>賺賠比計算基準價</span><span class="num">${sc.planned_entry == null ? "–" : fmt(sc.planned_entry)}</span></div>
+      <div class="kv"><span>停損價</span><span class="num">${sc.stop_loss_price == null ? lv(sc.stop_loss_id) : fmt(sc.stop_loss_price)}</span></div>
       <div class="kv"><span>目標價</span><span class="num">${targets}</span></div>
     </div>
     ${(rrList.length && !sc.stale) ? h`<div class="sc-rr">${joinSafe(rrList)}</div>` : ""}
+    ${sc.rr_calculation_basis ? h`<small>${sc.rr_calculation_basis}；已納入目前點差</small>` : ""}
     </div>
     ${sc.setup ? h`<div class="sc-confirm">${sc.setup}</div>` : ""}
     ${confirmList.length ? h`<div class="sc-confirm">還要等這些條件:<ul>${joinSafe(confirmList)}</ul></div>` : ""}`;
@@ -1291,15 +1301,22 @@ async function loadHistory() {
       body.innerHTML = '<div class="empty">尚無歷史分析紀錄。</div>';
       return;
     }
+    const taipeiTime = (value) => new Intl.DateTimeFormat("zh-TW", {
+      timeZone: "Asia/Taipei", month: "2-digit", day: "2-digit", hour: "2-digit",
+      minute: "2-digit", hour12: false,
+    }).format(new Date(value));
     const histRows = joinSafe(rows.map((r) => h`<tr>
-        <td class="num">${r.run_time.slice(5, 16).replace("T", " ")}</td>
+        <td class="num">${taipeiTime(r.run_time)}</td>
         <td>${stateZh(r.market_state)}</td>
-        <td><span class="act-pill ${decisionClass(r.action)}">${r.action}</span></td>
-        <td><span class="grade-badge g-${r.grade}" style="width:26px;height:26px;font-size:.85rem">${r.grade}</span></td>
+        <td>${lifecycleZh(r.lifecycle_status || "NO_SETUP")}</td>
+        <td><span class="act-pill ${decisionClass(r.action)}">${actionZh(r.action)}</span></td>
+        <td><span class="grade-badge g-${r.grade}" title="${gradeZh(r.grade)}" style="width:auto;padding:0 8px;font-size:.75rem">${gradeZh(r.grade)}</span></td>
         <td class="num">${r.evidence_score}</td>
-        <td>${r.quality}</td></tr>`));
+        <td>${qualityZh(r.quality)}</td>
+        <td>${(r.blocking_reasons || []).map(blockReasonZh).join("、") || "無"}</td>
+        <td class="num" title="${r.setup_id || ""}">${r.closed_bars_since_breakout || 0} 根</td></tr>`));
     body.innerHTML = h`<table class="hist-table"><thead><tr>
-      <th>時間 (UTC)</th><th>市場狀態</th><th>決策</th><th>信心</th><th>證據</th><th>品質</th>
+      <th>時間（台灣）</th><th>市場狀態</th><th>劇本階段</th><th>決策</th><th>信心</th><th>證據</th><th>品質</th><th>主要阻擋原因</th><th>已等待</th>
       </tr></thead><tbody>${histRows}</tbody></table>`;
   } catch (e) {
     body.innerHTML = '<div class="empty">歷史紀錄載入失敗。</div>';

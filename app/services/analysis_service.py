@@ -258,7 +258,7 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
                       price=tick.mid, atr15=atr15, levels=levels,
                       event_lockout=ev.event_lockout,
                       previous_action=previous_action,
-                      m15_df=dfs_closed.get("15M"))
+                      m15_df=dfs_closed.get("15M"), spread=tick.spread)
 
     from app.engines.event_reaction import assess_event_reaction
     from app.services.cross_market import get_cross_market
@@ -378,11 +378,12 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
     if normalized.entryTiming in ("wait", "invalid"):
         result.decision.action = "NO_TRADE" if normalized.entryTiming == "invalid" else "WATCH"
         result.decision.reason = normalized.consistencyMessage or normalized.tradingScript
-        safe_watch: dict[str, object] = {"status": "WATCH", "entry_zone_id": None, "stop_loss_id": None,
-                      "invalidation_id": None, "target_ids": [], "risk_reward": [],
-                      "resolved_prices": {}}
-        result.long_scenario = result.long_scenario.model_copy(update=safe_watch)
-        result.short_scenario = result.short_scenario.model_copy(update=safe_watch)
+        # 保留同一快照的原始劇本價位供稽核與歷史復盤；只降低可執行狀態。
+        # INVALID/EXPIRED 等明確生命週期不可被籠統 WATCH 覆蓋。
+        if result.long_scenario.status not in ("INVALID", "INVALIDATED"):
+            result.long_scenario = result.long_scenario.model_copy(update={"status": "WATCH"})
+        if result.short_scenario.status not in ("INVALID", "INVALIDATED"):
+            result.short_scenario = result.short_scenario.model_copy(update={"status": "WATCH"})
     # 市場層決策快照(在持倉 MANAGE 覆寫之前捕捉);公開投影用此,避免洩露個人持倉。
     result.market_decision = result.decision.model_copy()
     try:
@@ -491,6 +492,11 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
         })
     result.long_scenario = _stamped(result.long_scenario)
     result.short_scenario = _stamped(result.short_scenario)
+    from app.services.decision_trace import build_decision_trace
+    result.decision_trace = build_decision_trace(
+        result, evaluated_at=now.isoformat(),
+        market_snapshot_at=tick.quote_time.isoformat(),
+        m15_closed=dfs_closed.get("15M"))
 
     # ── 9c2. 交易資格閘門(單一權威;必在 AI 呼叫前執行)──
     # 資料過期/異常、來源異常、休市、K 棒不足或證據不足 → 一律 NO_TRADE(資料不足,暫不交易),
@@ -570,6 +576,7 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
             db.flush()
             # BUGFIX R6:版本號 = analysis_runs.id(單調遞增、跨重啟持續)
             result.version = run.id
+            result.decision_trace.analysisId = run.id
             run.result_json = result.model_dump()
             for lv in levels:
                 db.add(CandidateLevelRow(analysis_run_id=run.id, level_id=lv.level_id,
