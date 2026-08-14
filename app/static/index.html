@@ -16,9 +16,9 @@
     <h1>XAUUSD <span class="sub">多週期分析終端</span></h1>
   </div>
   <div class="price-block" id="price-block">
-    <div class="pq"><span class="lbl">Bid</span><span class="num big skel" id="px-bid">––––.––</span></div>
-    <div class="pq"><span class="lbl">Ask</span><span class="num big skel" id="px-ask">––––.––</span></div>
-    <div class="pq"><span class="lbl">Spread</span><span class="num skel" id="px-spread">–.––</span></div>
+    <div class="pq"><span class="lbl">買方報價</span><span class="num big skel" id="px-bid">––––.––</span></div>
+    <div class="pq"><span class="lbl">賣方報價</span><span class="num big skel" id="px-ask">––––.––</span></div>
+    <div class="pq"><span class="lbl">買賣價差</span><span class="num skel" id="px-spread">–.––</span></div>
   </div>
   <div class="top-chips">
     <span class="chip skel" id="chip-market">…</span>
@@ -33,7 +33,7 @@
       <span class="op-val info" id="op-source">TwelveData</span></div>
     <div class="op-row op-context"><span class="op-lbl">Trading Broker</span>
       <span class="op-val warn" id="op-broker">TMGM</span></div>
-    <div class="op-row"><span class="op-lbl">Current Offset</span>
+    <div class="op-row"><span class="op-lbl">目前價格校正</span>
       <span class="op-val num" id="op-offset">0.00</span>
       <span class="op-mode num" id="op-mode">manual</span>
       <button class="op-edit" id="op-edit" title="修改 Offset">✎</button></div>
@@ -274,13 +274,13 @@
 </section>
 
 <footer class="foot">
-  本系統僅提供分析與通知,不執行任何交易(AUTO_TRADING_ENABLED=false)。
+  本系統僅提供分析與通知，不執行任何交易（自動交易功能未啟用）。
   日線以紐約 17:00 ET 切分;結構判定只使用已收線 K 棒;沒有優勢就等待。
 </footer>
 
 <script src="/static/vendor/lightweight-charts.standalone.production.js"></script>
 <script src="/static/js/escape.js"></script>
-<script src="/static/js/messages.js?v=scenario-safety-v1"></script>
-<script src="/static/js/app.js?v=scenario-safety-v1"></script>
+<script src="/static/js/messages.js?v=scenario-safety-v2"></script>
+<script src="/static/js/app.js?v=scenario-safety-v2"></script>
 </body>
 </html>
