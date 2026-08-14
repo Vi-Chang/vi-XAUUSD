@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 Direction = Literal["LONG", "SHORT"]
 
@@ -26,6 +26,19 @@ class PriceZone:
 
 def conservative_entry(direction: Direction, zone: PriceZone) -> float:
     return zone.high if direction == "LONG" else zone.low
+
+
+def select_structural_stop(direction: Direction, *, entry: PriceZone,
+                           levels: list[Any]) -> Any | None:
+    kind = "SWING_LOW_15M" if direction == "LONG" else "SWING_HIGH_15M"
+    candidates = [
+        level for level in levels
+        if level.kind == kind
+        and ((direction == "LONG" and level.mid < entry.low)
+             or (direction == "SHORT" and level.mid > entry.high))
+    ]
+    boundary = entry.low if direction == "LONG" else entry.high
+    return min(candidates, key=lambda level: abs(level.mid - boundary)) if candidates else None
 
 
 def validate_price_structure(

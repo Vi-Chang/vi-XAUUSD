@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 
 from app.engines.scenario_safety import (
@@ -5,6 +7,7 @@ from app.engines.scenario_safety import (
     calculate_risk_reward,
     conservative_entry,
     lifecycle_status,
+    select_structural_stop,
     stable_setup_id,
     validate_price_structure,
 )
@@ -85,3 +88,13 @@ def test_same_breakout_keeps_setup_id_and_new_breakout_changes_it():
     first = stable_setup_id(**kwargs)
     assert stable_setup_id(**kwargs) == first
     assert stable_setup_id(**{**kwargs, "breakout_at": "2026-08-14T13:00:00+00:00"}) != first
+
+
+def test_stop_source_skips_swings_inside_entry_zone():
+    levels = [
+        SimpleNamespace(kind="SWING_LOW_15M", mid=4370.09),
+        SimpleNamespace(kind="SWING_LOW_15M", mid=4360.0),
+        SimpleNamespace(kind="SWING_LOW_15M", mid=4350.0),
+    ]
+    chosen = select_structural_stop("LONG", entry=LONG_ENTRY, levels=levels)
+    assert chosen.mid == 4360.0
