@@ -129,6 +129,41 @@ class Scenario(BaseModel):
     structure_event_id: str | None = None   # 觸發本 setup 的結構事件(BOS/CHoCH)
     invalid_reasons: list[str] = Field(default_factory=list)  # INVALID 時的違規清單
     invalid_fatal: bool = False   # P1:FATAL(程式錯誤級)vs REJECT(條件不足)
+    lifecycle_status: Literal[
+        "NO_SETUP", "BREAKOUT_PENDING", "WAITING_FOR_ENTRY", "READY",
+        "MISSED_ENTRY_WAIT_RETEST", "FAILED_BREAKOUT", "EXPIRED", "INVALID",
+        "POSITION_MANAGEMENT", "WATCH",
+    ] = "NO_SETUP"
+    planned_entry: float | None = None
+    stop_loss_price: float | None = None
+    rr_calculation_basis: str = ""
+    rr_details: list[dict] = Field(default_factory=list)
+    blocking_reasons: list[str] = Field(default_factory=list)
+    raw_price_debug: dict = Field(default_factory=dict)
+    setup_id: str = ""
+    breakout_at: str = ""
+    closed_bars_since_breakout: int = 0
+
+
+class DecisionTrace(BaseModel):
+    analysisId: int = 0
+    setupId: str = ""
+    finalDecision: str = "WATCH"
+    lifecycleStatus: str = "NO_SETUP"
+    direction: Literal["LONG", "SHORT", "NONE"] = "NONE"
+    triggerLevel: float | None = None
+    breakoutAt: str = ""
+    closedBarsSinceBreakout: int = 0
+    confirmationPassed: bool = False
+    entryZoneValid: bool = False
+    priceInsideEntryZone: bool = False
+    riskRewardPassed: bool = False
+    structurePassed: bool = False
+    dataQualityPassed: bool = False
+    positionStatus: Literal["FLAT", "OPEN", "UNKNOWN"] = "UNKNOWN"
+    blockingReasons: list[str] = Field(default_factory=list)
+    evaluatedAt: str = ""
+    marketSnapshotAt: str = ""
 
 
 class RiskManagerView(BaseModel):
@@ -474,6 +509,7 @@ class AnalysisResult(BaseModel):
     bias_analysis: BiasAnalysis = BiasAnalysis()
     normalized_analysis: NormalizedAnalysisState = NormalizedAnalysisState()
     tactical_shadow: TacticalShadowRecord = Field(default_factory=TacticalShadowRecord)
+    decision_trace: DecisionTrace = Field(default_factory=DecisionTrace)
     risk_manager: RiskManagerView = RiskManagerView()
     position_management: PositionManagement = PositionManagement()
     mentor_comparison: MentorComparison = MentorComparison()
