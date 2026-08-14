@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import or_, select
 
 from app.db.models import AnalysisRun, Candle
+from app.services.tactical_shadow import outcome_action, shadow_setup_state, signal_mode
 
 HORIZONS = {
     "outcome_15m": timedelta(minutes=15),
@@ -37,7 +38,9 @@ def excursion_pct(action: str, entry: float, highs: list[float], lows: list[floa
 
 def _entry_price(row: AnalysisRun) -> float | None:
     payload = row.result_json or {}
-    value = (payload.get("current_price") or {}).get("mid")
+    shadow = payload.get("tactical_shadow") or {}
+    value = (shadow.get("referencePrice") if signal_mode(row) == "SHADOW"
+             else (payload.get("current_price") or {}).get("mid"))
     try:
         value = float(value)
     except (TypeError, ValueError):
@@ -71,8 +74,6 @@ def backfill_outcomes(db, *, now: datetime, current_price: float | None = None,
     rows = db.execute(
         select(AnalysisRun).where(
             AnalysisRun.run_time >= oldest,
-            AnalysisRun.decision_action.in_(
-                ("LONG", "SHORT", "PREPARE_LONG", "PREPARE_SHORT")),
             or_(*(getattr(AnalysisRun, field).is_(None) for field in HORIZONS)),
         ).order_by(AnalysisRun.run_time.asc()).limit(max(1, limit))
     ).scalars().all()
@@ -92,8 +93,9 @@ def backfill_outcomes(db, *, now: datetime, current_price: float | None = None,
     closes = [(stamp, values[2]) for stamp, values in candles]
     updated = 0
     for row in rows:
+        action = outcome_action(row)
         entry = _entry_price(row)
-        if signed_return_pct(row.decision_action, entry or 0.0, entry or 0.0) is None:
+        if action is None or signed_return_pct(action, entry or 0.0, entry or 0.0) is None:
             continue
         run_time = _utc(row.run_time)
         age = now - run_time
@@ -101,7 +103,7 @@ def backfill_outcomes(db, *, now: datetime, current_price: float | None = None,
             if age < horizon:
                 continue
             close = first_close_at_or_after(closes, run_time + horizon)
-            value = signed_return_pct(row.decision_action, entry or 0.0, close or 0.0)
+            value = signed_return_pct(action, entry or 0.0, close or 0.0)
             if value is not None and getattr(row, field) != value:
                 setattr(row, field, value)
                 updated += 1
@@ -109,12 +111,15 @@ def backfill_outcomes(db, *, now: datetime, current_price: float | None = None,
                 reached = next((stamp for stamp, values in candles
                                 if values[2] == close and stamp >= run_time + horizon), None)
                 path = [values for stamp, values in candles if reached and run_time < stamp <= reached]
-                excursion = excursion_pct(row.decision_action, entry or 0.0,
+                excursion = excursion_pct(action, entry or 0.0,
                                           [item[0] for item in path], [item[1] for item in path])
                 if excursion is not None:
                     payload = dict(row.result_json or {})
                     outcome_path = dict(payload.get("outcome_path") or {})
-                    outcome_path[field] = {"mfe_pct": excursion[0], "mae_pct": excursion[1]}
+                    outcome_path[field] = {
+                        "mfe_pct": excursion[0], "mae_pct": excursion[1],
+                        "mode": signal_mode(row), "setup_state": shadow_setup_state(row),
+                    }
                     payload["outcome_path"] = outcome_path
                     row.result_json = payload
     return updated

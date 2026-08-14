@@ -432,6 +432,23 @@ class Meta(BaseModel):
     llm_cost_usd_today: float = 0.0
 
 
+class TacticalShadowRecord(BaseModel):
+    """Paper-only tactical signal used for outcome calibration."""
+    enabled: bool = True
+    liveAdviceEnabled: bool = False
+    setupState: Literal[
+        "OBSERVE", "LONG_WATCH", "SHORT_WATCH", "LONG_READY", "SHORT_READY", "NO_CHASE"
+    ] = "OBSERVE"
+    direction: Literal["LONG", "SHORT", "NONE"] = "NONE"
+    referencePrice: float | None = None
+    triggerLevel: float | None = None
+    invalidationLevel: float | None = None
+    expiresAt: str = ""
+    createdAt: str = ""
+    eligibleForOutcome: bool = False
+    parameters: dict[str, float | int] = Field(default_factory=dict)
+
+
 class AnalysisResult(BaseModel):
     """spec 二十二之完整固定輸出。"""
     version: int = 0                # BUGFIX R6:遞增版本號(=analysis_runs.id)
@@ -456,6 +473,7 @@ class AnalysisResult(BaseModel):
     short_scenario: Scenario = Scenario()
     bias_analysis: BiasAnalysis = BiasAnalysis()
     normalized_analysis: NormalizedAnalysisState = NormalizedAnalysisState()
+    tactical_shadow: TacticalShadowRecord = Field(default_factory=TacticalShadowRecord)
     risk_manager: RiskManagerView = RiskManagerView()
     position_management: PositionManagement = PositionManagement()
     mentor_comparison: MentorComparison = MentorComparison()

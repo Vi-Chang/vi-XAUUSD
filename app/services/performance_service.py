@@ -6,6 +6,7 @@ from collections import defaultdict
 from sqlalchemy import select
 
 from app.db.models import AnalysisRun
+from app.services.tactical_shadow import outcome_action, shadow_setup_state, signal_mode
 
 HORIZONS = ("outcome_15m", "outcome_1h", "outcome_4h", "outcome_1d")
 MIN_SAMPLE_SIZE = 30
@@ -57,8 +58,14 @@ def _midpoint(price: object) -> float | None:
 
 def _planned_distances(row: AnalysisRun) -> tuple[float | None, float | None]:
     """Extract planned stop and first-target distances without changing a signal."""
-    direction = _direction(row.decision_action)
+    direction = _direction(outcome_action(row) or "")
     result = row.result_json or {}
+    if signal_mode(row) == "SHADOW":
+        shadow = result.get("tactical_shadow") or {}
+        entry, stop = shadow.get("referencePrice"), shadow.get("invalidationLevel")
+        if isinstance(entry, (int, float)) and entry > 0 and isinstance(stop, (int, float)):
+            return abs(float(entry) - float(stop)) / float(entry) * 100, None
+        return None, None
     scenario = result.get("long_scenario" if direction == "LONG" else "short_scenario")
     if direction is None or not isinstance(scenario, dict):
         return None, None
@@ -119,19 +126,22 @@ def _walk_forward_validation(values_by_horizon: dict[str, list[float]]) -> dict[
 def performance_report(db, *, limit: int = 5000) -> dict:
     rows = db.execute(select(AnalysisRun).order_by(AnalysisRun.run_time.desc()).limit(limit)).scalars().all()
     buckets = {name: defaultdict(list) for name in
-               ("overall", "direction", "score_band", "market_state", "session")}
+               ("overall", "direction", "score_band", "market_state", "session",
+                "setup_state", "signal_mode")}
     excursions = {name: defaultdict(lambda: {"mfe": [], "mae": []}) for name in buckets}
     planned = {name: defaultdict(lambda: {"risk": [], "target": []}) for name in buckets}
     outcomes_by_horizon: dict[str, list[float]] = defaultdict(list)
     eligible = 0
     for row in rows:
-        direction = _direction(row.decision_action)
+        direction = _direction(outcome_action(row) or "")
         if direction is None:
             continue
         eligible += 1
         keys = {"overall": "ALL", "direction": direction,
                 "score_band": _score_band(row.evidence_score),
-                "market_state": row.market_state, "session": _session(row.run_time.hour)}
+                "market_state": row.market_state, "session": _session(row.run_time.hour),
+                "setup_state": shadow_setup_state(row),
+                "signal_mode": signal_mode(row) or "UNKNOWN"}
         planned_risk, planned_target = _planned_distances(row)
         for horizon in HORIZONS:
             value = getattr(row, horizon)
@@ -166,9 +176,21 @@ def performance_report(db, *, limit: int = 5000) -> dict:
         recommendation["walk_forward_status"] = validation.get("status", "not_validated")
         recommendation["walk_forward_reason"] = validation.get("reason", "尚無樣本外驗證資料")
     settled_1h = len(outcomes_by_horizon.get("1h", []))
+    shadow_1h = [item for item in groups.get("signal_mode", [])
+                 if item["key"] == "SHADOW" and item["horizon"] == "1h"]
+    shadow_samples = shadow_1h[0]["sample_size"] if shadow_1h else 0
+    shadow_validation = walk_forward.get("1h", {}).get("status") == "validated"
+    promotion_status = ("validated" if shadow_samples >= MIN_SAMPLE_SIZE * 2 and shadow_validation
+                        else "collecting" if shadow_samples < MIN_SAMPLE_SIZE * 2
+                        else "not_validated")
     return {"eligible_signals": eligible, "minimum_sample_size": MIN_SAMPLE_SIZE,
             "settled_sample_size": settled_1h,
             "calibration_status": ("sufficient" if settled_1h >= MIN_SAMPLE_SIZE
                                    else "collecting"),
             "auto_tuning_enabled": False, "groups": groups,
-            "calibration_recommendations": recommendations, "walk_forward_validation": walk_forward}
+            "calibration_recommendations": recommendations, "walk_forward_validation": walk_forward,
+            "shadow_mode": {"enabled": True, "live_advice_enabled": False,
+                            "sample_size_1h": shadow_samples,
+                            "minimum_validation_samples": MIN_SAMPLE_SIZE * 2,
+                            "promotion_status": promotion_status,
+                            "auto_promotion_enabled": False}}

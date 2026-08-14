@@ -1313,6 +1313,16 @@ async function loadPerformance() {
     const labels = { overall: "整體", direction: "方向", score_band: "分數區間",
       market_state: "市場狀態", session: "交易時段" };
     const cards = [];
+    const shadow = report.shadow_mode || {};
+    cards.push(h`<div class="performance-card calibration-card">
+      <h4>影子驗證</h4>
+      <p>目前只記錄判斷結果，不影響正式買賣建議。</p>
+      <div class="performance-metrics">
+        <span>1 小時樣本<b class="num">${shadow.sample_size_1h || 0}</b></span>
+        <span>驗證門檻<b class="num">${shadow.minimum_validation_samples || 60}</b></span>
+        <span>狀態<b>${shadow.promotion_status === "validated" ? "驗證通過" : shadow.promotion_status === "not_validated" ? "尚未通過" : "收集中"}</b></span>
+      </div><small>不會自動調整參數，也不會自動升級成正式訊號。</small>
+    </div>`);
     const recommendations = report.calibration_recommendations || [];
     if (recommendations.length) cards.push(h`<div class="performance-card calibration-card">
       <h4>校正建議（僅供人工檢視）</h4>
