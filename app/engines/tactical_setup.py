@@ -39,8 +39,11 @@ def classify_tactical_setup(*, support_state: str, weakness_state: str,
     if last_closed_at:
         try:
             stamp = datetime.fromisoformat(last_closed_at)
-            next_check = (stamp + timedelta(minutes=15)).isoformat()
-            expires = (stamp + timedelta(minutes=15 * max(1, expiry_bars))).isoformat()
+            # Candle timestamps are their open time.  A known closed candle at
+            # 12:30 closed at 12:45; the next closed-candle check is 13:00.
+            next_check = (stamp + timedelta(minutes=30)).isoformat()
+            expires = (stamp + timedelta(
+                minutes=15 * (max(1, expiry_bars) + 1))).isoformat()
         except ValueError:
             expires = ""
     invalidation = support + buffer if support is not None else None
