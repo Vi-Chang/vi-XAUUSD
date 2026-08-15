@@ -810,6 +810,7 @@ function renderScenario(el, sc, title, offset) {
       <div class="kv"><span>進場區</span><span class="num">${lv(sc.entry_zone_id)}</span></div>
       <div class="kv"><span>賺賠比計算基準價</span><span class="num">${sc.planned_entry == null ? "–" : fmt(sc.planned_entry)}</span></div>
       <div class="kv"><span>停損價</span><span class="num">${sc.stop_loss_price == null ? lv(sc.stop_loss_id) : fmt(sc.stop_loss_price)}</span></div>
+      ${sc.stop_source_label ? h`<div class="kv"><span>停損來源</span><span>${sc.stop_source_label}${sc.stop_buffer ? `（緩衝 ${fmt(sc.stop_buffer)}）` : ""}</span></div>` : ""}
       <div class="kv"><span>目標價</span><span class="num">${targets}</span></div>
     </div>
     ${(rrList.length && !sc.stale) ? h`<div class="sc-rr">${joinSafe(rrList)}</div>` : ""}
@@ -1305,16 +1306,28 @@ async function loadHistory() {
       timeZone: "Asia/Taipei", month: "2-digit", day: "2-digit", hour: "2-digit",
       minute: "2-digit", hour12: false,
     }).format(new Date(value));
-    const histRows = joinSafe(rows.map((r) => h`<tr>
+    const groups = [];
+    for (const row of rows) {
+      const key = [row.setup_id || "", row.lifecycle_status || "NO_SETUP", row.action,
+        ...(row.blocking_reasons || [])].join("|");
+      const last = groups[groups.length - 1];
+      if (last && last.key === key) last.rows.push(row);
+      else groups.push({ key, rows: [row] });
+    }
+    const histRows = joinSafe(groups.map((group) => {
+      const r = group.rows[0];
+      const repeated = group.rows.length > 1 ? `（持續 ${group.rows.length} 次）` : "";
+      return h`<tr>
         <td class="num">${taipeiTime(r.run_time)}</td>
         <td>${stateZh(r.market_state)}</td>
-        <td>${lifecycleZh(r.lifecycle_status || "NO_SETUP")}</td>
+        <td>${lifecycleZh(r.lifecycle_status || "NO_SETUP")} ${repeated}</td>
         <td><span class="act-pill ${decisionClass(r.action)}">${actionZh(r.action)}</span></td>
         <td><span class="grade-badge g-${r.grade}" title="${gradeZh(r.grade)}" style="width:auto;padding:0 8px;font-size:.75rem">${gradeZh(r.grade)}</span></td>
         <td class="num">${r.evidence_score}</td>
         <td>${qualityZh(r.quality)}</td>
         <td>${(r.blocking_reasons || []).map(blockReasonZh).join("、") || "無"}</td>
-        <td class="num" title="${r.setup_id || ""}">${r.closed_bars_since_breakout || 0} 根</td></tr>`));
+        <td class="num" title="${r.setup_id || ""}">${r.closed_bars_since_breakout || 0} 根</td></tr>`;
+    }));
     body.innerHTML = h`<table class="hist-table"><thead><tr>
       <th>時間（台灣）</th><th>市場狀態</th><th>劇本階段</th><th>決策</th><th>信心</th><th>證據</th><th>品質</th><th>主要阻擋原因</th><th>已等待</th>
       </tr></thead><tbody>${histRows}</tbody></table>`;
@@ -1329,7 +1342,7 @@ async function loadPerformance() {
     const report = await (await fetch("/api/performance")).json();
     const labels = { overall: "整體", direction: "方向", score_band: "分數區間",
       market_state: "市場狀態", session: "交易時段", setup_state: "戰術狀態",
-      signal_mode: "訊號類型" };
+      signal_mode: "訊號類型", stop_source: "停損來源" };
     const cards = [];
     const shadow = report.shadow_mode || {};
     cards.push(h`<div class="performance-card calibration-card">

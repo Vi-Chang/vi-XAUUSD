@@ -214,6 +214,9 @@ def _build_scenario(direction: str, conditions: list[str], *, price: float,
     entry_zone = PriceZone(entry.price_low, entry.price_high) if entry else None
     entry_px = conservative_entry(direction, entry_zone) if entry_zone else None
     stop_px = (stop_ref.mid - (0.25 * atr15 if up else -0.25 * atr15)) if stop_ref else None
+    stop_buffer = round(0.25 * atr15, 3) if stop_ref else 0.0
+    stop_source_label = (
+        f"{stop_ref.timeframe} 已確認結構{'低點' if up else '高點'}" if stop_ref else "")
     target_zones = [PriceZone(t.price_low, t.price_high) for t in targets]
     structure_reasons = (["缺少進場區或停損，價格結構無效"]
                          if entry_zone is None or stop_px is None else
@@ -258,6 +261,9 @@ def _build_scenario(direction: str, conditions: list[str], *, price: float,
             structure_event_id=event_id,
             lifecycle_status="INVALID", planned_entry=entry_px,
             stop_loss_price=stop_px, rr_details=rr_details,
+            stop_source_timeframe=stop_ref.timeframe if stop_ref else "",
+            stop_source_kind=stop_ref.source_kind if stop_ref else "",
+            stop_source_label=stop_source_label, stop_buffer=stop_buffer,
             rr_calculation_basis="進場區最不利端（多單上界／空單下界）",
             blocking_reasons=["STRUCTURE_INVALID"],
             setup_id=setup_id, breakout_at=breakout_at,
@@ -316,6 +322,9 @@ def _build_scenario(direction: str, conditions: list[str], *, price: float,
         structure_event_id=event_id,
         lifecycle_status=lifecycle, planned_entry=entry_px,
         stop_loss_price=stop_px, rr_details=rr_details,
+        stop_source_timeframe=stop_ref.timeframe if stop_ref else "",
+        stop_source_kind=stop_ref.source_kind if stop_ref else "",
+        stop_source_label=stop_source_label, stop_buffer=stop_buffer,
         rr_calculation_basis="進場區最不利端（多單上界／空單下界）",
         blocking_reasons=([lifecycle_blocks[lifecycle]] if lifecycle in lifecycle_blocks else [])
                          + (["RISK_REWARD_TOO_LOW"] if reject else []),

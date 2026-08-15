@@ -136,6 +136,10 @@ class Scenario(BaseModel):
     ] = "NO_SETUP"
     planned_entry: float | None = None
     stop_loss_price: float | None = None
+    stop_source_timeframe: Literal["15M", "1H", "4H", ""] = ""
+    stop_source_kind: str = ""
+    stop_source_label: str = ""
+    stop_buffer: float = 0.0
     rr_calculation_basis: str = ""
     rr_details: list[dict] = Field(default_factory=list)
     blocking_reasons: list[str] = Field(default_factory=list)

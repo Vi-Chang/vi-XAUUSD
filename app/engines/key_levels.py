@@ -148,7 +148,7 @@ def build_candidate_levels(*, price: float, atr15: float,
                                   strength, sources))
 
     # 單點型候選:最近 15M/1H swing(進場/停損精細引用用)
-    for tf in ("15M", "1H"):
+    for tf in ("15M", "1H", "4H"):
         rep = structure_reports.get(tf)
         if not rep:
             continue
