@@ -24,21 +24,42 @@ class PriceZone:
         return round((self.low + self.high) / 2, 2)
 
 
+@dataclass(frozen=True)
+class StructuralStop:
+    """A real confirmed swing selected by timeframe priority."""
+    level: Any
+    timeframe: Literal["15M", "1H", "4H"]
+    source_kind: str
+
+    @property
+    def mid(self) -> float:
+        return self.level.mid
+
+    @property
+    def level_id(self) -> str:
+        return self.level.level_id
+
+
 def conservative_entry(direction: Direction, zone: PriceZone) -> float:
     return zone.high if direction == "LONG" else zone.low
 
 
 def select_structural_stop(direction: Direction, *, entry: PriceZone,
-                           levels: list[Any]) -> Any | None:
-    kind = "SWING_LOW_15M" if direction == "LONG" else "SWING_HIGH_15M"
-    candidates = [
-        level for level in levels
-        if level.kind == kind
-        and ((direction == "LONG" and level.mid < entry.low)
-             or (direction == "SHORT" and level.mid > entry.high))
-    ]
+                           levels: list[Any]) -> StructuralStop | None:
     boundary = entry.low if direction == "LONG" else entry.high
-    return min(candidates, key=lambda level: abs(level.mid - boundary)) if candidates else None
+    side = "LOW" if direction == "LONG" else "HIGH"
+    for timeframe in ("15M", "1H", "4H"):
+        kind = f"SWING_{side}_{timeframe}"
+        candidates = [
+            level for level in levels
+            if level.kind == kind
+            and ((direction == "LONG" and level.mid < entry.low)
+                 or (direction == "SHORT" and level.mid > entry.high))
+        ]
+        if candidates:
+            level = min(candidates, key=lambda item: abs(item.mid - boundary))
+            return StructuralStop(level=level, timeframe=timeframe, source_kind=kind)
+    return None
 
 
 def validate_price_structure(

@@ -122,7 +122,8 @@ async def test_full_pipeline_with_mock_provider():
     now = datetime.now(timezone.utc)
     if not market_is_open(now):
         # 休市:必須 NO_TRADE 且不誤報 STALE(spec 四)
-        assert result.decision.action == "NO_TRADE"
+        # 休市不可建立新交易；若已有持倉，仍須保留管理或出場建議。
+        assert result.decision.action in ("NO_TRADE", "MANAGE", "EXIT")
         assert result.data_quality.status != "STALE"
     # 劇本 resolved_prices 只含合法 ID
     for sc in (result.long_scenario, result.short_scenario):

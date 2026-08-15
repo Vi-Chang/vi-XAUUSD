@@ -98,3 +98,30 @@ def test_stop_source_skips_swings_inside_entry_zone():
     ]
     chosen = select_structural_stop("LONG", entry=LONG_ENTRY, levels=levels)
     assert chosen.mid == 4360.0
+    assert chosen.timeframe == "15M"
+
+
+def test_stop_hierarchy_falls_back_to_h1_then_h4():
+    levels = [
+        SimpleNamespace(kind="SWING_LOW_15M", mid=4370, level_id="m15-inside"),
+        SimpleNamespace(kind="SWING_LOW_1H", mid=4355, level_id="h1"),
+        SimpleNamespace(kind="SWING_LOW_4H", mid=4360, level_id="h4"),
+    ]
+    chosen = select_structural_stop("LONG", entry=LONG_ENTRY, levels=levels)
+    assert (chosen.level_id, chosen.timeframe) == ("h1", "1H")
+
+
+def test_stop_hierarchy_prefers_m15_over_nearer_higher_timeframe():
+    levels = [
+        SimpleNamespace(kind="SWING_HIGH_15M", mid=4430, level_id="m15"),
+        SimpleNamespace(kind="SWING_HIGH_1H", mid=4420, level_id="h1"),
+    ]
+    chosen = select_structural_stop(
+        "SHORT", entry=PriceZone(4400, 4410), levels=levels)
+    assert (chosen.level_id, chosen.timeframe) == ("m15", "15M")
+
+
+def test_stop_hierarchy_returns_none_without_legal_structure():
+    levels = [SimpleNamespace(kind="SWING_HIGH_4H", mid=4405, level_id="inside")]
+    assert select_structural_stop(
+        "SHORT", entry=PriceZone(4400, 4410), levels=levels) is None

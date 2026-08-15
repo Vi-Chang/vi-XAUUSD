@@ -81,6 +81,14 @@ def _planned_distances(row: AnalysisRun) -> tuple[float | None, float | None]:
     return risk, reward
 
 
+def _stop_source(row: AnalysisRun, direction: str | None) -> str:
+    if direction is None:
+        return "UNKNOWN"
+    result = row.result_json or {}
+    scenario = result.get("long_scenario" if direction == "LONG" else "short_scenario") or {}
+    return scenario.get("stop_source_timeframe") or "LEGACY_OR_UNKNOWN"
+
+
 def _calibration_recommendations(groups: dict[str, list[dict]]) -> list[dict]:
     """Return review-only prompts; these never alter live thresholds."""
     recommendations: list[dict] = []
@@ -127,7 +135,7 @@ def performance_report(db, *, limit: int = 5000) -> dict:
     rows = db.execute(select(AnalysisRun).order_by(AnalysisRun.run_time.desc()).limit(limit)).scalars().all()
     buckets = {name: defaultdict(list) for name in
                ("overall", "direction", "score_band", "market_state", "session",
-                "setup_state", "signal_mode")}
+                "setup_state", "signal_mode", "stop_source")}
     excursions = {name: defaultdict(lambda: {"mfe": [], "mae": []}) for name in buckets}
     planned = {name: defaultdict(lambda: {"risk": [], "target": []}) for name in buckets}
     outcomes_by_horizon: dict[str, list[float]] = defaultdict(list)
@@ -141,7 +149,8 @@ def performance_report(db, *, limit: int = 5000) -> dict:
                 "score_band": _score_band(row.evidence_score),
                 "market_state": row.market_state, "session": _session(row.run_time.hour),
                 "setup_state": shadow_setup_state(row),
-                "signal_mode": signal_mode(row) or "UNKNOWN"}
+                "signal_mode": signal_mode(row) or "UNKNOWN",
+                "stop_source": _stop_source(row, direction)}
         planned_risk, planned_target = _planned_distances(row)
         for horizon in HORIZONS:
             value = getattr(row, horizon)
