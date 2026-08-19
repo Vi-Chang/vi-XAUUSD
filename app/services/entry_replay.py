@@ -1,9 +1,9 @@
 """Sequential entry-engine replay; each step sees only data available at that time."""
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Iterable
 
 import pandas as pd
 

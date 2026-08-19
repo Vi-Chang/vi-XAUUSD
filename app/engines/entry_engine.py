@@ -93,7 +93,7 @@ def reversal_evidence(direction: str, frame: pd.DataFrame, zone_low: float,
     """Evaluate only completed candles; returns (confirmed, reason, trigger close)."""
     previous, bar = frame.iloc[-2], frame.iloc[-1]
     o, h, low, close = (float(bar[k]) for k in ("open", "high", "low", "close"))
-    po, ph, pl, pc = (float(previous[k]) for k in ("open", "high", "low", "close"))
+    ph, pl = (float(previous[k]) for k in ("high", "low"))
     candle_range = max(h - low, 1e-9)
     body = abs(close - o)
     touched = h >= zone_low and low <= zone_high
@@ -226,7 +226,8 @@ def evaluate_entry_engine(data: dict, previous: EntryPlan | None = None, *,
                        (price >= previous.take_profit_1 or price <= previous.stop_loss)))
             if exited:
                 plan = replace(previous, status="EXITED")
-                return EntryEvaluation(plan, "EXITED" not in previous.notified_states, _format(plan))
+                return EntryEvaluation(plan, "EXITED" not in previous.notified_states,
+                                       format_entry_message(plan))
         if expired or invalid:
             reason = "計畫已超過有效期限" if expired else previous.cancel_condition
             plan = replace(previous, status="INVALIDATED", missing_condition=reason)

@@ -114,3 +114,15 @@ def test_touch_without_reversal_does_not_enter_and_duplicate_is_suppressed():
     assert ready.plan.setup_id == watch.setup_id
     assert duplicate.plan.status == "ENTRY_READY"
     assert duplicate.should_notify is False
+
+
+def test_triggered_plan_exits_at_first_target_with_complete_message():
+    watch = evaluate_entry_engine(data("confirmed_breakdown"), now=NOW).plan
+    bearish = frame((100, 100.5, 99.5, 100), (100.2, 100.3, 99.7, 99.8))
+    triggered = evaluate_entry_engine(data("confirmed_breakdown"), watch,
+                                      m5_closed=bearish, now=NOW).plan
+    exited = evaluate_entry_engine(
+        data("confirmed_breakdown", price=96.9), triggered, now=NOW)
+    assert exited.plan.status == "EXITED"
+    assert exited.should_notify is True
+    assert "計畫EXITED" in exited.message

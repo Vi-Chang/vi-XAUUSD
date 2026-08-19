@@ -61,5 +61,5 @@ async def notify_entry_plan(plan_data: dict, notifier, *, symbol: str = "XAUUSD"
                           format_entry_message(plan), severity="WARN",
                           force_push=True, exact_once=True)
     updated = EntryPlan(**{**asdict(plan),
-        "notified_states": tuple((*plan.notified_states, plan.status))})
+        "notified_states": (*plan.notified_states, plan.status)})
     _save(symbol, updated)
