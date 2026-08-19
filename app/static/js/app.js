@@ -354,6 +354,7 @@ function applyAnalysis(a) {
   unskel(reason);
   reason.textContent = a.decision.reason;
   renderQuickAction(a);
+  renderEntryPlan(a.entry_engine);
 
   // 資料不足 → 醒目「暫不交易」橫幅(資料過期/異常/休市/證據不足時系統一律 NO_TRADE)
   const ntBanner = $("no-trade-banner");
@@ -429,6 +430,37 @@ function applyAnalysis(a) {
   renderScenario($("scenario-short"), a.short_scenario, "做空劇本", offVal);
   renderAiStrategy(a.ai_strategy);
   applyOverlays().catch(console.error);
+}
+
+function renderEntryPlan(plan) {
+  const card = $("entry-plan-card");
+  if (!card) return;
+  if (!plan || plan.status === "NO_SETUP") {
+    card.hidden = true;
+    return;
+  }
+  card.hidden = false;
+  const status = {
+    SETUP_WATCH: "機會準備中", ENTRY_READY: "已到觀察區，等待 K 線確認",
+    ENTRY_TRIGGERED: "條件完成，可依計畫執行", INVALIDATED: "計畫已取消",
+    EXITED: "計畫已結束",
+  };
+  const direction = plan.direction === "LONG" ? "做多" : plan.direction === "SHORT" ? "做空" : "–";
+  $("entry-plan-status").textContent = status[plan.status] || plan.status;
+  $("entry-plan-direction").textContent = direction;
+  $("entry-plan-direction").className = "chip " + (plan.direction === "LONG" ? "good" : plan.direction === "SHORT" ? "bad" : "info");
+  $("entry-plan-missing").textContent = plan.missing_condition || (plan.status === "ENTRY_TRIGGERED" ? "進場條件已完成" : "");
+  const price = (value) => value == null ? "–" : Number(value).toFixed(2);
+  $("entry-plan-zone").textContent = plan.zone_low == null || plan.zone_high == null ? "–" : `${price(plan.zone_low)}–${price(plan.zone_high)}`;
+  $("entry-plan-entry").textContent = price(plan.suggested_entry);
+  $("entry-plan-stop").textContent = price(plan.stop_loss);
+  $("entry-plan-tp1").textContent = price(plan.take_profit_1);
+  $("entry-plan-tp2").textContent = price(plan.take_profit_2);
+  $("entry-plan-rr").textContent = plan.risk_reward == null ? "–" : `1 : ${Number(plan.risk_reward).toFixed(2)}`;
+  $("entry-plan-trigger").textContent = plan.trigger_condition ? `${plan.trigger_timeframe || "15M"} ${plan.trigger_condition}` : "等待已收盤反轉 K 線";
+  $("entry-plan-cancel").textContent = plan.cancel_condition || "–";
+  $("entry-plan-expiry").textContent = fmtTs(plan.expires_at);
+  card.dataset.status = plan.status;
 }
 
 function renderQuickAction(a) {

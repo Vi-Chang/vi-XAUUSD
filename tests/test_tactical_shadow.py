@@ -14,6 +14,17 @@ def _row(action="WATCH", shadow=None):
     return SimpleNamespace(decision_action=action, result_json={"tactical_shadow": shadow or {}})
 
 
+def test_triggered_entry_engine_has_priority_for_outcome_tracking():
+    row = SimpleNamespace(decision_action="WATCH", result_json={
+        "entry_engine": {"status": "ENTRY_TRIGGERED", "direction": "SHORT"},
+        "tactical_shadow": {"enabled": True, "eligibleForOutcome": True,
+                            "direction": "LONG", "setupState": "LONG_WATCH"},
+    })
+    assert outcome_action(row) == "SHORT"
+    assert signal_mode(row) == "ENTRY_ENGINE"
+    assert shadow_setup_state(row) == "ENTRY_TRIGGERED"
+
+
 def test_observe_is_recorded_but_not_scored():
     record = build_tactical_shadow(
         NormalizedAnalysisState(setupState="OBSERVE"), current_price=4400,

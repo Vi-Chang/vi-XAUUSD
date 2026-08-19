@@ -88,6 +88,23 @@
       <p class="calibration-note" id="calibration-note" hidden></p>
       <div class="quick-action-next"><span>下一步</span><b id="quick-action-next">等待分析完成</b></div>
     </section>
+    <section class="card entry-plan" id="entry-plan-card" hidden aria-live="polite">
+      <div class="card-title">進場計畫</div>
+      <div class="entry-plan-head"><strong id="entry-plan-status">尚無計畫</strong><span class="chip" id="entry-plan-direction">–</span></div>
+      <p class="entry-plan-missing" id="entry-plan-missing"></p>
+      <div class="entry-plan-grid">
+        <div><span>等待價區</span><b class="num" id="entry-plan-zone">–</b></div>
+        <div><span>預計進場</span><b class="num" id="entry-plan-entry">–</b></div>
+        <div><span>停損</span><b class="num" id="entry-plan-stop">–</b></div>
+        <div><span>第一止盈</span><b class="num" id="entry-plan-tp1">–</b></div>
+        <div><span>第二止盈</span><b class="num" id="entry-plan-tp2">–</b></div>
+        <div><span>風險報酬比</span><b class="num" id="entry-plan-rr">–</b></div>
+      </div>
+      <div class="kv"><span>觸發條件</span><span id="entry-plan-trigger">–</span></div>
+      <div class="kv"><span>提前取消</span><span id="entry-plan-cancel">–</span></div>
+      <div class="kv"><span>有效期限</span><span class="num" id="entry-plan-expiry">–</span></div>
+      <div class="entry-plan-note">價格碰到區域不等於進場；必須等已收盤 K 線觸發，且風險報酬比至少 1.5。</div>
+    </section>
     <div class="card risk-priority" id="risk-priority-card">
       <div class="card-title">風險優先摘要</div>
       <div class="kv"><span>資料警告</span><span id="priority-data">–</span></div>

@@ -60,6 +60,13 @@ def _planned_distances(row: AnalysisRun) -> tuple[float | None, float | None]:
     """Extract planned stop and first-target distances without changing a signal."""
     direction = _direction(outcome_action(row) or "")
     result = row.result_json or {}
+    if signal_mode(row) == "ENTRY_ENGINE":
+        plan = result.get("entry_engine") or {}
+        entry, stop, target = (plan.get("suggested_entry"), plan.get("stop_loss"),
+                               plan.get("take_profit_1"))
+        if not all(isinstance(value, (int, float)) for value in (entry, stop, target)) or entry <= 0:
+            return None, None
+        return abs(entry - stop) / entry * 100, abs(target - entry) / entry * 100
     if signal_mode(row) == "SHADOW":
         shadow = result.get("tactical_shadow") or {}
         entry, stop = shadow.get("referencePrice"), shadow.get("invalidationLevel")
@@ -85,6 +92,8 @@ def _stop_source(row: AnalysisRun, direction: str | None) -> str:
     if direction is None:
         return "UNKNOWN"
     result = row.result_json or {}
+    if signal_mode(row) == "ENTRY_ENGINE":
+        return str((result.get("entry_engine") or {}).get("trigger_timeframe") or "15M")
     scenario = result.get("long_scenario" if direction == "LONG" else "short_scenario") or {}
     return scenario.get("stop_source_timeframe") or "LEGACY_OR_UNKNOWN"
 
