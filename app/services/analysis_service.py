@@ -523,11 +523,12 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
     result.entry_engine = EntryEngineView.model_validate({
         **entry_plan.__dict__, "notified_states": list(entry_plan.notified_states)})
     if elig.eligible and entry_plan.status == "ENTRY_TRIGGERED":
-        result.decision.action = entry_plan.direction
+        result.decision.action = "LONG" if entry_plan.direction == "LONG" else "SHORT"
         result.decision.reason = entry_plan.trigger_condition
         result.market_decision = result.decision.model_copy()
     elif elig.eligible and entry_plan.status in ("SETUP_WATCH", "ENTRY_READY"):
-        result.decision.action = f"PREPARE_{entry_plan.direction}"
+        result.decision.action = (
+            "PREPARE_LONG" if entry_plan.direction == "LONG" else "PREPARE_SHORT")
         result.decision.reason = entry_plan.missing_condition
         result.market_decision = result.decision.model_copy()
 
