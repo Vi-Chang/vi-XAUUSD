@@ -314,6 +314,33 @@ class Alert(Base):
     __table_args__ = (Index("ix_alerts_topic", "topic", "sent_at"),)
 
 
+class DirectionalAlertState(Base):
+    """Persistent 15M direction lifecycle; survives restarts and deployments."""
+    __tablename__ = "directional_alert_states"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(32), unique=True)
+    status: Mapped[str] = mapped_column(String(24), default="NEUTRAL")
+    level: Mapped[float | None] = mapped_column(Float, nullable=True)
+    invalidation_level: Mapped[float | None] = mapped_column(Float, nullable=True)
+    zone_low: Mapped[float | None] = mapped_column(Float, nullable=True)
+    zone_high: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_closed_candle: Mapped[str] = mapped_column(String(64), default="")
+    generation: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class EntrySetupState(Base):
+    """One active executable entry lifecycle per symbol."""
+    __tablename__ = "entry_setup_states"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(32), unique=True)
+    setup_id: Mapped[str] = mapped_column(String(64), default="")
+    status: Mapped[str] = mapped_column(String(24), default="NO_SETUP")
+    plan: Mapped[dict] = mapped_column(JSON, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class ProviderHealth(Base):
     """16. provider_health — 各資料源健康與配額"""
     __tablename__ = "provider_health"

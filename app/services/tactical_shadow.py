@@ -41,6 +41,9 @@ def build_tactical_shadow(
 
 def outcome_action(row: Any) -> str | None:
     """Actual advice has priority; otherwise return an eligible shadow direction."""
+    entry = (row.result_json or {}).get("entry_engine") or {}
+    if entry.get("status") in ("ENTRY_TRIGGERED", "EXITED") and entry.get("direction") in ("LONG", "SHORT"):
+        return str(entry["direction"])
     if row.decision_action in ACTIONABLE:
         return row.decision_action
     shadow = (row.result_json or {}).get("tactical_shadow") or {}
@@ -54,9 +57,15 @@ def signal_mode(row: Any) -> str | None:
     action = outcome_action(row)
     if action is None:
         return None
+    entry = (row.result_json or {}).get("entry_engine") or {}
+    if entry.get("status") in ("ENTRY_TRIGGERED", "EXITED"):
+        return "ENTRY_ENGINE"
     return "LIVE" if row.decision_action in ACTIONABLE else "SHADOW"
 
 
 def shadow_setup_state(row: Any) -> str:
+    entry = (row.result_json or {}).get("entry_engine") or {}
+    if entry.get("status") in ("ENTRY_TRIGGERED", "EXITED"):
+        return str(entry.get("status"))
     shadow = (row.result_json or {}).get("tactical_shadow") or {}
     return str(shadow.get("setupState") or "LIVE")

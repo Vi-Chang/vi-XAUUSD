@@ -38,8 +38,10 @@ def excursion_pct(action: str, entry: float, highs: list[float], lows: list[floa
 
 def _entry_price(row: AnalysisRun) -> float | None:
     payload = row.result_json or {}
+    entry_engine = payload.get("entry_engine") or {}
     shadow = payload.get("tactical_shadow") or {}
-    value = (shadow.get("referencePrice") if signal_mode(row) == "SHADOW"
+    value = (entry_engine.get("suggested_entry") if signal_mode(row) == "ENTRY_ENGINE"
+             else shadow.get("referencePrice") if signal_mode(row) == "SHADOW"
              else (payload.get("current_price") or {}).get("mid"))
     try:
         value = float(value)

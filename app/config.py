@@ -233,7 +233,7 @@ class Settings(BaseSettings):
     # ── 分析 ──
     candle_history_count: int = 300
     analysis_timeframes: tuple[str, ...] = ("1D", "4H", "1H", "15M")
-    aux_timeframes: tuple[str, ...] = ("1W", "30M")
+    aux_timeframes: tuple[str, ...] = ("1W", "30M", "5M")
     # 統一市場判斷：週期、證據家族與突破確認參數（唯一可校正位置）。
     regime_weights: dict[str, float] = {"1D": 0.35, "4H": 0.35, "1H": 0.20, "15M": 0.10}
     entry_weights: dict[str, float] = {"1D": 0.05, "4H": 0.15, "1H": 0.35, "15M": 0.45}
