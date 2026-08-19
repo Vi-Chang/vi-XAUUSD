@@ -513,6 +513,24 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
     if not elig.eligible:
         _apply_no_trade_gate(result, elig)
 
+    # Persistent executable ENTRY ENGINE. It owns setup continuity and never
+    # relies on the previous human-readable decision text.
+    from app.schemas.analysis import EntryEngineView
+    from app.services.entry_engine_service import evaluate_and_persist_entry
+    entry_plan = evaluate_and_persist_entry(
+        result.model_dump(), m5_closed=dfs_closed.get("5M"),
+        m15_closed=dfs_closed.get("15M"), now=now)
+    result.entry_engine = EntryEngineView.model_validate({
+        **entry_plan.__dict__, "notified_states": list(entry_plan.notified_states)})
+    if elig.eligible and entry_plan.status == "ENTRY_TRIGGERED":
+        result.decision.action = entry_plan.direction
+        result.decision.reason = entry_plan.trigger_condition
+        result.market_decision = result.decision.model_copy()
+    elif elig.eligible and entry_plan.status in ("SETUP_WATCH", "ENTRY_READY"):
+        result.decision.action = f"PREPARE_{entry_plan.direction}"
+        result.decision.reason = entry_plan.missing_condition
+        result.market_decision = result.decision.model_copy()
+
     # ── 9d. V2 AI 分析層(4 Agent;任何失敗不影響上面的確定性輸出)──
     try:
         from app.llm.client import llm_available

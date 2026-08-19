@@ -292,10 +292,16 @@ async def run_full_analysis(*, trigger: str, reason_zh: str | None) -> None:
 
         action = result.decision.action
         if state.notifier:
-            # Trading push messages use a persistent 15M state machine. Event text,
-            # 5M volatility and higher-timeframe summaries cannot create direction.
+            entry = state.latest_result.get("entry_engine") or {}
+            from app.services.entry_engine_service import notify_entry_plan
+            await notify_entry_plan(entry, state.notifier,
+                                    symbol=state.latest_result.get("symbol", "XAUUSD"))
+            # When an executable plan exists it is the only trading notification.
+            # Otherwise retain the structural risk lifecycle as a precise fallback.
             from app.services.short_alert_service import process_short_alert
-            await process_short_alert(state.latest_result, state.notifier)
+            await process_short_alert(
+                state.latest_result,
+                None if entry.get("status") != "NO_SETUP" else state.notifier)
             if result.data_quality.status in ("STALE", "FAILED"):
                 await state.notifier.notify(
                     "RISK", "data_quality",

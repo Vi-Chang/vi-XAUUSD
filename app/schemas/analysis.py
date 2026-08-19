@@ -490,6 +490,30 @@ class TacticalShadowRecord(BaseModel):
     parameters: dict[str, float | int] = Field(default_factory=dict)
 
 
+class EntryEngineView(BaseModel):
+    status: Literal[
+        "NO_SETUP", "SETUP_WATCH", "ENTRY_READY", "ENTRY_TRIGGERED",
+        "INVALIDATED", "EXITED",
+    ] = "NO_SETUP"
+    setup_id: str = ""
+    direction: Literal["LONG", "SHORT", "NONE"] = "NONE"
+    zone_low: float | None = None
+    zone_high: float | None = None
+    trigger_timeframe: str = ""
+    trigger_condition: str = ""
+    suggested_entry: float | None = None
+    stop_loss: float | None = None
+    take_profit_1: float | None = None
+    take_profit_2: float | None = None
+    risk_reward: float | None = None
+    confidence_score: int = 0
+    created_at: str = ""
+    expires_at: str = ""
+    cancel_condition: str = ""
+    missing_condition: str = ""
+    notified_states: list[str] = Field(default_factory=list)
+
+
 class AnalysisResult(BaseModel):
     """spec 二十二之完整固定輸出。"""
     version: int = 0                # BUGFIX R6:遞增版本號(=analysis_runs.id)
@@ -515,6 +539,7 @@ class AnalysisResult(BaseModel):
     bias_analysis: BiasAnalysis = BiasAnalysis()
     normalized_analysis: NormalizedAnalysisState = NormalizedAnalysisState()
     tactical_shadow: TacticalShadowRecord = Field(default_factory=TacticalShadowRecord)
+    entry_engine: EntryEngineView = Field(default_factory=EntryEngineView)
     decision_trace: DecisionTrace = Field(default_factory=DecisionTrace)
     risk_manager: RiskManagerView = RiskManagerView()
     position_management: PositionManagement = PositionManagement()

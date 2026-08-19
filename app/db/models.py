@@ -330,6 +330,17 @@ class DirectionalAlertState(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+class EntrySetupState(Base):
+    """One active executable entry lifecycle per symbol."""
+    __tablename__ = "entry_setup_states"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(32), unique=True)
+    setup_id: Mapped[str] = mapped_column(String(64), default="")
+    status: Mapped[str] = mapped_column(String(24), default="NO_SETUP")
+    plan: Mapped[dict] = mapped_column(JSON, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class ProviderHealth(Base):
     """16. provider_health — 各資料源健康與配額"""
     __tablename__ = "provider_health"

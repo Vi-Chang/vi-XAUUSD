@@ -41,7 +41,7 @@ PUBLIC_ALLOWLIST: tuple[str, ...] = (
     "calibration_status", "calibration_sample_size",
     "calibration_min_sample_size", "calibration_message",
     "freshness",
-    "decision_trace",
+    "decision_trace", "entry_engine",
 )
 
 # 明確禁止出現在公開 payload 的欄位名(含巢狀;供測試遞迴斷言)。
