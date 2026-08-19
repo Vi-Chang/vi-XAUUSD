@@ -367,7 +367,7 @@ def build_normalized_state(*, generated_at: str, market_timestamp: str, current_
         event_risk if event_status != "FAILED" and event_risk in
         ("low", "medium", "high", "unknown") else "unknown")
     state = NormalizedAnalysisState(generatedAt=generated_at,
-        marketDataTimestamp=market_timestamp, currentPrice=current_price,
+        marketDataTimestamp=market_timestamp, currentPrice=current_price, atr15=atr15,
         trendBias=trend, tacticalBias=tactical.tactical_bias,
         setupState=tactical.setup_state, triggerLevel=tactical.trigger_level,
         invalidationLevel=tactical.invalidation_level, expiresAt=tactical.expires_at,
@@ -396,6 +396,8 @@ def build_normalized_state(*, generated_at: str, market_timestamp: str, current_
         timeframeAssessments=dims["assessments"],
         confirmationLevels=dims["confirmationLevels"],
         lastClosedCandleTimestamp=closed_times.get("15M", ""),
+        lastClosedCandlePrice=(float(m15_closed.iloc[-1]["close"])
+                               if m15_closed is not None and len(m15_closed) else None),
         eventDataTimestamp=event_timestamp,
         freshnessBySource={"market": market_status, "events": event_status},
         eventRisk=normalized_event_risk,

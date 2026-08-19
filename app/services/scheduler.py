@@ -291,26 +291,11 @@ async def run_full_analysis(*, trigger: str, reason_zh: str | None) -> None:
         state.last_full_analysis = datetime.now(timezone.utc)
 
         action = result.decision.action
-        ai = result.ai_strategy
-        ai_line = (f"\n🤖 AI:{ai.one_liner}(信心 {ai.confidence.score}/100)"
-                   if ai and ai.available and ai.one_liner else "")
         if state.notifier:
-            if trigger == "event":
-                await state.notifier.notify(
-                    "TRIGGER", f"event:{(reason_zh or '')[:60]}",
-                    f"⚡ 事件觸發:{reason_zh}\n"
-                    f"{result.summary_zh_tw}{ai_line}\n"
-                    f"提醒:{result.most_likely_user_mistake_now}",
-                    severity="WARN")
-            elif action != state.last_decision_action:
-                level = ("TRIGGER" if action in ("LONG", "SHORT")
-                         else "WATCH" if action.startswith(("PREPARE", "WATCH"))
-                         else "INFO")
-                await state.notifier.notify(
-                    level, f"decision:{action}",
-                    f"🕐 定時更新:XAUUSD {result.market_state} → {action}\n"
-                    f"{result.summary_zh_tw}{ai_line}\n"
-                    f"提醒:{result.most_likely_user_mistake_now}")
+            # Trading push messages use a persistent 15M state machine. Event text,
+            # 5M volatility and higher-timeframe summaries cannot create direction.
+            from app.services.short_alert_service import process_short_alert
+            await process_short_alert(state.latest_result, state.notifier)
             if result.data_quality.status in ("STALE", "FAILED"):
                 await state.notifier.notify(
                     "RISK", "data_quality",

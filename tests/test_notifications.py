@@ -76,6 +76,20 @@ class TestSeverityGating:
         await m.notify("INFO", "hb", "ok")
         assert len(push.sent) == 1
 
+    async def test_exact_once_dedup_survives_manager_restart(self, set_notify_level):
+        from app.db.models import Alert
+        from app.db.session import db_session
+        set_notify_level("WARN")
+        init_db()
+        with db_session() as db:
+            db.query(Alert).filter(Alert.topic == "short-structure:test").delete()
+        first, _, first_push = mgr()
+        await first.notify("TRIGGER", "short-structure:test", "first", exact_once=True)
+        restarted, _, restarted_push = mgr()
+        await restarted.notify("TRIGGER", "short-structure:test", "duplicate", exact_once=True)
+        assert len(first_push.sent) == 1
+        assert len(restarted_push.sent) == 0
+
 
 class _FakeState:
     def __init__(self, notifier, provider_name="twelve_data"):

@@ -334,6 +334,7 @@ class NormalizedAnalysisState(BaseModel):
     generatedAt: str = ""
     marketDataTimestamp: str = ""
     currentPrice: float | None = None
+    atr15: float = 0.0
     trendBias: Literal["bullish", "bearish", "neutral"] = "neutral"
     tacticalBias: Literal["bullish", "bearish", "neutral"] = "neutral"
     setupState: Literal[
@@ -388,6 +389,7 @@ class NormalizedAnalysisState(BaseModel):
     timeframeAssessments: list[TimeframeAssessment] = Field(default_factory=list)
     confirmationLevels: list[DynamicConfirmationLevel] = Field(default_factory=list)
     lastClosedCandleTimestamp: str = ""
+    lastClosedCandlePrice: float | None = None
     eventDataTimestamp: str = ""
     freshnessBySource: dict[str, str] = Field(default_factory=dict)
     eventRisk: Literal["low", "medium", "high", "unknown"] = "unknown"

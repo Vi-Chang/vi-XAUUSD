@@ -53,7 +53,8 @@ class NotificationManager:
 
     async def notify(self, level: str, topic: str, message: str, *,
                      severity: str | None = None, bypass_cooldown: bool = False,
-                     force_push: bool = False, mention: bool | None = None) -> bool:
+                     force_push: bool = False, mention: bool | None = None,
+                     exact_once: bool = False) -> bool:
         """發送分級通知。
 
         severity:覆寫類別預設嚴重度(如 data_lag 用 RISK 類別但只算 WARN)。
@@ -67,6 +68,17 @@ class NotificationManager:
         if level in ("RISK", "EXIT"):
             bypass_cooldown = True
         key = f"{level}:{topic}"
+        if exact_once:
+            try:
+                from sqlalchemy import select
+                with db_session() as db:
+                    exists = db.execute(select(Alert.id).where(
+                        Alert.level == level, Alert.topic == topic).limit(1)).scalar_one_or_none()
+                if exists is not None:
+                    logger.debug("notification suppressed by persistent dedup: %s", key)
+                    return False
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("persistent notification dedup failed: %s", exc)
         if not bypass_cooldown and not self._cooldown_ok(key, now):
             logger.debug("notification suppressed by cooldown: %s", key)
             return False
