@@ -489,6 +489,11 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
                                                     sc.invalidation_id, *sc.target_ids]),
             "created_at": now.isoformat(),
             "snapshot_ts": tick.quote_time.isoformat(),
+            "quoteTime": tick.quote_time.isoformat(),
+            "lastClosedCandleTime": normalized.lastClosedCandleTimestamp,
+            "calculatedAt": now.isoformat(),
+            "sourcePrice": tick.mid,
+            "marketState": normalized.marketStateCode,
         })
     result.long_scenario = _stamped(result.long_scenario)
     result.short_scenario = _stamped(result.short_scenario)
@@ -550,6 +555,12 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
     result.hypothetical_exit_advisor = monitors["hypothetical_exit_advisor"]
     result.breakout_alert = monitors["breakout_alert"]
     result.virtual_profit_tracker = monitors["virtual_profit_tracker"]
+    result.final_decision_state = monitors["final_decision_state"]
+    final_state = result.final_decision_state.get("state", "WAIT")
+    from app.engines.unified_decision_state import enforce_scenario_consistency
+    result.long_scenario, result.short_scenario = enforce_scenario_consistency(
+        final_state, result.long_scenario, result.short_scenario)
+    result.decision_trace.finalDecision = final_state
 
     # ── 9d. V2 AI 分析層(4 Agent;任何失敗不影響上面的確定性輸出)──
     try:
@@ -615,6 +626,9 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
             # BUGFIX R6:版本號 = analysis_runs.id(單調遞增、跨重啟持續)
             result.version = run.id
             result.decision_trace.analysisId = run.id
+            result.final_decision_state["version"] = run.id
+            result.long_scenario = result.long_scenario.model_copy(update={"version": run.id})
+            result.short_scenario = result.short_scenario.model_copy(update={"version": run.id})
             run.result_json = result.model_dump()
             for lv in levels:
                 db.add(CandidateLevelRow(analysis_run_id=run.id, level_id=lv.level_id,

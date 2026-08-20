@@ -244,6 +244,8 @@ function switchTF(tf) {
 /* ═══ 即時 tick → 未收線 K 棒跳動 + 價格區 ═══ */
 function onTick(t) {
   updatePricePanel(t.bid, t.ask, t.spread);
+  if ($("quick-live-price")) $("quick-live-price").textContent = fmt(t.mid);
+  if ($("quick-live-time")) $("quick-live-time").textContent = new Date(t.time * 1000).toLocaleTimeString("zh-TW", { hour12: false });
   if (!S.lastBar) return;
   const sec = TF_SEC[S.tf];
   const boundary = S.lastBar.time + sec;
@@ -357,6 +359,7 @@ function applyAnalysis(a) {
   renderEntryPlan(a.entry_engine);
   renderDirectionalAlert(a.directional_alert);
   renderMarketMonitors(a);
+  renderFinalDecision(a.final_decision_state);
 
   // 資料不足 → 醒目「暫不交易」橫幅(資料過期/異常/休市/證據不足時系統一律 NO_TRADE)
   const ntBanner = $("no-trade-banner");
@@ -454,6 +457,28 @@ function renderDirectionalAlert(alert) {
   $("bearish-monitor-level").textContent = alert.level == null ? "–" : Number(alert.level).toFixed(2);
   $("bearish-monitor-time").textContent = fmtTs(alert.candle_close_time);
   $("bearish-monitor-message").textContent = alert.message || "持續等待下一個 15M 結構事件。";
+}
+
+function renderFinalDecision(finalState) {
+  if (!finalState) return;
+  const labels = {
+    WAIT: "等待", LONG_WATCH: "多方觀察中", LONG_READY: "多方條件完成",
+    SHORT_WATCH: "空方觀察中", SHORT_READY: "空方條件完成",
+    LONG_MANAGE: "多方獲利管理", SHORT_MANAGE: "空方獲利管理",
+    MISSED_ENTRY: "已錯過進場", INVALIDATED: "舊劇本已失效", DATA_STALE: "資料過期",
+  };
+  $("quick-final-state").textContent = labels[finalState.state] || "等待";
+  $("quick-flat-action").textContent = finalState.flat_action || "等待下一個明確條件";
+  $("quick-position-action").textContent = finalState.direction === "SHORT"
+    ? finalState.short_manage : finalState.long_manage;
+  $("quick-trigger").textContent = finalState.confirmation || "等待下一根 15 分鐘 K 線";
+  $("quick-freshness").textContent = finalState.state === "DATA_STALE" ? "資料過期，禁止進場" : "資料正常";
+  $("quick-live-price").textContent = finalState.source_price == null ? "–" : fmt(finalState.source_price);
+  $("quick-live-time").textContent = fmtTs(finalState.quote_time);
+  $("quick-action-title").textContent = finalState.action || labels[finalState.state] || "等待";
+  $("quick-action-why").textContent = finalState.reason || "等待條件一致";
+  $("quick-action-next").textContent = finalState.flat_action || "等待下一個明確條件";
+  $("quick-action-card").dataset.action = finalState.state === "DATA_STALE" ? "NO_TRADE" : finalState.state;
 }
 
 function renderMarketMonitors(a) {
@@ -1519,6 +1544,7 @@ function connectWS() {
       const msg = JSON.parse(e.data);
       if (msg.type === "tick") onTick(msg);
       else if (msg.type === "analysis") applyAnalysis(msg.data);
+      else if (msg.type === "decision_state") renderFinalDecision(msg.data);
       else if (msg.type === "analysis_refreshing") {
         $("quick-action-title").textContent = "判斷更新中";
         $("quick-action-why").textContent = "新一根 15 分鐘 K 棒已收盤，系統正在重新判斷。";
@@ -1533,6 +1559,12 @@ function connectWS() {
 /* ═══ 啟動 ═══ */
 async function boot() {
   initChart();
+  const advancedToggle = $("mobile-advanced-toggle");
+  if (advancedToggle) advancedToggle.addEventListener("click", () => {
+    const open = document.body.classList.toggle("mobile-advanced-open");
+    advancedToggle.setAttribute("aria-expanded", String(open));
+    advancedToggle.textContent = open ? "收起進階資訊" : "顯示進階資訊";
+  });
   [["trend-bias", "市場細節"], ["technical-bias", "技術證據與分數"],
    ["event-countdown", "事件資訊"], ["sys-provider", "資料與風險細節"]]
     .forEach(([id, label]) => collapseSideCard(id, label));

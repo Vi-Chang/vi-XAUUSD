@@ -19,6 +19,7 @@ from app.engines.hypothetical_exit_advisor import (
     build_hypothetical_exit_plans,
     evaluate_hypothetical_exits,
 )
+from app.engines.unified_decision_state import evaluate_unified_decision
 from app.engines.virtual_profit_tracker import evaluate_virtual_profit
 
 
@@ -105,14 +106,41 @@ def evaluate_market_monitors(
         candle_close_time=str(normalized.get("lastClosedCandleTimestamp") or ""),
     )
     _save(symbol, "virtual_profit", virtual_state)
-    plans = {
-        plan.side: asdict(plan) for plan in build_hypothetical_exit_plans(data)
-    }
-    return {
+    plans = {plan.side: asdict(plan) for plan in build_hypothetical_exit_plans(data)}
+    monitor_result = {
         "hypothetical_exit_advisor": {"plans": plans, "events": exit_events},
         "breakout_alert": breakout_view(breakout_state, breakout_event),
         "virtual_profit_tracker": {**virtual_state, "events": virtual_events},
     }
+    final_input = {**data, **monitor_result}
+    final_state, final_events = evaluate_unified_decision(
+        final_input, _load(symbol, "final_decision")
+    )
+    _save(
+        symbol,
+        "final_decision",
+        {k: v for k, v in final_state.items() if k != "events"},
+    )
+    return {
+        **monitor_result,
+        "final_decision_state": final_state,
+        "final_events": final_events,
+    }
+
+
+def evaluate_live_quote_state(
+    data: dict, *, price: float, quote_time: str
+) -> tuple[dict, list[dict]]:
+    """Re-evaluate transitions on every quote without pretending a candle closed."""
+    symbol = str(data.get("symbol") or "XAUUSD")
+    normalized = dict(data.get("normalized_analysis") or {})
+    normalized["currentPrice"] = price
+    normalized["marketDataTimestamp"] = quote_time
+    current, events = evaluate_unified_decision(
+        {**data, "normalized_analysis": normalized}, _load(symbol, "final_decision")
+    )
+    _save(symbol, "final_decision", {k: v for k, v in current.items() if k != "events"})
+    return current, events
 
 
 async def notify_market_monitor_events(result: dict, notifier) -> None:
@@ -122,6 +150,7 @@ async def notify_market_monitor_events(result: dict, notifier) -> None:
         (result.get("hypothetical_exit_advisor") or {}).get("events") or [],
         [((result.get("breakout_alert") or {}).get("event") or {})],
         (result.get("virtual_profit_tracker") or {}).get("events") or [],
+        (result.get("final_decision_state") or {}).get("events") or [],
     ]
     for events in event_groups:
         for event in events:

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>XAUUSD 交易分析終端</title>
-<link rel="stylesheet" href="/static/css/style.css?v=exit-breakout-profit-v1">
+<link rel="stylesheet" href="/static/css/style.css?v=unified-decision-v1">
 </head>
 <body>
 <div class="stale-banner" id="stale-banner" hidden>
@@ -86,8 +86,17 @@
       <strong class="quick-action-title" id="quick-action-title">載入中…</strong>
       <p class="quick-action-why" id="quick-action-why"></p>
       <p class="calibration-note" id="calibration-note" hidden></p>
+      <div class="quick-decision-grid">
+        <div><span>即時價格／更新</span><b class="num" id="quick-live-price">–</b><small id="quick-live-time">–</small></div>
+        <div><span>當前狀態</span><b id="quick-final-state">等待</b></div>
+        <div><span>未持倉下一步</span><b id="quick-flat-action">等待分析完成</b></div>
+        <div><span>已持倉管理</span><b id="quick-position-action">依防守價管理</b></div>
+        <div><span>下一個觸發</span><b id="quick-trigger">–</b></div>
+        <div><span>資料狀態</span><b id="quick-freshness">確認中</b></div>
+      </div>
       <div class="quick-action-next"><span>下一步</span><b id="quick-action-next">等待分析完成</b></div>
     </section>
+    <button class="btn mobile-advanced-toggle" id="mobile-advanced-toggle" type="button" aria-expanded="false">顯示進階資訊</button>
     <section class="card entry-plan" id="entry-plan-card" hidden aria-live="polite">
       <div class="card-title">進場計畫</div>
       <div class="entry-plan-head"><strong id="entry-plan-status">尚無計畫</strong><span class="chip" id="entry-plan-direction">–</span></div>
@@ -327,6 +336,6 @@
 <script src="/static/vendor/lightweight-charts.standalone.production.js"></script>
 <script src="/static/js/escape.js"></script>
 <script src="/static/js/messages.js?v=scenario-safety-v2"></script>
-<script src="/static/js/app.js?v=breakdown-monitor-v1"></script>
+<script src="/static/js/app.js?v=unified-decision-v1"></script>
 </body>
 </html>

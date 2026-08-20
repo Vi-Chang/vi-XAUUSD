@@ -147,6 +147,12 @@ class Scenario(BaseModel):
     setup_id: str = ""
     breakout_at: str = ""
     closed_bars_since_breakout: int = 0
+    quoteTime: str = ""
+    lastClosedCandleTime: str = ""
+    calculatedAt: str = ""
+    sourcePrice: float | None = None
+    marketState: str = ""
+    version: int = 0
 
 
 class DecisionTrace(BaseModel):
@@ -513,6 +519,12 @@ class EntryEngineView(BaseModel):
     cancel_condition: str = ""
     missing_condition: str = ""
     notified_states: list[str] = Field(default_factory=list)
+    quote_time: str = ""
+    last_closed_candle_time: str = ""
+    calculated_at: str = ""
+    source_price: float | None = None
+    market_state: str = ""
+    version: int = 0
 
 
 class DirectionalAlertView(BaseModel):
@@ -561,6 +573,7 @@ class AnalysisResult(BaseModel):
     hypothetical_exit_advisor: dict = Field(default_factory=dict)
     breakout_alert: dict = Field(default_factory=dict)
     virtual_profit_tracker: dict = Field(default_factory=dict)
+    final_decision_state: dict = Field(default_factory=dict)
     decision_trace: DecisionTrace = Field(default_factory=DecisionTrace)
     risk_manager: RiskManagerView = RiskManagerView()
     position_management: PositionManagement = PositionManagement()

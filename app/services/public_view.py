@@ -43,6 +43,7 @@ PUBLIC_ALLOWLIST: tuple[str, ...] = (
     "freshness",
     "decision_trace", "entry_engine", "directional_alert",
     "hypothetical_exit_advisor", "breakout_alert", "virtual_profit_tracker",
+    "final_decision_state",
 )
 
 # 明確禁止出現在公開 payload 的欄位名(含巢狀;供測試遞迴斷言)。
