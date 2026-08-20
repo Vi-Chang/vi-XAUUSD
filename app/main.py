@@ -450,7 +450,10 @@ async def performance_api(limit: int = 5000) -> dict:
     from app.services.performance_service import performance_report
     limit = max(100, min(limit, 10000))
     with db_session() as db:
-        return performance_report(db, limit=limit)
+        report = performance_report(db, limit=limit)
+        from app.services.decision_event_outcomes import decision_event_performance
+        report["decision_events"] = decision_event_performance(db, limit=limit)
+        return report
 
 
 @app.get("/api/candles")

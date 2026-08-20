@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 from dataclasses import asdict, dataclass
 
+from app.config import get_settings
+
 
 @dataclass(frozen=True)
 class UnifiedDecision:
@@ -100,9 +102,38 @@ def evaluate_unified_decision(
     if false_breakout or recovery_continues:
         state, direction = "BULLISH_RECOVERY", "LONG"
 
+    # Executable decisions must survive realistic friction, not only chart-mid RR.
+    settings = get_settings()
+    quote = data.get("current_price") or {}
+    spread = max(0.0, float(quote.get("spread") or 0))
+    execution_cost = spread + max(0.0, settings.execution_slippage_usd) \
+        + max(0.0, settings.execution_fees_usd)
+    suggested = entry.get("suggested_entry")
+    stop = entry.get("stop_loss")
+    tp1 = entry.get("take_profit_1")
+    net_rr = None
+    if all(isinstance(value, (int, float)) for value in (suggested, stop, tp1)):
+        risk = abs(float(suggested) - float(stop))
+        reward = abs(float(tp1) - float(suggested))
+        if risk > 0:
+            net_rr = max(0.0, reward - execution_cost) / (risk + execution_cost)
+            if state.endswith("READY") and (
+                net_rr < settings.setup_min_rr1
+                or execution_cost / risk > settings.execution_max_cost_risk_ratio
+            ):
+                state = "LONG_WATCH" if direction == "LONG" else "SHORT_WATCH"
+                entry = {**entry, "missing_condition":
+                         f"扣除點差與滑價後賺賠比僅 {net_rr:.2f}，等待更好的價格"}
+
     confidence = int(
         entry.get("confidence_score") or decision.get("evidence_score") or 0
     )
+    event_status = str(normalized.get("eventDataStatus") or "FAILED")
+    market_mode = str(normalized.get("marketRegime") or "range")
+    if event_status != "GOOD":
+        confidence = min(confidence, 55)
+    if market_mode == "range" and state.endswith("READY"):
+        confidence = min(confidence, 65)
     trigger = (
         resistance
         if direction == "LONG"
@@ -318,6 +349,13 @@ def evaluate_unified_decision(
                 "longManage": long_manage,
                 "shortManage": short_manage,
                 "confirmation": current.confirmation,
+                "spread": spread,
+                "executionCosts": {
+                    "spread": spread,
+                    "slippage": settings.execution_slippage_usd,
+                    "fees": settings.execution_fees_usd,
+                    "netRiskReward": round(net_rr, 3) if net_rr is not None else None,
+                },
                 "topic": f"decision-event:{event_id}",
                 "message": (
                     f"【狀態變化】{previous_state} → {current_state}\n【現價】{price:.2f}\n"

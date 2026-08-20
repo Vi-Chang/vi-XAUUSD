@@ -224,6 +224,9 @@ class Settings(BaseSettings):
 
     # ── Setup 一致性與時效(BUGFIX spec R2/R4/R6)──
     setup_min_rr1: float = 1.5              # 第一目標最低賺賠比,低於即 INVALID
+    execution_slippage_usd: float = 0.20    # 壓力情境預估單程滑價
+    execution_fees_usd: float = 0.0         # 每盎司等效交易費用
+    execution_max_cost_risk_ratio: float = 0.20  # 成本超過初始風險 20% 禁止進場
     setup_price_band_pct: float = 0.05      # 所有價位須在現價 ±5% 內(防幻覺價位)
     setup_stale_deviation_pct: float = 0.005  # 現價偏離 entry > 0.5% → STALE
     setup_expiry_bars: int = 8              # 生成後 N 根 15M 未觸發 → STALE

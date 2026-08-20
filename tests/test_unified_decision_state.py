@@ -76,3 +76,23 @@ def test_rehydrated_same_state_and_price_does_not_repeat_notification():
     state, _ = evaluate_unified_decision(payload(4481))
     _same, events = evaluate_unified_decision(payload(4481), state)
     assert events == []
+
+
+def test_ready_is_downgraded_when_cost_adjusted_rr_is_too_low():
+    data = payload(100, status="ENTRY_TRIGGERED")
+    data["entry_engine"].update({"direction": "LONG", "suggested_entry": 100,
+                                  "stop_loss": 99, "take_profit_1": 101.6})
+    data["current_price"] = {"spread": 0.5}
+    data["normalized_analysis"]["eventDataStatus"] = "GOOD"
+    state, events = evaluate_unified_decision(data)
+    assert state["state"] == "LONG_WATCH"
+    assert any(event["executionCosts"]["netRiskReward"] < 1.5 for event in events)
+
+
+def test_failed_event_data_caps_confidence_without_erasing_direction():
+    data = payload(100, status="SETUP_WATCH")
+    data["entry_engine"].update({"direction": "LONG", "confidence_score": 90})
+    data["normalized_analysis"]["eventDataStatus"] = "FAILED"
+    state, _ = evaluate_unified_decision(data)
+    assert state["state"] == "LONG_WATCH"
+    assert state["confidence"] == 55
