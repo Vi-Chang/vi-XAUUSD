@@ -355,6 +355,7 @@ function applyAnalysis(a) {
   reason.textContent = a.decision.reason;
   renderQuickAction(a);
   renderEntryPlan(a.entry_engine);
+  renderDirectionalAlert(a.directional_alert);
 
   // 資料不足 → 醒目「暫不交易」橫幅(資料過期/異常/休市/證據不足時系統一律 NO_TRADE)
   const ntBanner = $("no-trade-banner");
@@ -430,6 +431,28 @@ function applyAnalysis(a) {
   renderScenario($("scenario-short"), a.short_scenario, "做空劇本", offVal);
   renderAiStrategy(a.ai_strategy);
   applyOverlays().catch(console.error);
+}
+
+function renderDirectionalAlert(alert) {
+  const card = $("bearish-monitor-card");
+  if (!card) return;
+  const active = alert && !["NEUTRAL", "SHORT_INVALIDATED"].includes(alert.status);
+  card.hidden = !active;
+  if (!active) return;
+  const events = {
+    INTRABAR_BREACH: "盤中測試", BREAKDOWN_CONFIRMED: "跌破已確認",
+    RETEST_REJECTED: "反彈回測失敗", BEARISH_CONTINUATION: "空方延續",
+    SHORT_ENTRY_READY: "空單條件完成", FALSE_BREAKOUT: "假跌破",
+  };
+  const statuses = {
+    SHORT_WATCH: "等待收盤", BEARISH_WATCH: "空方觀察中",
+    SHORT_ENTRY_READY: "可依計畫評估",
+  };
+  $("bearish-monitor-event").textContent = events[alert.event_type] || "空方持續監控";
+  $("bearish-monitor-status").textContent = statuses[alert.status] || alert.status;
+  $("bearish-monitor-level").textContent = alert.level == null ? "–" : Number(alert.level).toFixed(2);
+  $("bearish-monitor-time").textContent = fmtTs(alert.candle_close_time);
+  $("bearish-monitor-message").textContent = alert.message || "持續等待下一個 15M 結構事件。";
 }
 
 function renderEntryPlan(plan) {

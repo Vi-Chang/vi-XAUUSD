@@ -240,6 +240,8 @@ body {
 .entry-plan-grid span { display: block; color: var(--text-dim); font-size: .66rem; margin-bottom: 2px; }
 .entry-plan-grid b { font-size: .8rem; }
 .entry-plan-note { margin-top: 8px; color: var(--text-dim); font-size: .68rem; line-height: 1.45; }
+.bearish-monitor { border-color: rgba(239,83,80,.55); background: linear-gradient(135deg, rgba(239,83,80,.08), var(--card) 65%); }
+.bearish-monitor .reason { white-space: pre-line; margin-top: 8px; line-height: 1.5; }
 .side-details { display: block; }
 .side-details summary { cursor: pointer; color: var(--text-dim); font-size: .78rem; letter-spacing: .8px; list-style: none; }
 .side-details summary::after { content: "＋"; float: right; color: var(--info); font-size: 1rem; }

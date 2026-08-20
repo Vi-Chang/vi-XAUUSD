@@ -65,6 +65,10 @@ def init_db() -> None:
             "allow_event_hold": "BOOLEAN",
         },
         "trade_journal": {"account_id": "INTEGER"},
+        "directional_alert_states": {
+            "last_closed_price": "FLOAT",
+            "last_event": "VARCHAR(32) DEFAULT ''",
+        },
         "mentor_signals": {   # IMPORT-MENTOR-HISTORY 歷史紀錄擴充
             "status": "VARCHAR(8) DEFAULT 'OPEN'",
             "open_time": "TIMESTAMPTZ", "close_time": "TIMESTAMPTZ",
