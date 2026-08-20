@@ -16,6 +16,7 @@ class TelegramChannel(NotificationChannel):
 
     def __init__(self, bot_token: str, chat_id: str) -> None:
         self._url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        self._edit_url = f"https://api.telegram.org/bot{bot_token}/editMessageText"
         self._chat_id = chat_id
 
     async def send(self, text: str) -> bool:
@@ -32,6 +33,17 @@ class TelegramChannel(NotificationChannel):
                 return ""
             payload = r.json()
             return str((payload.get("result") or {}).get("message_id") or "")
+
+    async def edit_with_receipt(self, message_id: str, text: str) -> str:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.post(self._edit_url, json={
+                "chat_id": self._chat_id, "message_id": message_id,
+                "text": text[:4000], "disable_web_page_preview": True,
+            })
+            if r.status_code != 200:
+                logger.error("telegram edit failed: %s %s", r.status_code, r.text[:200])
+                return ""
+            return str(((r.json().get("result") or {}).get("message_id")) or message_id)
 
 
 def build_notification_manager() -> NotificationManager:

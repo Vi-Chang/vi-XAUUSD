@@ -6,24 +6,55 @@ import logging
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 
 from app.config import get_settings
 from app.db.models import DecisionEvent, TelegramNotification
 from app.db.session import db_session
+from app.services.alert_aggregator import aggregate_signal_facts
 
 logger = logging.getLogger(__name__)
 TAIPEI = ZoneInfo("Asia/Taipei")
 
 
 def persist_decision_events(symbol: str, events: list[dict]) -> list[dict]:
-    """Create canonical event and outbox row atomically; duplicate eventId is harmless."""
+    """Persist facts but enqueue only one semantic notification per group."""
     created: list[dict] = []
     now = datetime.now(timezone.utc)
+    events = aggregate_signal_facts(symbol, events)
     with db_session() as db:
         for payload in events:
             event_id = str(payload.get("eventId") or "")
+            semantic_key = str(payload.get("semanticDedupKey") or "")
             if not event_id:
+                continue
+            existing_notice = db.execute(select(TelegramNotification).where(
+                TelegramNotification.semantic_dedup_key == semantic_key
+            )).scalar_one_or_none() if semantic_key else None
+            if existing_notice is not None:
+                canonical = db.execute(select(DecisionEvent).where(
+                    DecisionEvent.event_id == existing_notice.event_id)).scalar_one()
+                old = dict(canonical.payload or {})
+                old_fact_ids = {str(item.get("eventId") or "")
+                                for item in old.get("signalFacts") or [old]}
+                incoming_facts = list(payload.get("signalFacts") or [])
+                incoming_ids = {str(item.get("eventId") or "") for item in incoming_facts}
+                if incoming_ids and incoming_ids.issubset(old_fact_ids):
+                    continue
+                merged = aggregate_signal_facts(symbol,
+                    list(old.get("signalFacts") or [old]) + incoming_facts)[0]
+                merged["eventId"] = canonical.event_id
+                canonical.payload = merged
+                canonical.transition_reason = str(merged.get("transitionReason") or "")
+                canonical.current_price = float(merged.get("currentPrice") or canonical.current_price)
+                if existing_notice.status == "SENT" and existing_notice.message_id:
+                    existing_notice.status = "EDIT_PENDING"
+                elif existing_notice.status != "RETRYING":
+                    existing_notice.status = "PENDING"
+                existing_notice.next_attempt_at = now + timedelta(
+                    seconds=get_settings().alert_aggregation_window_seconds)
+                existing_notice.updated_at = now
+                created.append(merged)
                 continue
             exists = db.execute(
                 select(DecisionEvent.id).where(DecisionEvent.event_id == event_id)
@@ -53,9 +84,11 @@ def persist_decision_events(symbol: str, events: list[dict]) -> list[dict]:
             db.add(
                 TelegramNotification(
                     event_id=event_id,
+                    semantic_dedup_key=semantic_key or None,
                     status="PENDING",
                     attempts=0,
-                    next_attempt_at=now,
+                    next_attempt_at=now + timedelta(
+                        seconds=get_settings().alert_aggregation_window_seconds),
                     created_at=now,
                     updated_at=now,
                 )
@@ -107,9 +140,12 @@ def format_telegram_event(event: dict) -> str:
             f"失效條件：{event.get('confirmation', '')}\n"
             f"K 線確認時間：{event.get('candleCloseTime') or '—'}"
         )
+    reasons = list(event.get("transitionReasons") or [])
+    change = ("\n" + "\n".join(f"• {reason}" for reason in reasons)
+              if reasons else str(event.get("transitionReason", "")))
     return (
         f"{icon}【{_zh_state(state)}】\n現價：{price:.2f}\n"
-        f"變化：{event.get('transitionReason', '')}\n"
+        f"變化：{change}\n"
         f"未持倉：{event.get('flatAction', '')}\n"
         f"已持多單：{event.get('longManage', '')}\n"
         f"已持空單：{event.get('shortManage', '')}\n"
@@ -119,7 +155,7 @@ def format_telegram_event(event: dict) -> str:
 
 
 async def deliver_pending_telegram(
-    *, sender=None, limit: int = 20, event_id: str | None = None
+    *, sender=None, editor=None, limit: int = 20, event_id: str | None = None
 ) -> int:
     """Claim due rows, send, and persist Telegram receipt or retry state."""
     if sender is None:
@@ -132,12 +168,17 @@ async def deliver_pending_telegram(
             settings.telegram_bot_token, settings.telegram_chat_id
         )
         sender = channel.send_with_receipt
+        editor = channel.edit_with_receipt
     now = datetime.now(timezone.utc)
     with db_session() as db:
-        filters = [
-            TelegramNotification.status.in_(("PENDING", "FAILED", "RETRYING")),
-            TelegramNotification.next_attempt_at <= now,
-        ]
+        claimable = or_(
+            TelegramNotification.status.in_(("PENDING", "FAILED", "EDIT_PENDING")),
+            and_(TelegramNotification.status == "RETRYING",
+                 TelegramNotification.updated_at <= now - timedelta(seconds=60)),
+        )
+        filters = [claimable]
+        if not event_id:
+            filters.append(TelegramNotification.next_attempt_at <= now)
         if event_id:
             filters.append(TelegramNotification.event_id == event_id)
         rows = (
@@ -153,17 +194,22 @@ async def deliver_pending_telegram(
         )
         claimed = []
         for row in rows:
+            prior_status = row.status
             row.status = "RETRYING"
             row.attempts += 1
             row.updated_at = now
             event = db.execute(
                 select(DecisionEvent).where(DecisionEvent.event_id == row.event_id)
             ).scalar_one()
-            claimed.append((row.event_id, dict(event.payload), row.attempts))
+            claimed.append((row.event_id, dict(event.payload), row.attempts,
+                            prior_status, row.message_id))
     sent = 0
-    for claimed_event_id, payload, attempts in claimed:
+    for claimed_event_id, payload, attempts, prior_status, prior_message_id in claimed:
         try:
-            message_id = await sender(format_telegram_event(payload))
+            if prior_status == "EDIT_PENDING" and prior_message_id and editor:
+                message_id = await editor(prior_message_id, format_telegram_event(payload))
+            else:
+                message_id = await sender(format_telegram_event(payload))
             if not message_id:
                 raise RuntimeError("Telegram 未回傳 message_id")
             with db_session() as db:

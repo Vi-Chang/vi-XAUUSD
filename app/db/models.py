@@ -382,6 +382,8 @@ class TelegramNotification(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     event_id: Mapped[str] = mapped_column(
         ForeignKey("decision_events.event_id"), unique=True)
+    semantic_dedup_key: Mapped[str | None] = mapped_column(
+        String(64), unique=True, nullable=True)
     status: Mapped[str] = mapped_column(String(16), default="PENDING")
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     message_id: Mapped[str | None] = mapped_column(String(64), nullable=True)

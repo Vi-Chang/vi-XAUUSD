@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.db.models import DecisionEvent, TelegramNotification
 from app.db.session import db_session, init_db
@@ -155,3 +155,110 @@ def test_outbox_worker_is_scheduled_within_five_seconds():
     job = scheduler.get_job("telegram_outbox")
     assert job is not None
     assert job.trigger.interval.total_seconds() <= 5
+
+
+@pytest.mark.asyncio
+async def test_same_cycle_three_facts_make_one_telegram_call():
+    init_db()
+    base = market(4523.22)
+    base["normalized_analysis"]["lastClosedCandleTimestamp"] = "2026-08-20T15:34:00+00:00"
+    facts = []
+    reasons = [
+        ("EXIT_ZONE_REACHED", "價格進入條件式出場區"),
+        ("EXIT_NOW", "反向收盤突破防守價"),
+        ("BULLISH_CONTINUATION", "連續收盤站穩突破位，多方延續"),
+    ]
+    for index, (kind, reason) in enumerate(reasons):
+        facts.append({
+            "eventId": f"raw-fact-{index}", "event_type": kind,
+            "previousState": "WAIT", "currentState": "MISSED_ENTRY",
+            "transitionReason": reason, "triggerReason": reason,
+            "currentPrice": 4523.22, "candleCloseTime": "2026-08-20T15:34:00+00:00",
+            "calculatedAt": "2026-08-20T15:34:05+00:00", "dataVersion": 2039,
+            "flatAction": "等待價格回踩新的確認區",
+            "longManage": "防守 4449.56，依序分批止盈",
+            "shortManage": "防守 4496.93，立即降低風險",
+            "confirmation": "等待 15 分鐘收盤確認新結構",
+        })
+    created = persist_decision_events("XAUUSD-AGGREGATION-TEST", facts)
+    assert len(created) == 1
+    assert len(created[0]["signalFacts"]) == 3
+    with db_session() as db:
+        assert db.scalar(select(func.count()).select_from(TelegramNotification).where(
+            TelegramNotification.semantic_dedup_key == created[0]["semanticDedupKey"])) == 1
+        assert db.scalar(select(func.count()).select_from(DecisionEvent).where(
+            DecisionEvent.event_id == created[0]["eventId"])) == 1
+    calls = []
+
+    async def sender(message):
+        calls.append(message)
+        return "single-message-1"
+
+    assert await deliver_pending_telegram(sender=sender, event_id=created[0]["eventId"]) == 1
+    assert len(calls) == 1
+    assert all(reason in calls[0] for _, reason in reasons)
+    assert calls[0].count("• ") == 3
+    assert await deliver_pending_telegram(sender=sender, event_id=created[0]["eventId"]) == 0
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_two_workers_claim_same_semantic_notification_once():
+    import asyncio
+
+    facts = [{
+        "eventId": "multi-worker-raw", "event_type": "EXIT_NOW",
+        "previousState": "WAIT", "currentState": "MISSED_ENTRY",
+        "transitionReason": "反向收盤突破防守價", "currentPrice": 4524,
+        "candleCloseTime": "2026-08-20T15:49:00+00:00",
+        "calculatedAt": "2026-08-20T15:49:01+00:00", "dataVersion": 2040,
+    }]
+    created = persist_decision_events("XAUUSD-MULTI-WORKER", facts)
+    calls = 0
+
+    async def slow_sender(_message):
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0.02)
+        return "one-worker-won"
+
+    results = await asyncio.gather(
+        deliver_pending_telegram(sender=slow_sender, event_id=created[0]["eventId"]),
+        deliver_pending_telegram(sender=slow_sender, event_id=created[0]["eventId"]),
+    )
+    assert sum(results) == 1
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_late_fact_edits_sent_message_instead_of_sending_again():
+    base = {
+        "eventId": "late-fact-a", "event_type": "EXIT_ZONE_REACHED",
+        "previousState": "WAIT", "currentState": "MISSED_ENTRY",
+        "transitionReason": "價格進入條件式出場區", "currentPrice": 4523.22,
+        "candleCloseTime": "2026-08-20T16:04:00+00:00",
+        "calculatedAt": "2026-08-20T16:04:01+00:00", "dataVersion": 2041,
+    }
+    first = persist_decision_events("XAUUSD-LATE-FACT", [base])[0]
+    sends, edits = 0, 0
+
+    async def sender(_message):
+        nonlocal sends
+        sends += 1
+        return "editable-message"
+
+    async def editor(message_id, message):
+        nonlocal edits
+        edits += 1
+        assert message_id == "editable-message"
+        assert "反向收盤突破防守價" in message
+        return message_id
+
+    assert await deliver_pending_telegram(sender=sender, event_id=first["eventId"]) == 1
+    late = {**base, "eventId": "late-fact-b", "event_type": "EXIT_NOW",
+            "transitionReason": "反向收盤突破防守價"}
+    updated = persist_decision_events("XAUUSD-LATE-FACT", [late])
+    assert len(updated) == 1 and len(updated[0]["signalFacts"]) == 2
+    assert await deliver_pending_telegram(sender=sender, editor=editor,
+                                          event_id=first["eventId"]) == 1
+    assert sends == 1 and edits == 1

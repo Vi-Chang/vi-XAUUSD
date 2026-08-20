@@ -154,26 +154,8 @@ def persist_final_decision_state(symbol: str, state: dict) -> None:
 
 
 async def notify_market_monitor_events(result: dict, notifier) -> None:
-    if not notifier:
-        return
-    event_groups = [
-        (result.get("hypothetical_exit_advisor") or {}).get("events") or [],
-        [((result.get("breakout_alert") or {}).get("event") or {})],
-        (result.get("virtual_profit_tracker") or {}).get("events") or [],
-        (result.get("final_decision_state") or {}).get("events") or [],
-    ]
-    for events in event_groups:
-        for event in events:
-            if not event or not event.get("topic"):
-                continue
-            await notifier.notify(
-                "EXIT"
-                if event.get("event_type", "").startswith("EXIT")
-                or event.get("event_type") in ("TP1", "TP2", "TP3", "TRAILING_EXIT")
-                else "TRIGGER",
-                event["topic"],
-                event.get("message", ""),
-                severity="WARN",
-                force_push=True,
-                exact_once=True,
-            )
+    """Legacy compatibility hook; market rules must never push directly.
+
+    The canonical FinalDecision outbox is the sole Telegram market-alert path.
+    """
+    return

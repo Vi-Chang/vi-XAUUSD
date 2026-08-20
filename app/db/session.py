@@ -69,6 +69,9 @@ def init_db() -> None:
             "last_closed_price": "FLOAT",
             "last_event": "VARCHAR(32) DEFAULT ''",
         },
+        "telegram_notifications": {
+            "semantic_dedup_key": "VARCHAR(64)",
+        },
         "mentor_signals": {   # IMPORT-MENTOR-HISTORY 歷史紀錄擴充
             "status": "VARCHAR(8) DEFAULT 'OPEN'",
             "open_time": "TIMESTAMPTZ", "close_time": "TIMESTAMPTZ",
@@ -90,6 +93,9 @@ def init_db() -> None:
         conn.execute(text(
             "CREATE UNIQUE INDEX IF NOT EXISTS uq_mentor_import ON mentor_signals "
             "(account_no, close_time, entry_price, close_price)"))
+        conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_telegram_semantic_dedup "
+            "ON telegram_notifications (semantic_dedup_key)"))
 
     # 預設帳戶種子(帳戶A 老師帶單 / 帳戶B 自己交易)
     from datetime import datetime, timezone
