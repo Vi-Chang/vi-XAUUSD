@@ -542,6 +542,15 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
         result.decision.reason = entry_plan.missing_condition
         result.market_decision = result.decision.model_copy()
 
+    # Three independent close-driven monitors. None depends on actual positions,
+    # entry invalidation, or trade-cycle state.
+    from app.services.market_monitor_service import evaluate_market_monitors
+    monitors = evaluate_market_monitors(
+        result.model_dump(), h1_closed=dfs_closed.get("1H"), indicators=ind)
+    result.hypothetical_exit_advisor = monitors["hypothetical_exit_advisor"]
+    result.breakout_alert = monitors["breakout_alert"]
+    result.virtual_profit_tracker = monitors["virtual_profit_tracker"]
+
     # ── 9d. V2 AI 分析層(4 Agent;任何失敗不影響上面的確定性輸出)──
     try:
         from app.llm.client import llm_available

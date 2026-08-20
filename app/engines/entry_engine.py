@@ -28,6 +28,7 @@ class EntryPlan:
     stop_loss: float | None = None
     take_profit_1: float | None = None
     take_profit_2: float | None = None
+    take_profit_3: float | None = None
     risk_reward: float | None = None
     confidence_score: int = 0
     created_at: str = ""
@@ -191,11 +192,16 @@ def format_entry_message(plan: EntryPlan) -> str:
                 f"【成立後進場】觸發 K 收盤約 {plan.suggested_entry:.2f}\n"
                 f"【提前失效】{plan.cancel_condition}")
     if plan.status == "ENTRY_TRIGGERED":
+        risk = abs((plan.suggested_entry or 0) - (plan.stop_loss or 0))
+        sign = 1 if plan.direction == "LONG" else -1
+        tp1 = (plan.suggested_entry or 0) + sign * risk
+        tp2 = (plan.suggested_entry or 0) + sign * risk * 2
+        tp3 = (plan.suggested_entry or 0) + sign * risk * 3
         return (f"【可進場方向】{direction}\n"
                 f"【進場區間】{plan.zone_low:.2f}–{plan.zone_high:.2f}\n"
                 f"【觸發條件】{plan.trigger_timeframe} {plan.trigger_condition}\n"
                 f"【建議進場】{plan.suggested_entry:.2f}\n【停損】{plan.stop_loss:.2f}\n"
-                f"【第一止盈】{plan.take_profit_1:.2f}\n【第二止盈】{plan.take_profit_2:.2f}\n"
+                f"【TP1（1R）】{tp1:.2f}\n【TP2（2R）】{tp2:.2f}\n【TP3（3R）】{tp3:.2f}\n"
                 f"【風險報酬比】{plan.risk_reward:.2f}\n"
                 f"【信心分數】{plan.confidence_score}%\n【有效期限】{plan.expires_at}\n"
                 f"【取消條件】{plan.cancel_condition}")
@@ -256,7 +262,9 @@ def evaluate_entry_engine(data: dict, previous: EntryPlan | None = None, *,
             if rr >= max(1.5, float(get_settings().setup_min_rr1)):
                 plan = replace(previous, status="ENTRY_TRIGGERED", trigger_timeframe=timeframe,
                     trigger_condition=evidence, suggested_entry=round(trigger_price, 2),
-                    risk_reward=rr, confidence_score=min(100, previous.confidence_score + 15))
+                    risk_reward=rr, confidence_score=min(100, previous.confidence_score + 15),
+                    take_profit_3=round(trigger_price + (1 if previous.direction == "LONG" else -1)
+                                        * risk * 3, 2))
                 return EntryEvaluation(plan, "ENTRY_TRIGGERED" not in previous.notified_states,
                                        format_entry_message(plan))
         if touched and previous.status == "SETUP_WATCH":

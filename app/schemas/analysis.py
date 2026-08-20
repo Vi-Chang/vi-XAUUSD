@@ -505,6 +505,7 @@ class EntryEngineView(BaseModel):
     stop_loss: float | None = None
     take_profit_1: float | None = None
     take_profit_2: float | None = None
+    take_profit_3: float | None = None
     risk_reward: float | None = None
     confidence_score: int = 0
     created_at: str = ""
@@ -557,6 +558,9 @@ class AnalysisResult(BaseModel):
     tactical_shadow: TacticalShadowRecord = Field(default_factory=TacticalShadowRecord)
     entry_engine: EntryEngineView = Field(default_factory=EntryEngineView)
     directional_alert: DirectionalAlertView = Field(default_factory=DirectionalAlertView)
+    hypothetical_exit_advisor: dict = Field(default_factory=dict)
+    breakout_alert: dict = Field(default_factory=dict)
+    virtual_profit_tracker: dict = Field(default_factory=dict)
     decision_trace: DecisionTrace = Field(default_factory=DecisionTrace)
     risk_manager: RiskManagerView = RiskManagerView()
     position_management: PositionManagement = PositionManagement()

@@ -1,0 +1,140 @@
+"""Persist the position-free exit, breakout and virtual-profit monitors."""
+
+from __future__ import annotations
+
+from dataclasses import asdict
+from datetime import datetime, timezone
+
+import pandas as pd
+from sqlalchemy import select
+
+from app.db.models import MarketMonitorState
+from app.db.session import db_session
+from app.engines.breakout_alert_state import (
+    BreakoutAlertState,
+    breakout_view,
+    evaluate_breakout_alert,
+)
+from app.engines.hypothetical_exit_advisor import (
+    build_hypothetical_exit_plans,
+    evaluate_hypothetical_exits,
+)
+from app.engines.virtual_profit_tracker import evaluate_virtual_profit
+
+
+def _load(symbol: str, key: str) -> dict:
+    with db_session() as db:
+        row = db.execute(
+            select(MarketMonitorState).where(
+                MarketMonitorState.symbol == symbol,
+                MarketMonitorState.monitor_key == key,
+            )
+        ).scalar_one_or_none()
+        return dict(row.payload or {}) if row else {}
+
+
+def _save(symbol: str, key: str, payload: dict) -> None:
+    with db_session() as db:
+        row = db.execute(
+            select(MarketMonitorState).where(
+                MarketMonitorState.symbol == symbol,
+                MarketMonitorState.monitor_key == key,
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            row = MarketMonitorState(
+                symbol=symbol, monitor_key=key, updated_at=datetime.now(timezone.utc)
+            )
+            db.add(row)
+        row.payload, row.updated_at = payload, datetime.now(timezone.utc)
+
+
+def _last_close(frame: pd.DataFrame | None) -> float | None:
+    if frame is None or frame.empty:
+        return None
+    return float(frame.iloc[-1]["close"])
+
+
+def evaluate_market_monitors(
+    data: dict, *, h1_closed: pd.DataFrame | None = None, indicators: dict | None = None
+) -> dict:
+    symbol = str(data.get("symbol") or "XAUUSD")
+    normalized = data.get("normalized_analysis") or {}
+    indicators = indicators or {}
+    exit_state, exit_events = evaluate_hypothetical_exits(
+        data, _load(symbol, "hypothetical_exit")
+    )
+    _save(symbol, "hypothetical_exit", exit_state)
+
+    raw_breakout = _load(symbol, "bullish_breakout")
+    breakout_previous = (
+        BreakoutAlertState(**raw_breakout) if raw_breakout else BreakoutAlertState()
+    )
+    m15_ind = indicators.get("15M") or {}
+    macd_declining = (
+        isinstance(m15_ind.get("macd_hist"), (int, float))
+        and isinstance(m15_ind.get("macd_hist_prev"), (int, float))
+        and m15_ind["macd_hist"] < m15_ind["macd_hist_prev"]
+    )
+    breakout_state, breakout_event = evaluate_breakout_alert(
+        normalized,
+        breakout_previous,
+        h1_close=_last_close(h1_closed),
+        higher_low_broken=normalized.get("supportState")
+        in ("confirmed_breakdown", "retest_rejected"),
+        macd_declining=macd_declining,
+    )
+    _save(symbol, "bullish_breakout", asdict(breakout_state))
+
+    entry = data.get("entry_engine") or {}
+    support = next(
+        (
+            x
+            for x in normalized.get("confirmationLevels", [])
+            if x.get("kind") == "support"
+        ),
+        None,
+    )
+    structure_protection = float(support["price"]) if support else None
+    virtual_state, virtual_events = evaluate_virtual_profit(
+        entry,
+        _load(symbol, "virtual_profit"),
+        current_price=float(normalized.get("currentPrice") or 0),
+        closed_price=normalized.get("lastClosedCandlePrice"),
+        latest_structure_protection=structure_protection,
+        candle_close_time=str(normalized.get("lastClosedCandleTimestamp") or ""),
+    )
+    _save(symbol, "virtual_profit", virtual_state)
+    plans = {
+        plan.side: asdict(plan) for plan in build_hypothetical_exit_plans(data)
+    }
+    return {
+        "hypothetical_exit_advisor": {"plans": plans, "events": exit_events},
+        "breakout_alert": breakout_view(breakout_state, breakout_event),
+        "virtual_profit_tracker": {**virtual_state, "events": virtual_events},
+    }
+
+
+async def notify_market_monitor_events(result: dict, notifier) -> None:
+    if not notifier:
+        return
+    event_groups = [
+        (result.get("hypothetical_exit_advisor") or {}).get("events") or [],
+        [((result.get("breakout_alert") or {}).get("event") or {})],
+        (result.get("virtual_profit_tracker") or {}).get("events") or [],
+    ]
+    for events in event_groups:
+        for event in events:
+            if not event or not event.get("topic"):
+                continue
+            await notifier.notify(
+                "EXIT"
+                if event.get("event_type", "").startswith("EXIT")
+                or event.get("event_type") in ("TP1", "TP2", "TP3", "TRAILING_EXIT")
+                else "TRIGGER",
+                event["topic"],
+                event.get("message", ""),
+                severity="WARN",
+                force_push=True,
+                exact_once=True,
+            )

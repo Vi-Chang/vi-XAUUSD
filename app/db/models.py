@@ -343,6 +343,17 @@ class EntrySetupState(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+class MarketMonitorState(Base):
+    """Independent hypothetical-exit, breakout and virtual-profit state."""
+    __tablename__ = "market_monitor_states"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(32))
+    monitor_key: Mapped[str] = mapped_column(String(48))
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    __table_args__ = (UniqueConstraint("symbol", "monitor_key", name="uq_market_monitor"),)
+
+
 class ProviderHealth(Base):
     """16. provider_health — 各資料源健康與配額"""
     __tablename__ = "provider_health"

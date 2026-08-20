@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>XAUUSD 交易分析終端</title>
-<link rel="stylesheet" href="/static/css/style.css?v=breakdown-monitor-v1">
+<link rel="stylesheet" href="/static/css/style.css?v=exit-breakout-profit-v1">
 </head>
 <body>
 <div class="stale-banner" id="stale-banner" hidden>
@@ -98,6 +98,7 @@
         <div><span>停損</span><b class="num" id="entry-plan-stop">–</b></div>
         <div><span>第一止盈</span><b class="num" id="entry-plan-tp1">–</b></div>
         <div><span>第二止盈</span><b class="num" id="entry-plan-tp2">–</b></div>
+        <div><span>第三止盈</span><b class="num" id="entry-plan-tp3">–</b></div>
         <div><span>風險報酬比</span><b class="num" id="entry-plan-rr">–</b></div>
       </div>
       <div class="kv"><span>觸發條件</span><span id="entry-plan-trigger">–</span></div>
@@ -111,6 +112,27 @@
       <div class="kv"><span>關鍵價</span><span class="num" id="bearish-monitor-level">–</span></div>
       <div class="kv"><span>確認 K 棒</span><span class="num" id="bearish-monitor-time">–</span></div>
       <p class="reason" id="bearish-monitor-message"></p>
+    </section>
+    <section class="card" id="breakout-alert-card" hidden aria-live="polite">
+      <div class="card-title">突破確認</div>
+      <div class="entry-plan-head"><strong id="breakout-alert-status">等待突破</strong><span class="chip" id="breakout-alert-action">–</span></div>
+      <div class="kv"><span>突破區上緣</span><span class="num" id="breakout-alert-level">–</span></div>
+      <div class="kv"><span>連續站穩</span><span id="breakout-alert-closes">–</span></div>
+      <div class="kv"><span>趨勢</span><span id="breakout-alert-trend">–</span></div>
+    </section>
+    <section class="card" id="hypothetical-exit-card" hidden aria-live="polite">
+      <div class="card-title">如果你已有持倉</div>
+      <p class="reason">這是條件式風險提醒，不代表系統認定你已進場。</p>
+      <div class="kv"><span>若持有多單</span><span id="hypothetical-long-exit">–</span></div>
+      <div class="kv"><span>多單防守價</span><span class="num" id="hypothetical-long-defense">–</span></div>
+      <div class="kv"><span>若持有空單</span><span id="hypothetical-short-exit">–</span></div>
+      <div class="kv"><span>空單防守價</span><span class="num" id="hypothetical-short-defense">–</span></div>
+    </section>
+    <section class="card" id="virtual-profit-card" hidden aria-live="polite">
+      <div class="card-title">條件式獲利保護</div>
+      <p class="reason" id="virtual-profit-summary">–</p>
+      <div class="kv"><span>TP1／TP2／TP3</span><span class="num" id="virtual-profit-targets">–</span></div>
+      <div class="kv"><span>目前保護價</span><span class="num" id="virtual-profit-protection">–</span></div>
     </section>
     <div class="card risk-priority" id="risk-priority-card">
       <div class="card-title">風險優先摘要</div>

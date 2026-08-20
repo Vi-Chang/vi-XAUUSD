@@ -301,6 +301,8 @@ async def run_full_analysis(*, trigger: str, reason_zh: str | None) -> None:
             from app.services.entry_engine_service import notify_entry_plan
             await notify_entry_plan(entry, state.notifier,
                                     symbol=state.latest_result.get("symbol", "XAUUSD"))
+            from app.services.market_monitor_service import notify_market_monitor_events
+            await notify_market_monitor_events(state.latest_result, state.notifier)
             if result.data_quality.status in ("STALE", "FAILED"):
                 await state.notifier.notify(
                     "RISK", "data_quality",

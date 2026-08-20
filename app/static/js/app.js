@@ -356,6 +356,7 @@ function applyAnalysis(a) {
   renderQuickAction(a);
   renderEntryPlan(a.entry_engine);
   renderDirectionalAlert(a.directional_alert);
+  renderMarketMonitors(a);
 
   // 資料不足 → 醒目「暫不交易」橫幅(資料過期/異常/休市/證據不足時系統一律 NO_TRADE)
   const ntBanner = $("no-trade-banner");
@@ -455,6 +456,60 @@ function renderDirectionalAlert(alert) {
   $("bearish-monitor-message").textContent = alert.message || "持續等待下一個 15M 結構事件。";
 }
 
+function renderMarketMonitors(a) {
+  const price = (value) => value == null ? "–" : Number(value).toFixed(2);
+  const breakout = a.breakout_alert || {};
+  const breakoutCard = $("breakout-alert-card");
+  if (breakoutCard) {
+    breakoutCard.hidden = !breakout.status || breakout.status === "NEUTRAL";
+    if (!breakoutCard.hidden) {
+      const statusZh = {
+        PENDING_BREAKOUT: "突破中，等待收盤", BREAKOUT_CONFIRMED: "突破已成立",
+        BULLISH_CONTINUATION: "多頭延續已確認", BREAKOUT_RETEST: "突破區回踩",
+        BREAKOUT_FAILED: "突破失敗",
+      };
+      const actionZhMap = {
+        wait_confirmation: "等待確認", wait_pullback: "等待回踩",
+        avoid_chasing: "禁止追價", breakout_failed: "突破失敗",
+      };
+      $("breakout-alert-status").textContent = statusZh[breakout.status] || breakout.status;
+      $("breakout-alert-action").textContent = actionZhMap[breakout.action] || breakout.action || "–";
+      $("breakout-alert-level").textContent = price(breakout.zone_high);
+      $("breakout-alert-closes").textContent = `${breakout.consecutive_closes || 0} 根已收盤 K`;
+      $("breakout-alert-trend").textContent = breakout.trend === "bullish" ? "多頭" : breakout.trend === "bearish" ? "空頭" : "震盪";
+    }
+  }
+
+  const advisor = a.hypothetical_exit_advisor || {};
+  const exitCard = $("hypothetical-exit-card");
+  const plans = advisor.plans || {};
+  if (exitCard) {
+    exitCard.hidden = !plans.LONG && !plans.SHORT;
+    if (!exitCard.hidden) {
+      const longPlan = plans.LONG || {};
+      const shortPlan = plans.SHORT || {};
+      $("hypothetical-long-exit").textContent = longPlan.partial_exit && longPlan.full_exit
+        ? `分批 ${price(longPlan.partial_exit.low)}–${price(longPlan.partial_exit.high)}；全部 ${price(longPlan.full_exit.low)}–${price(longPlan.full_exit.high)}` : "–";
+      $("hypothetical-long-defense").textContent = price(longPlan.defense_price);
+      $("hypothetical-short-exit").textContent = shortPlan.partial_exit && shortPlan.full_exit
+        ? `分批 ${price(shortPlan.partial_exit.low)}–${price(shortPlan.partial_exit.high)}；全部 ${price(shortPlan.full_exit.low)}–${price(shortPlan.full_exit.high)}` : "–";
+      $("hypothetical-short-defense").textContent = price(shortPlan.defense_price);
+    }
+  }
+
+  const tracker = a.virtual_profit_tracker || {};
+  const profitCard = $("virtual-profit-card");
+  if (profitCard) {
+    profitCard.hidden = !tracker.setup_id;
+    if (!profitCard.hidden) {
+      const reached = (tracker.reached_levels || []).join("、") || "尚未到達 TP1";
+      $("virtual-profit-summary").textContent = `若你有在 ${price(tracker.entry_price)} 附近進場：${reached}`;
+      $("virtual-profit-targets").textContent = `${price(tracker.tp1)}／${price(tracker.tp2)}／${price(tracker.tp3)}`;
+      $("virtual-profit-protection").textContent = price(tracker.protection_price);
+    }
+  }
+}
+
 function renderEntryPlan(plan) {
   const card = $("entry-plan-card");
   if (!card) return;
@@ -479,6 +534,7 @@ function renderEntryPlan(plan) {
   $("entry-plan-stop").textContent = price(plan.stop_loss);
   $("entry-plan-tp1").textContent = price(plan.take_profit_1);
   $("entry-plan-tp2").textContent = price(plan.take_profit_2);
+  $("entry-plan-tp3").textContent = price(plan.take_profit_3);
   $("entry-plan-rr").textContent = plan.risk_reward == null ? "–" : `1 : ${Number(plan.risk_reward).toFixed(2)}`;
   $("entry-plan-trigger").textContent = plan.trigger_condition ? `${plan.trigger_timeframe || "15M"} ${plan.trigger_condition}` : "等待已收盤反轉 K 線";
   $("entry-plan-cancel").textContent = plan.cancel_condition || "–";
