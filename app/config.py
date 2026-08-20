@@ -83,6 +83,7 @@ class Settings(BaseSettings):
     # ── 通知 ──
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
+    alert_aggregation_window_seconds: int = 4
     notify_cooldown_seconds: int = 900
     heartbeat_minutes: int = 30
     # 分級通知門檻:低於此嚴重度只寫 log,達到才推 Telegram(DEBUG<INFO<WARN<ERROR)
