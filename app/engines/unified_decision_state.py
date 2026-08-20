@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import asdict, dataclass
 
 
@@ -67,6 +68,8 @@ def evaluate_unified_decision(
         str(entry.get("direction") or "NONE"),
     )
     action = str(decision.get("action") or "WATCH")
+    directional = data.get("directional_alert") or {}
+    false_breakout = directional.get("event_type") == "FALSE_BREAKOUT"
     state = "WAIT"
     if stale:
         state = "DATA_STALE"
@@ -86,6 +89,16 @@ def evaluate_unified_decision(
         state, direction = "LONG_WATCH", "LONG"
     elif action in ("PREPARE_SHORT", "SHORT"):
         state, direction = "SHORT_WATCH", "SHORT"
+    recovery_continues = (
+        previous.get("state") == "BULLISH_RECOVERY"
+        and (
+            support is None
+            or float(normalized.get("lastClosedCandlePrice") or price) >= support
+        )
+        and state in ("WAIT", "INVALIDATED")
+    )
+    if false_breakout or recovery_continues:
+        state, direction = "BULLISH_RECOVERY", "LONG"
 
     confidence = int(
         entry.get("confidence_score") or decision.get("evidence_score") or 0
@@ -110,6 +123,10 @@ def evaluate_unified_decision(
     elif state == "INVALIDATED":
         action = "舊劇本已失效"
         flat_action = "舊劇本已取消，依最新結構等待新劇本"
+    elif state == "BULLISH_RECOVERY":
+        action = "行情轉強，等待多方確認"
+        reason = "空方劇本已失效，價格重新站回關鍵位"
+        flat_action = "暫不追價，等待回踩新支撐或 15M 收盤確認"
     elif state.endswith("READY"):
         action = "可依完整風控計畫評估"
         flat_action = f"{entry.get('trigger_timeframe') or '15M'} 收盤條件已完成"
@@ -171,6 +188,14 @@ def evaluate_unified_decision(
         float(previous.get("source_price") or price),
     )
     event_types: list[str] = ["STATE_CHANGED"] if old_state != state else []
+    transition_chain: list[tuple[str, str, str]] = []
+    if false_breakout and old_state not in ("FALSE_BREAKOUT", "BULLISH_RECOVERY"):
+        transition_chain = [
+            (old_state, "SHORT_INVALIDATED", "SHORT_INVALIDATED"),
+            ("SHORT_INVALIDATED", "FALSE_BREAKOUT", "FALSE_BREAKOUT"),
+            ("FALSE_BREAKOUT", "BULLISH_RECOVERY", "BULLISH_RECOVERY"),
+        ]
+        event_types = []
     if state == "DATA_STALE" and old_state != state:
         event_types.append("DATA_STALE")
     if old_price < price and price - old_price >= max(
@@ -181,10 +206,41 @@ def evaluate_unified_decision(
         event_types.append("KEY_LEVEL_RECLAIMED")
     if resistance is not None and old_price <= resistance < price:
         event_types.append("AWAIT_CLOSE_CONFIRMATION")
-    if tracker.get("events") and any(
-        e.get("event_type") == "TP1" for e in tracker["events"]
+    if (
+        candle_time
+        and candle_time != previous.get("last_closed_candle_time")
+        and state.endswith(("WATCH", "READY"))
     ):
-        event_types.append("FIRST_TARGET_REACHED")
+        event_types.append("CANDLE_CLOSE_CONFIRMED")
+    tracker_event_map = {
+        "TP1": "FIRST_TARGET_REACHED",
+        "TP2": "SECOND_TARGET_REACHED",
+        "TP3": "THIRD_TARGET_REACHED",
+        "TRAILING_EXIT": "PROTECTION_EXIT_REACHED",
+    }
+    event_types.extend(
+        tracker_event_map[event.get("event_type")]
+        for event in tracker.get("events") or []
+        if event.get("event_type") in tracker_event_map
+    )
+    exit_event_map = {
+        "EXIT_APPROACHING": "EXIT_APPROACHING",
+        "EXIT_ZONE_REACHED": "EXIT_ZONE_REACHED",
+        "EXIT_NOW": "EXIT_NOW",
+    }
+    event_types.extend(
+        exit_event_map[event.get("event_type")]
+        for event in ((data.get("hypothetical_exit_advisor") or {}).get("events") or [])
+        if event.get("event_type") in exit_event_map
+    )
+    directional_type = str(directional.get("event_type") or "")
+    if directional_type and directional_type != "FALSE_BREAKOUT":
+        event_types.append(directional_type)
+    breakout_event = ((data.get("breakout_alert") or {}).get("event") or {}).get(
+        "event_type"
+    )
+    if breakout_event:
+        event_types.append(str(breakout_event))
     event_reasons = {
         "STATE_CHANGED": f"決策狀態由 {old_state} 更新為 {state}",
         "DATA_STALE": "報價或已收盤 K 線資料已超過允許時效",
@@ -198,14 +254,73 @@ def evaluate_unified_decision(
             else "價格穿越局部高點，等待 15M 收盤確認"
         ),
         "FIRST_TARGET_REACHED": "第一目標已到，進入條件式獲利管理",
+        "SECOND_TARGET_REACHED": "第二目標已到，進一步鎖定獲利",
+        "THIRD_TARGET_REACHED": "第三目標已到，可全數平倉或啟動移動停利",
+        "PROTECTION_EXIT_REACHED": "15M 收盤觸及最新獲利保護價",
+        "EXIT_APPROACHING": "價格接近條件式出場區",
+        "EXIT_ZONE_REACHED": "價格已進入條件式出場區",
+        "EXIT_NOW": "反向收盤已突破防守價，建議立即降低風險",
+        "CANDLE_CLOSE_CONFIRMED": "新的 15M K 線已收盤，決策完成重新確認",
+        "INTRABAR_BREACH": "價格盤中測試關鍵位，尚未收盤確認",
+        "BREAKDOWN_CONFIRMED": "15M 收盤確認跌破關鍵位",
+        "RETEST_REJECTED": "反彈回測關鍵位失敗",
+        "BEARISH_CONTINUATION": "空方結構延續並形成新的低點",
+        "SHORT_ENTRY_READY": "空方進場條件與風險報酬比已達標",
+        "PENDING_BREAKOUT": "價格突破候選壓力，等待收盤確認",
+        "BREAKOUT_CONFIRMED": "15M 收盤確認突破壓力",
+        "BULLISH_CONTINUATION": "連續收盤站穩突破位，多方延續",
+        "BREAKOUT_RETEST": "價格回踩突破區，尚未破壞多方結構",
+        "BREAKOUT_FAILED": "價格收盤跌回突破區且結構轉弱",
+        "SHORT_INVALIDATED": "空方劇本失效，停止沿用原空方進場區",
+        "FALSE_BREAKOUT": "15M 收盤重新站回失守位，確認為假跌破",
+        "BULLISH_RECOVERY": "價格收復關鍵位，行情由偏空轉為多方恢復",
     }
-    for event_type in dict.fromkeys(event_types):
+    ordinary = [(old_state, state, kind) for kind in dict.fromkeys(event_types)]
+    for previous_state, current_state, event_type in transition_chain or ordinary:
+        entry_zone = (
+            {"low": entry.get("zone_low"), "high": entry.get("zone_high")}
+            if isinstance(entry.get("zone_low"), (int, float))
+            and isinstance(entry.get("zone_high"), (int, float))
+            else None
+        )
+        targets = [
+            value
+            for value in (
+                entry.get("take_profit_1"),
+                entry.get("take_profit_2"),
+                entry.get("take_profit_3"),
+            )
+            if isinstance(value, (int, float))
+        ]
+        seed = (
+            f"{data.get('symbol', 'XAUUSD')}|{previous_state}|{current_state}|"
+            f"{event_type}|{candle_time}|{price:.2f}|{data.get('version', 0)}"
+        )
+        event_id = hashlib.sha256(seed.encode()).hexdigest()[:32]
         events.append(
             {
+                "eventId": event_id,
                 "event_type": event_type,
-                "topic": f"final-decision:{old_state}:{state}:{event_type}:{candle_time}:{price:.2f}",
+                "previousState": previous_state,
+                "currentState": current_state,
+                "transitionReason": event_reasons[event_type],
+                "marketState": current.market_state,
+                "finalDecision": current_state,
+                "currentPrice": price,
+                "entryZone": entry_zone,
+                "stopLoss": entry.get("stop_loss"),
+                "targets": targets,
+                "triggerReason": event_reasons[event_type],
+                "candleCloseTime": candle_time,
+                "calculatedAt": calculated,
+                "dataVersion": current.version,
+                "flatAction": flat_action,
+                "longManage": long_manage,
+                "shortManage": short_manage,
+                "confirmation": current.confirmation,
+                "topic": f"decision-event:{event_id}",
                 "message": (
-                    f"【狀態變化】{old_state} → {state}\n【現價】{price:.2f}\n"
+                    f"【狀態變化】{previous_state} → {current_state}\n【現價】{price:.2f}\n"
                     f"【觸發原因】{event_reasons[event_type]}\n【未持倉】{flat_action}\n"
                     f"【已持倉】{long_manage}；{short_manage}\n【資料時間】{quote_time}"
                 ),
@@ -213,8 +328,9 @@ def evaluate_unified_decision(
         )
     out = asdict(current)
     out["last_event"] = (
-        event_types[-1] if event_types else previous.get("last_event", "")
+        events[-1]["event_type"] if events else previous.get("last_event", "")
     )
+    out["latest_event"] = events[-1] if events else previous.get("latest_event", {})
     out["events"] = events
     return out, events
 
@@ -229,3 +345,12 @@ def enforce_scenario_consistency(final_state: str, long_scenario, short_scenario
     ):
         short_scenario = short_scenario.model_copy(update={"status": "WATCH"})
     return long_scenario, short_scenario
+
+
+def assign_event_data_version(event: dict, version: int) -> dict:
+    """Finalize identity only after the durable AnalysisRun version is allocated."""
+    updated = {**event, "dataVersion": version}
+    seed = f"{event.get('eventId', '')}|{version}"
+    updated["eventId"] = hashlib.sha256(seed.encode()).hexdigest()[:32]
+    updated["topic"] = f"decision-event:{updated['eventId']}"
+    return updated

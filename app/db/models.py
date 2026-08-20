@@ -354,6 +354,45 @@ class MarketMonitorState(Base):
     __table_args__ = (UniqueConstraint("symbol", "monitor_key", name="uq_market_monitor"),)
 
 
+class DecisionEvent(Base):
+    """Canonical market decision event consumed by both web and Telegram."""
+    __tablename__ = "decision_events"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    event_id: Mapped[str] = mapped_column(String(64), unique=True)
+    symbol: Mapped[str] = mapped_column(String(32), default="XAUUSD")
+    previous_state: Mapped[str] = mapped_column(String(32))
+    current_state: Mapped[str] = mapped_column(String(32))
+    transition_reason: Mapped[str] = mapped_column(Text)
+    market_state: Mapped[str] = mapped_column(String(64), default="")
+    final_decision: Mapped[str] = mapped_column(String(32))
+    current_price: Mapped[float] = mapped_column(Float)
+    entry_zone: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    stop_loss: Mapped[float | None] = mapped_column(Float, nullable=True)
+    targets: Mapped[list] = mapped_column(JSON, default=list)
+    candle_close_time: Mapped[str] = mapped_column(String(64), default="")
+    calculated_at: Mapped[str] = mapped_column(String(64), default="")
+    data_version: Mapped[int] = mapped_column(Integer, default=0)
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class TelegramNotification(Base):
+    """Transactional outbox row; one durable Telegram delivery per DecisionEvent."""
+    __tablename__ = "telegram_notifications"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    event_id: Mapped[str] = mapped_column(
+        ForeignKey("decision_events.event_id"), unique=True)
+    status: Mapped[str] = mapped_column(String(16), default="PENDING")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    message_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class ProviderHealth(Base):
     """16. provider_health — 各資料源健康與配額"""
     __tablename__ = "provider_health"

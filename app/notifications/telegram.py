@@ -19,6 +19,9 @@ class TelegramChannel(NotificationChannel):
         self._chat_id = chat_id
 
     async def send(self, text: str) -> bool:
+        return bool(await self.send_with_receipt(text))
+
+    async def send_with_receipt(self, text: str) -> str:
         async with httpx.AsyncClient(timeout=10.0) as client:
             r = await client.post(self._url, json={
                 "chat_id": self._chat_id, "text": text[:4000],
@@ -26,8 +29,9 @@ class TelegramChannel(NotificationChannel):
             })
             if r.status_code != 200:
                 logger.error("telegram send failed: %s %s", r.status_code, r.text[:200])
-                return False
-            return True
+                return ""
+            payload = r.json()
+            return str((payload.get("result") or {}).get("message_id") or "")
 
 
 def build_notification_manager() -> NotificationManager:

@@ -139,8 +139,18 @@ def evaluate_live_quote_state(
     current, events = evaluate_unified_decision(
         {**data, "normalized_analysis": normalized}, _load(symbol, "final_decision")
     )
+    from app.services.decision_outbox import persist_decision_events
+
+    events = persist_decision_events(symbol, events)
+    current["events"] = events
+    if events:
+        current["latest_event"] = events[-1]
     _save(symbol, "final_decision", {k: v for k, v in current.items() if k != "events"})
     return current, events
+
+
+def persist_final_decision_state(symbol: str, state: dict) -> None:
+    _save(symbol, "final_decision", {k: v for k, v in state.items() if k != "events"})
 
 
 async def notify_market_monitor_events(result: dict, notifier) -> None:

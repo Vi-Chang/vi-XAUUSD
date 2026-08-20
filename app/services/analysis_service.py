@@ -627,6 +627,14 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
             result.version = run.id
             result.decision_trace.analysisId = run.id
             result.final_decision_state["version"] = run.id
+            from app.engines.unified_decision_state import assign_event_data_version
+            finalized_events = [
+                assign_event_data_version(event, run.id)
+                for event in result.final_decision_state.get("events", [])
+            ]
+            result.final_decision_state["events"] = finalized_events
+            if finalized_events:
+                result.final_decision_state["latest_event"] = finalized_events[-1]
             result.long_scenario = result.long_scenario.model_copy(update={"version": run.id})
             result.short_scenario = result.short_scenario.model_copy(update={"version": run.id})
             run.result_json = result.model_dump()
@@ -655,5 +663,13 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
                         row.still_valid = structure_event.still_valid
     except Exception as exc:  # noqa: BLE001
         logger.error("persist analysis failed: %s", exc)
+
+    if result.version:
+        from app.services.decision_outbox import persist_decision_events
+        from app.services.market_monitor_service import persist_final_decision_state
+
+        result.final_decision_state["events"] = persist_decision_events(
+            symbol, result.final_decision_state.get("events", []))
+        persist_final_decision_state(symbol, result.final_decision_state)
 
     return result

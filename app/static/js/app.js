@@ -461,6 +461,18 @@ function renderDirectionalAlert(alert) {
 
 function renderFinalDecision(finalState) {
   if (!finalState) return;
+  const event = finalState.latest_event || {};
+  if (event.eventId) finalState = {
+    ...finalState,
+    state: event.currentState,
+    source_price: event.currentPrice,
+    reason: event.transitionReason,
+    flat_action: event.flatAction,
+    long_manage: event.longManage,
+    short_manage: event.shortManage,
+    confirmation: event.confirmation,
+    quote_time: event.calculatedAt,
+  };
   const labels = {
     WAIT: "等待", LONG_WATCH: "多方觀察中", LONG_READY: "多方條件完成",
     SHORT_WATCH: "空方觀察中", SHORT_READY: "空方條件完成",
@@ -479,6 +491,20 @@ function renderFinalDecision(finalState) {
   $("quick-action-why").textContent = finalState.reason || "等待條件一致";
   $("quick-action-next").textContent = finalState.flat_action || "等待下一個明確條件";
   $("quick-action-card").dataset.action = finalState.state === "DATA_STALE" ? "NO_TRADE" : finalState.state;
+}
+
+async function refreshTelegramStatus() {
+  try {
+    const status = await (await fetch("/api/telegram/status")).json();
+    $("telegram-connection").textContent = status.connected ? "已連線" : "未設定／異常";
+    $("telegram-last-event").textContent = status.lastEvent || "尚無事件";
+    $("telegram-last-sent").textContent = status.lastSentAt ? fmtTs(status.lastSentAt) : "尚無成功通知";
+    const labels = { PENDING: "通知傳送中", RETRYING: "通知重試中", FAILED: "Telegram 發送失敗", SENT: "已送達", IDLE: "尚無通知" };
+    $("telegram-delivery").textContent = labels[status.status] || status.status;
+  } catch (e) {
+    $("telegram-connection").textContent = "異常";
+    $("telegram-delivery").textContent = "Telegram 狀態讀取失敗";
+  }
 }
 
 function renderMarketMonitors(a) {
@@ -1545,6 +1571,11 @@ function connectWS() {
       if (msg.type === "tick") onTick(msg);
       else if (msg.type === "analysis") applyAnalysis(msg.data);
       else if (msg.type === "decision_state") renderFinalDecision(msg.data);
+      else if (msg.type === "decision_event") {
+        if (S.analysis) S.analysis.final_decision_state.latest_event = msg.data;
+        renderFinalDecision({ ...(S.analysis && S.analysis.final_decision_state || {}), latest_event: msg.data });
+        refreshTelegramStatus();
+      }
       else if (msg.type === "analysis_refreshing") {
         $("quick-action-title").textContent = "判斷更新中";
         $("quick-action-why").textContent = "新一根 15 分鐘 K 棒已收盤，系統正在重新判斷。";
@@ -1625,6 +1656,13 @@ async function boot() {
 
   $("admin-login-btn").addEventListener("click", () => ensureLogin());
   $("admin-logout-btn").addEventListener("click", () => doLogout());
+  $("telegram-test-btn").addEventListener("click", async () => {
+    try {
+      await api("/api/telegram/test", { method: "POST" });
+      $("telegram-delivery").textContent = "通知傳送中";
+      setTimeout(refreshTelegramStatus, 1500);
+    } catch (err) { alert("測試通知建立失敗：" + err.message); }
+  });
 
   connectWS();
   await refreshAuthState();          // 判斷是否已登入(session cookie),更新 UI
@@ -1640,6 +1678,8 @@ async function boot() {
     mk.textContent = h.market_open ? "開盤中" : "休市";
     mk.className = "chip " + (h.market_open ? "good" : "warn");
   } catch (e) { /* noop */ }
+  await refreshTelegramStatus();
+  setInterval(refreshTelegramStatus, 15000);
 
   try {
     S.events = await (await fetch("/api/events/upcoming")).json();

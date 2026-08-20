@@ -240,13 +240,8 @@ async def job_quote_l1() -> None:
             )
             state.latest_result["final_decision_state"] = final_state
             await broadcast_all({"type": "decision_state", "data": final_state})
-            if events and state.notifier:
-                preview = {"final_decision_state": {**final_state, "events": events}}
-                from app.services.market_monitor_service import (
-                    notify_market_monitor_events,
-                )
-
-                await notify_market_monitor_events(preview, state.notifier)
+            for event in events:
+                await broadcast_all({"type": "decision_event", "data": event})
         # 首次 provider session 可能耗時超過 APScheduler 的 misfire grace，導致原定
         # 第 10 秒執行的 L2 被跳過。首次報價成功後直接補一筆完整分析，避免新部署
         # 長時間停在 analysis_refresh_required；後續仍由 L2 事件／定時規則接手。
@@ -257,19 +252,25 @@ async def job_quote_l1() -> None:
     except Exception as exc:  # noqa: BLE001 — 靜默重試;連續失敗 N 次才警告一次
         state.l1_fail_count += 1
         logger.warning("quote_l1 failed (%d consecutive): %s", state.l1_fail_count, exc)
-        if (
-            state.l1_fail_count >= s.tier1_fail_alert_after
-            and not state.l1_alerted
-            and state.notifier
-        ):
+        if state.l1_fail_count >= s.tier1_fail_alert_after and not state.l1_alerted:
             state.l1_alerted = True
-            await state.notifier.notify(
-                "RISK",
-                "quote_l1_down",
-                f"報價層連續 {state.l1_fail_count} 次抓不到價格"
-                f"(來源 {provider.name}),請留意行情可能中斷",
-                severity="WARN",
-            )
+            if state.latest_result:
+                stale_result = dict(state.latest_result)
+                stale_normalized = dict(stale_result.get("normalized_analysis") or {})
+                stale_normalized["marketDataStatus"] = "FAILED"
+                stale_result["normalized_analysis"] = stale_normalized
+                from app.services.market_monitor_service import (
+                    evaluate_live_quote_state,
+                )
+
+                last = state.quote_cache.last_tick
+                final_state, events = evaluate_live_quote_state(
+                    stale_result, price=last.mid if last else 0,
+                    quote_time=datetime.now(timezone.utc).isoformat())
+                state.latest_result["final_decision_state"] = final_state
+                await broadcast_all({"type": "decision_state", "data": final_state})
+                for event in events:
+                    await broadcast_all({"type": "decision_event", "data": event})
 
 
 # ═══ 第 2 層:結構層(純邏輯,禁 AI)═══════════════════════
@@ -386,35 +387,18 @@ async def run_full_analysis(*, trigger: str, reason_zh: str | None) -> None:
         state.last_full_analysis = datetime.now(timezone.utc)
 
         action = result.decision.action
+        entry = state.latest_result.get("entry_engine") or {}
         if state.notifier:
-            entry = state.latest_result.get("entry_engine") or {}
             # Structural monitoring never terminates merely because a long plan was
             # invalidated.  Publish the breakdown/exit-risk event first, then the
             # independent entry-plan event.  Distinct event topics cannot block one another.
             from app.services.short_alert_service import process_short_alert
 
-            await process_short_alert(
-                state.latest_result, state.notifier, entry_plan=entry
-            )
-            from app.services.entry_engine_service import notify_entry_plan
-
-            await notify_entry_plan(
-                entry,
-                state.notifier,
-                symbol=state.latest_result.get("symbol", "XAUUSD"),
-            )
-            from app.services.market_monitor_service import notify_market_monitor_events
-
-            await notify_market_monitor_events(state.latest_result, state.notifier)
-            if result.data_quality.status in ("STALE", "FAILED"):
-                await state.notifier.notify(
-                    "RISK",
-                    "data_quality",
-                    f"資料品質 {result.data_quality.status}: {result.data_quality.warnings[:3]}",
-                    severity="ERROR"
-                    if result.data_quality.status == "FAILED"
-                    else "WARN",
-                )
+            await process_short_alert(state.latest_result, None, entry_plan=entry)
+        for event in (state.latest_result.get("final_decision_state") or {}).get(
+            "events", []
+        ):
+            await broadcast_all({"type": "decision_event", "data": event})
         state.last_decision_action = action
 
         from app.services.freshness import annotate_freshness
@@ -487,6 +471,14 @@ async def job_outcome_backfill() -> None:
         logger.exception("outcome backfill failed")
 
 
+async def job_telegram_outbox() -> None:
+    """Retry-safe Telegram delivery; rows survive restarts."""
+    state.mark("telegram_outbox")
+    from app.services.decision_outbox import deliver_pending_telegram
+
+    await deliver_pending_telegram()
+
+
 def build_scheduler() -> AsyncIOScheduler:
     s = get_settings()
     sched = AsyncIOScheduler(timezone="UTC")
@@ -526,6 +518,15 @@ def build_scheduler() -> AsyncIOScheduler:
         max_instances=1,
         coalesce=True,
         next_run_time=startup + timedelta(seconds=60),
+    )
+    sched.add_job(
+        job_telegram_outbox,
+        "interval",
+        seconds=5,
+        id="telegram_outbox",
+        max_instances=1,
+        coalesce=True,
+        next_run_time=startup + timedelta(seconds=3),
     )
     sched.add_job(
         job_cross_check,
