@@ -326,6 +326,8 @@ class DirectionalAlertState(Base):
     zone_high: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_closed_candle: Mapped[str] = mapped_column(String(64), default="")
+    last_closed_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    last_event: Mapped[str] = mapped_column(String(32), default="")
     generation: Mapped[int] = mapped_column(Integer, default=0)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 

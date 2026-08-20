@@ -515,13 +515,23 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
 
     # Persistent executable ENTRY ENGINE. It owns setup continuity and never
     # relies on the previous human-readable decision text.
-    from app.schemas.analysis import EntryEngineView
+    from app.schemas.analysis import DirectionalAlertView, EntryEngineView
     from app.services.entry_engine_service import evaluate_and_persist_entry
     entry_plan = evaluate_and_persist_entry(
         result.model_dump(), m5_closed=dfs_closed.get("5M"),
         m15_closed=dfs_closed.get("15M"), now=now)
     result.entry_engine = EntryEngineView.model_validate({
         **entry_plan.__dict__, "notified_states": list(entry_plan.notified_states)})
+    # Web and push channels preview the same persisted bearish lifecycle. The
+    # scheduler re-evaluates this unchanged snapshot, then persists/notifies it.
+    from app.services.short_alert_service import preview_short_alert
+    directional = preview_short_alert(result.model_dump(), entry_plan.__dict__)
+    result.directional_alert = DirectionalAlertView(
+        status=directional.state.status, event_type=directional.event_type,
+        level=directional.state.level,
+        invalidation_level=directional.state.invalidation_level,
+        candle_close_time=directional.state.last_closed_candle,
+        message=directional.message, blocked_reason=directional.blocked_reason)
     if elig.eligible and entry_plan.status == "ENTRY_TRIGGERED":
         result.decision.action = "LONG" if entry_plan.direction == "LONG" else "SHORT"
         result.decision.reason = entry_plan.trigger_condition

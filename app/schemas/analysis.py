@@ -514,6 +514,22 @@ class EntryEngineView(BaseModel):
     notified_states: list[str] = Field(default_factory=list)
 
 
+class DirectionalAlertView(BaseModel):
+    status: Literal[
+        "NEUTRAL", "SHORT_WATCH", "BEARISH_WATCH", "SHORT_ENTRY_READY",
+        "SHORT_INVALIDATED",
+    ] = "NEUTRAL"
+    event_type: Literal[
+        "", "INTRABAR_BREACH", "BREAKDOWN_CONFIRMED", "RETEST_REJECTED",
+        "BEARISH_CONTINUATION", "SHORT_ENTRY_READY", "FALSE_BREAKOUT",
+    ] = ""
+    level: float | None = None
+    invalidation_level: float | None = None
+    candle_close_time: str = ""
+    message: str = ""
+    blocked_reason: str = ""
+
+
 class AnalysisResult(BaseModel):
     """spec 二十二之完整固定輸出。"""
     version: int = 0                # BUGFIX R6:遞增版本號(=analysis_runs.id)
@@ -540,6 +556,7 @@ class AnalysisResult(BaseModel):
     normalized_analysis: NormalizedAnalysisState = NormalizedAnalysisState()
     tactical_shadow: TacticalShadowRecord = Field(default_factory=TacticalShadowRecord)
     entry_engine: EntryEngineView = Field(default_factory=EntryEngineView)
+    directional_alert: DirectionalAlertView = Field(default_factory=DirectionalAlertView)
     decision_trace: DecisionTrace = Field(default_factory=DecisionTrace)
     risk_manager: RiskManagerView = RiskManagerView()
     position_management: PositionManagement = PositionManagement()
