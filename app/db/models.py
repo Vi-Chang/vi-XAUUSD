@@ -393,6 +393,32 @@ class TelegramNotification(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+class DecisionEventOutcome(Base):
+    """Forward-only result of an executable canonical DecisionEvent.
+
+    The row is recalculated from candles that closed after the event, so it can
+    be used for calibration without leaking future data into the live decision.
+    """
+    __tablename__ = "decision_event_outcomes"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    event_id: Mapped[str] = mapped_column(
+        ForeignKey("decision_events.event_id"), unique=True)
+    direction: Mapped[str] = mapped_column(String(8))
+    entry_price: Mapped[float] = mapped_column(Float)
+    initial_risk: Mapped[float | None] = mapped_column(Float, nullable=True)
+    transaction_cost: Mapped[float] = mapped_column(Float, default=0.0)
+    horizons: Mapped[dict] = mapped_column(JSON, default=dict)
+    tp1_hit: Mapped[bool] = mapped_column(Boolean, default=False)
+    stop_hit: Mapped[bool] = mapped_column(Boolean, default=False)
+    max_favorable_r: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max_adverse_r: Mapped[float | None] = mapped_column(Float, nullable=True)
+    classification: Mapped[str] = mapped_column(String(24), default="PENDING")
+    evaluated_through: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class ProviderHealth(Base):
     """16. provider_health — 各資料源健康與配額"""
     __tablename__ = "provider_health"

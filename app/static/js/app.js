@@ -1506,6 +1506,17 @@ async function loadPerformance() {
       market_state: "市場狀態", session: "交易時段", setup_state: "戰術狀態",
       signal_mode: "訊號類型", stop_source: "停損來源" };
     const cards = [];
+    const eventPerf = report.decision_events || {};
+    cards.push(h`<div class="performance-card calibration-card">
+      <h4>實際決策事件追蹤</h4>
+      <p>只統計曾正式成立的可執行訊號，並扣除記錄到的點差、滑價與費用。</p>
+      <div class="performance-metrics">
+        <span>事件樣本<b class="num">${eventPerf.sample_size || 0}</b></span>
+        <span>1 小時已結算<b class="num">${eventPerf.settled_1h || 0}</b></span>
+        <span>正報酬比例<b class="num">${eventPerf.win_rate_1h_pct == null ? "—" : eventPerf.win_rate_1h_pct + "%"}</b></span>
+        <span>可供校準<b>${eventPerf.calibration_ready ? "是" : "樣本收集中"}</b></span>
+      </div><small>正報酬比例不是未來勝率；未滿 30 筆不會調整正式門檻。</small>
+    </div>`);
     const shadow = report.shadow_mode || {};
     cards.push(h`<div class="performance-card calibration-card">
       <h4>影子驗證</h4>
