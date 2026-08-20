@@ -11,6 +11,7 @@ from sqlalchemy import and_, or_, select
 from app.config import get_settings
 from app.db.models import DecisionEvent, TelegramNotification
 from app.db.session import db_session
+from app.engines.trigger_lifecycle import validate_notification
 from app.services.alert_aggregator import aggregate_signal_facts
 
 logger = logging.getLogger(__name__)
@@ -22,6 +23,14 @@ def persist_decision_events(symbol: str, events: list[dict]) -> list[dict]:
     created: list[dict] = []
     now = datetime.now(timezone.utc)
     events = aggregate_signal_facts(symbol, events)
+    valid_events = []
+    for payload in events:
+        errors = validate_notification(payload)
+        if errors:
+            logger.error("notification validation failed: %s", ",".join(errors))
+            continue
+        valid_events.append(payload)
+    events = valid_events
     with db_session() as db:
         for payload in events:
             event_id = str(payload.get("eventId") or "")
@@ -143,9 +152,16 @@ def format_telegram_event(event: dict) -> str:
     reasons = list(event.get("transitionReasons") or [])
     change = ("\n" + "\n".join(f"• {reason}" for reason in reasons)
               if reasons else str(event.get("transitionReason", "")))
+    completed = event.get("completedTriggers") or []
+    completed_text = ""
+    if completed:
+        item = completed[-1]
+        verb = "站上" if item.get("condition") == "closeAbove" else "跌破"
+        completed_text = f"已完成：15M 收盤{verb} {float(item['level']):.2f}\n"
     return (
         f"{icon}【{_zh_state(state)}】\n現價：{price:.2f}\n"
         f"變化：{change}\n"
+        f"{completed_text}"
         f"未持倉：{event.get('flatAction', '')}\n"
         f"已持多單：{event.get('longManage', '')}\n"
         f"已持空單：{event.get('shortManage', '')}\n"

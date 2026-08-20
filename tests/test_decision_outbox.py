@@ -6,6 +6,7 @@ from sqlalchemy import func, select
 from app.db.models import DecisionEvent, TelegramNotification
 from app.db.session import db_session, init_db
 from app.engines.unified_decision_state import evaluate_unified_decision
+from app.services.alert_aggregator import semantic_key
 from app.services.decision_outbox import (
     deliver_pending_telegram,
     format_telegram_event,
@@ -262,3 +263,41 @@ async def test_late_fact_edits_sent_message_instead_of_sending_again():
     assert await deliver_pending_telegram(sender=sender, editor=editor,
                                           event_id=first["eventId"]) == 1
     assert sends == 1 and edits == 1
+
+
+def test_live_prices_share_dedup_key_for_same_basis_candle_state_and_trigger():
+    base = {
+        "symbol": "XAUUSD", "timeframe": "15M",
+        "decisionBasisCandleCloseTime": "2026-08-20T15:45:00+00:00",
+        "currentState": "MISSED_ENTRY", "alertCategory": "MISSED_ENTRY",
+        "triggerLevel": 4495.12,
+    }
+    keys = {semantic_key({**base, "currentPrice": price,
+                          "calculatedAt": f"2026-08-20T15:{minute}:00+00:00"})
+            for price, minute in ((4517, 50), (4519, 51), (4520, 56))}
+    assert len(keys) == 1
+
+
+def test_notification_validator_rejects_completed_next_trigger():
+    bad = {
+        "eventId": "bad-completed-next", "currentState": "LONG_WATCH",
+        "currentPrice": 4520.91, "candleCloseTime": "2026-08-20T15:45:00+00:00",
+        "latestClosedCandlePrice": 4520.50,
+        "nextTriggerCondition": {"condition": "closeAbove", "level": 4495.12,
+                                 "timeframe": "15M", "status": "PENDING"},
+        "triggerLevel": 4495.12,
+    }
+    assert persist_decision_events("XAUUSD-VALIDATION", [bad]) == []
+
+
+def test_message_lists_completed_trigger_separately_from_next_trigger():
+    event = {
+        "currentState": "MISSED_ENTRY", "currentPrice": 4520.91,
+        "transitionReason": "連續收盤站穩突破位，多方延續",
+        "completedTriggers": [{"condition": "closeAbove", "level": 4495.12,
+                               "status": "SATISFIED"}],
+        "confirmation": "原突破條件已完成，正在等待新結構形成",
+    }
+    message = format_telegram_event(event)
+    assert "已完成：15M 收盤站上 4495.12" in message
+    assert "下一觸發：原突破條件已完成，正在等待新結構形成" in message

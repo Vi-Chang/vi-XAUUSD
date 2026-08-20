@@ -19,9 +19,10 @@ def semantic_key(event: dict) -> str:
     raw = "|".join((
         str(event.get("symbol") or "XAUUSD"),
         str(event.get("timeframe") or "15M"),
-        str(event.get("candleCloseTime") or ""),
+        str(event.get("decisionBasisCandleCloseTime") or event.get("candleCloseTime") or ""),
         str(event.get("currentState") or "WAIT"),
         str(event.get("alertCategory") or alert_category(event)),
+        str(event.get("triggerLevel") or ""),
     ))
     return hashlib.sha256(raw.encode()).hexdigest()
 
