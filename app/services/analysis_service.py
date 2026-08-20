@@ -489,6 +489,11 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
                                                     sc.invalidation_id, *sc.target_ids]),
             "created_at": now.isoformat(),
             "snapshot_ts": tick.quote_time.isoformat(),
+            "quoteTime": tick.quote_time.isoformat(),
+            "lastClosedCandleTime": normalized.lastClosedCandleTimestamp,
+            "calculatedAt": now.isoformat(),
+            "sourcePrice": tick.mid,
+            "marketState": normalized.marketStateCode,
         })
     result.long_scenario = _stamped(result.long_scenario)
     result.short_scenario = _stamped(result.short_scenario)
@@ -541,6 +546,21 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
             "PREPARE_LONG" if entry_plan.direction == "LONG" else "PREPARE_SHORT")
         result.decision.reason = entry_plan.missing_condition
         result.market_decision = result.decision.model_copy()
+
+    # Three independent close-driven monitors. None depends on actual positions,
+    # entry invalidation, or trade-cycle state.
+    from app.services.market_monitor_service import evaluate_market_monitors
+    monitors = evaluate_market_monitors(
+        result.model_dump(), h1_closed=dfs_closed.get("1H"), indicators=ind)
+    result.hypothetical_exit_advisor = monitors["hypothetical_exit_advisor"]
+    result.breakout_alert = monitors["breakout_alert"]
+    result.virtual_profit_tracker = monitors["virtual_profit_tracker"]
+    result.final_decision_state = monitors["final_decision_state"]
+    final_state = result.final_decision_state.get("state", "WAIT")
+    from app.engines.unified_decision_state import enforce_scenario_consistency
+    result.long_scenario, result.short_scenario = enforce_scenario_consistency(
+        final_state, result.long_scenario, result.short_scenario)
+    result.decision_trace.finalDecision = final_state
 
     # ── 9d. V2 AI 分析層(4 Agent;任何失敗不影響上面的確定性輸出)──
     try:
@@ -606,6 +626,17 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
             # BUGFIX R6:版本號 = analysis_runs.id(單調遞增、跨重啟持續)
             result.version = run.id
             result.decision_trace.analysisId = run.id
+            result.final_decision_state["version"] = run.id
+            from app.engines.unified_decision_state import assign_event_data_version
+            finalized_events = [
+                assign_event_data_version(event, run.id)
+                for event in result.final_decision_state.get("events", [])
+            ]
+            result.final_decision_state["events"] = finalized_events
+            if finalized_events:
+                result.final_decision_state["latest_event"] = finalized_events[-1]
+            result.long_scenario = result.long_scenario.model_copy(update={"version": run.id})
+            result.short_scenario = result.short_scenario.model_copy(update={"version": run.id})
             run.result_json = result.model_dump()
             for lv in levels:
                 db.add(CandidateLevelRow(analysis_run_id=run.id, level_id=lv.level_id,
@@ -632,5 +663,13 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
                         row.still_valid = structure_event.still_valid
     except Exception as exc:  # noqa: BLE001
         logger.error("persist analysis failed: %s", exc)
+
+    if result.version:
+        from app.services.decision_outbox import persist_decision_events
+        from app.services.market_monitor_service import persist_final_decision_state
+
+        result.final_decision_state["events"] = persist_decision_events(
+            symbol, result.final_decision_state.get("events", []))
+        persist_final_decision_state(symbol, result.final_decision_state)
 
     return result

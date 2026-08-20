@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>XAUUSD 交易分析終端</title>
-<link rel="stylesheet" href="/static/css/style.css?v=breakdown-monitor-v1">
+<link rel="stylesheet" href="/static/css/style.css?v=unified-decision-v1">
 </head>
 <body>
 <div class="stale-banner" id="stale-banner" hidden>
@@ -86,8 +86,21 @@
       <strong class="quick-action-title" id="quick-action-title">載入中…</strong>
       <p class="quick-action-why" id="quick-action-why"></p>
       <p class="calibration-note" id="calibration-note" hidden></p>
+      <div class="quick-decision-grid">
+        <div><span>即時價格／更新</span><b class="num" id="quick-live-price">–</b><small id="quick-live-time">–</small></div>
+        <div><span>當前狀態</span><b id="quick-final-state">等待</b></div>
+        <div><span>未持倉下一步</span><b id="quick-flat-action">等待分析完成</b></div>
+        <div><span>已持倉管理</span><b id="quick-position-action">依防守價管理</b></div>
+        <div><span>下一個觸發</span><b id="quick-trigger">–</b></div>
+        <div><span>資料狀態</span><b id="quick-freshness">確認中</b></div>
+        <div><span>Telegram</span><b id="telegram-connection">檢查中</b></div>
+        <div><span>最近通知</span><b id="telegram-last-event">–</b><small id="telegram-last-sent">–</small></div>
+        <div><span>送達狀態</span><b id="telegram-delivery">–</b></div>
+      </div>
+      <button class="btn btn-sm" id="telegram-test-btn" type="button">發送測試通知</button>
       <div class="quick-action-next"><span>下一步</span><b id="quick-action-next">等待分析完成</b></div>
     </section>
+    <button class="btn mobile-advanced-toggle" id="mobile-advanced-toggle" type="button" aria-expanded="false">顯示進階資訊</button>
     <section class="card entry-plan" id="entry-plan-card" hidden aria-live="polite">
       <div class="card-title">進場計畫</div>
       <div class="entry-plan-head"><strong id="entry-plan-status">尚無計畫</strong><span class="chip" id="entry-plan-direction">–</span></div>
@@ -98,6 +111,7 @@
         <div><span>停損</span><b class="num" id="entry-plan-stop">–</b></div>
         <div><span>第一止盈</span><b class="num" id="entry-plan-tp1">–</b></div>
         <div><span>第二止盈</span><b class="num" id="entry-plan-tp2">–</b></div>
+        <div><span>第三止盈</span><b class="num" id="entry-plan-tp3">–</b></div>
         <div><span>風險報酬比</span><b class="num" id="entry-plan-rr">–</b></div>
       </div>
       <div class="kv"><span>觸發條件</span><span id="entry-plan-trigger">–</span></div>
@@ -111,6 +125,27 @@
       <div class="kv"><span>關鍵價</span><span class="num" id="bearish-monitor-level">–</span></div>
       <div class="kv"><span>確認 K 棒</span><span class="num" id="bearish-monitor-time">–</span></div>
       <p class="reason" id="bearish-monitor-message"></p>
+    </section>
+    <section class="card" id="breakout-alert-card" hidden aria-live="polite">
+      <div class="card-title">突破確認</div>
+      <div class="entry-plan-head"><strong id="breakout-alert-status">等待突破</strong><span class="chip" id="breakout-alert-action">–</span></div>
+      <div class="kv"><span>突破區上緣</span><span class="num" id="breakout-alert-level">–</span></div>
+      <div class="kv"><span>連續站穩</span><span id="breakout-alert-closes">–</span></div>
+      <div class="kv"><span>趨勢</span><span id="breakout-alert-trend">–</span></div>
+    </section>
+    <section class="card" id="hypothetical-exit-card" hidden aria-live="polite">
+      <div class="card-title">如果你已有持倉</div>
+      <p class="reason">這是條件式風險提醒，不代表系統認定你已進場。</p>
+      <div class="kv"><span>若持有多單</span><span id="hypothetical-long-exit">–</span></div>
+      <div class="kv"><span>多單防守價</span><span class="num" id="hypothetical-long-defense">–</span></div>
+      <div class="kv"><span>若持有空單</span><span id="hypothetical-short-exit">–</span></div>
+      <div class="kv"><span>空單防守價</span><span class="num" id="hypothetical-short-defense">–</span></div>
+    </section>
+    <section class="card" id="virtual-profit-card" hidden aria-live="polite">
+      <div class="card-title">條件式獲利保護</div>
+      <p class="reason" id="virtual-profit-summary">–</p>
+      <div class="kv"><span>TP1／TP2／TP3</span><span class="num" id="virtual-profit-targets">–</span></div>
+      <div class="kv"><span>目前保護價</span><span class="num" id="virtual-profit-protection">–</span></div>
     </section>
     <div class="card risk-priority" id="risk-priority-card">
       <div class="card-title">風險優先摘要</div>
@@ -305,6 +340,6 @@
 <script src="/static/vendor/lightweight-charts.standalone.production.js"></script>
 <script src="/static/js/escape.js"></script>
 <script src="/static/js/messages.js?v=scenario-safety-v2"></script>
-<script src="/static/js/app.js?v=breakdown-monitor-v1"></script>
+<script src="/static/js/app.js?v=unified-decision-v1"></script>
 </body>
 </html>

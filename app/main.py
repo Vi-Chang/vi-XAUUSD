@@ -167,6 +167,45 @@ async def admin_status_api(request: Request) -> dict:
     return admin_status(request)
 
 
+@app.get("/api/telegram/status")
+async def telegram_status_api() -> dict:
+    from app.services.decision_outbox import telegram_delivery_status
+
+    return telegram_delivery_status()
+
+
+@app.post("/api/telegram/test", dependencies=[Depends(require_admin)])
+async def telegram_test_api() -> dict:
+    """Enqueue a test through the same durable DecisionEvent outbox."""
+    import hashlib
+    from datetime import datetime, timezone
+
+    from app.services.decision_outbox import persist_decision_events
+
+    now = datetime.now(timezone.utc)
+    current = (state.latest_result or {}).get("final_decision_state") or {}
+    price = float(current.get("source_price") or _current_mid() or 0)
+    seed = f"telegram-test|{now.isoformat()}"
+    event_id = hashlib.sha256(seed.encode()).hexdigest()[:32]
+    payload = {
+        "eventId": event_id, "event_type": "TEST_NOTIFICATION",
+        "previousState": current.get("state", "WAIT"),
+        "currentState": current.get("state", "WAIT"),
+        "transitionReason": "Telegram 測試通知",
+        "marketState": current.get("market_state", ""),
+        "finalDecision": current.get("state", "WAIT"),
+        "currentPrice": price, "entryZone": None, "stopLoss": None,
+        "targets": [], "triggerReason": "確認可靠通知管線可正常送達",
+        "candleCloseTime": current.get("last_closed_candle_time", ""),
+        "calculatedAt": now.isoformat(), "dataVersion": current.get("version", 0),
+        "flatAction": "這是一則測試，不代表交易訊號",
+        "longManage": "不需操作", "shortManage": "不需操作",
+        "confirmation": "等待 Telegram 顯示此訊息",
+    }
+    persist_decision_events("XAUUSD", [payload])
+    return {"ok": True, "eventId": event_id, "status": "PENDING"}
+
+
 @app.get("/health")
 async def health() -> dict:
     """綜合監控(供 UptimeRobot 等)。保留原有欄位並附 readiness 摘要。"""

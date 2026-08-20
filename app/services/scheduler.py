@@ -10,6 +10,7 @@ Jobs:
 
 三層獨立:任一層例外只影響自己;第 3 層有定時保底兜底。
 """
+
 from __future__ import annotations
 
 import logging
@@ -30,7 +31,7 @@ class AppState:
     def __init__(self) -> None:
         self.provider = None
         self.secondary = None
-        self.fast_provider = None            # 第 1 層快速報價源(可為 None → 降級)
+        self.fast_provider = None  # 第 1 層快速報價源(可為 None → 降級)
         self.notifier = None
         self.latest_result: dict | None = None
         self.last_job_run: dict[str, datetime] = {}
@@ -39,7 +40,7 @@ class AppState:
         self.started_at: datetime | None = None
         # WebSocket 分流:公開頻道只收公開投影;私人頻道須有效 session,收完整 payload。
         self.ws_public: set = set()
-        self.ws_private: dict = {}     # ws -> session_id(broadcast 時檢查過期)
+        self.ws_private: dict = {}  # ws -> session_id(broadcast 時檢查過期)
         # 三層架構狀態
         self.quote_cache = QuoteCache()
         self.event_cooldown = EventCooldown()
@@ -50,8 +51,8 @@ class AppState:
         self.l1_alerted = False
         self.td_degraded_alerted = False
         # ── 監控用(readiness/health)──
-        self.last_quote_ok_at: datetime | None = None   # 最後一次成功取得報價
-        self.scheduler_started = False                  # 排程是否已啟動
+        self.last_quote_ok_at: datetime | None = None  # 最後一次成功取得報價
+        self.scheduler_started = False  # 排程是否已啟動
 
     def mark(self, job: str) -> None:
         self.last_job_run[job] = datetime.now(timezone.utc)
@@ -62,6 +63,7 @@ state = AppState()
 
 def _dump(payload: dict) -> str:
     import json
+
     return json.dumps(payload, ensure_ascii=False, default=str)
 
 
@@ -80,12 +82,13 @@ async def broadcast_public(payload: dict) -> None:
 async def broadcast_private(payload: dict) -> None:
     """推送給私人頻道;送出前檢查 session 是否仍有效,過期則關閉並移除。"""
     from app.security import session_valid
+
     msg = _dump(payload)
     dead = []
     for ws, sid in list(state.ws_private.items()):
         if not session_valid(sid):
             try:
-                await ws.close(code=1008)   # session 過期 → 不再傳私人資料
+                await ws.close(code=1008)  # session 過期 → 不再傳私人資料
             except Exception:
                 logger.debug("failed to close expired private websocket", exc_info=True)
             dead.append(ws)
@@ -106,6 +109,7 @@ async def broadcast_all(payload: dict) -> None:
 
 # ═══ 第 1 層:報價層 ═══════════════════════════════════════
 
+
 def l1_provider():
     return state.fast_provider or state.provider
 
@@ -119,20 +123,27 @@ def l1_interval_seconds() -> int:
     return max(s.tier1_quote_seconds, provider_min)
 
 
-def expected_closed_15m(now: datetime | None = None, delay_seconds: int | None = None) -> datetime:
+def expected_closed_15m(
+    now: datetime | None = None, delay_seconds: int | None = None
+) -> datetime:
     """Open timestamp of the latest 15M candle expected to be closed and available."""
     now = now or datetime.now(timezone.utc)
-    delay = (get_settings().candle_close_refresh_delay_seconds
-             if delay_seconds is None else delay_seconds)
+    delay = (
+        get_settings().candle_close_refresh_delay_seconds
+        if delay_seconds is None
+        else delay_seconds
+    )
     eligible = now - timedelta(seconds=max(0, delay))
     close_boundary = eligible.replace(
-        minute=(eligible.minute // 15) * 15, second=0, microsecond=0)
+        minute=(eligible.minute // 15) * 15, second=0, microsecond=0
+    )
     return close_boundary - timedelta(minutes=15)
 
 
 def _analysis_closed_15m() -> datetime | None:
     raw = ((state.latest_result or {}).get("normalized_analysis") or {}).get(
-        "lastClosedCandleTimestamp")
+        "lastClosedCandleTimestamp"
+    )
     try:
         parsed = datetime.fromisoformat(raw)
         return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
@@ -158,10 +169,19 @@ async def job_candle_close_refresh() -> None:
     if state.candle_refresh_attempts >= s.candle_close_refresh_max_attempts:
         return
     state.candle_refresh_attempts += 1
-    await broadcast_all({"type": "analysis_refreshing", "timeframe": "15M",
-                         "expected_close": expected.isoformat()})
-    await run_full_analysis(trigger="candle_close", reason_zh="15 分鐘 K 棒已收盤，更新判斷")
-    if (_analysis_closed_15m() or datetime.min.replace(tzinfo=timezone.utc)) >= expected:
+    await broadcast_all(
+        {
+            "type": "analysis_refreshing",
+            "timeframe": "15M",
+            "expected_close": expected.isoformat(),
+        }
+    )
+    await run_full_analysis(
+        trigger="candle_close", reason_zh="15 分鐘 K 棒已收盤，更新判斷"
+    )
+    if (
+        _analysis_closed_15m() or datetime.min.replace(tzinfo=timezone.utc)
+    ) >= expected:
         state.candle_refresh_attempts = 0
 
 
@@ -174,6 +194,7 @@ async def job_quote_l1() -> None:
     try:
         tick = await provider.get_live_price()
         from app.services.api_counter import bump
+
         bump(provider.name)
         state.quote_cache.add(tick)
         state.l1_fail_count = 0
@@ -182,34 +203,78 @@ async def job_quote_l1() -> None:
 
         from app.db.models import LivePrice
         from app.db.session import db_session
+
         now = datetime.now(timezone.utc)
         with db_session() as db:
-            db.add(LivePrice(symbol=tick.symbol, bid=tick.bid, ask=tick.ask,
-                             mid=tick.mid, spread=tick.spread, provider=tick.provider,
-                             quote_time=tick.quote_time, received_at=now))
+            db.add(
+                LivePrice(
+                    symbol=tick.symbol,
+                    bid=tick.bid,
+                    ask=tick.ask,
+                    mid=tick.mid,
+                    spread=tick.spread,
+                    provider=tick.provider,
+                    quote_time=tick.quote_time,
+                    received_at=now,
+                )
+            )
         from app.utils.formatting import fmt_price
-        await broadcast_all({"type": "tick", "bid": fmt_price(tick.bid),
-                             "ask": fmt_price(tick.ask), "mid": fmt_price(tick.mid),
-                             "spread": fmt_price(tick.spread),
-                             "time": int(tick.quote_time.timestamp())})
+
+        await broadcast_all(
+            {
+                "type": "tick",
+                "bid": fmt_price(tick.bid),
+                "ask": fmt_price(tick.ask),
+                "mid": fmt_price(tick.mid),
+                "spread": fmt_price(tick.spread),
+                "time": int(tick.quote_time.timestamp()),
+            }
+        )
+        if state.latest_result:
+            from app.services.market_monitor_service import evaluate_live_quote_state
+
+            final_state, events = evaluate_live_quote_state(
+                state.latest_result,
+                price=tick.mid,
+                quote_time=tick.quote_time.isoformat(),
+            )
+            state.latest_result["final_decision_state"] = final_state
+            await broadcast_all({"type": "decision_state", "data": final_state})
+            for event in events:
+                await broadcast_all({"type": "decision_event", "data": event})
         # 首次 provider session 可能耗時超過 APScheduler 的 misfire grace，導致原定
         # 第 10 秒執行的 L2 被跳過。首次報價成功後直接補一筆完整分析，避免新部署
         # 長時間停在 analysis_refresh_required；後續仍由 L2 事件／定時規則接手。
         if state.last_full_analysis is None:
-            await run_full_analysis(trigger="startup", reason_zh="服務啟動後首次報價已就緒")
+            await run_full_analysis(
+                trigger="startup", reason_zh="服務啟動後首次報價已就緒"
+            )
     except Exception as exc:  # noqa: BLE001 — 靜默重試;連續失敗 N 次才警告一次
         state.l1_fail_count += 1
         logger.warning("quote_l1 failed (%d consecutive): %s", state.l1_fail_count, exc)
-        if (state.l1_fail_count >= s.tier1_fail_alert_after
-                and not state.l1_alerted and state.notifier):
+        if state.l1_fail_count >= s.tier1_fail_alert_after and not state.l1_alerted:
             state.l1_alerted = True
-            await state.notifier.notify(
-                "RISK", "quote_l1_down",
-                f"報價層連續 {state.l1_fail_count} 次抓不到價格"
-                f"(來源 {provider.name}),請留意行情可能中斷", severity="WARN")
+            if state.latest_result:
+                stale_result = dict(state.latest_result)
+                stale_normalized = dict(stale_result.get("normalized_analysis") or {})
+                stale_normalized["marketDataStatus"] = "FAILED"
+                stale_result["normalized_analysis"] = stale_normalized
+                from app.services.market_monitor_service import (
+                    evaluate_live_quote_state,
+                )
+
+                last = state.quote_cache.last_tick
+                final_state, events = evaluate_live_quote_state(
+                    stale_result, price=last.mid if last else 0,
+                    quote_time=datetime.now(timezone.utc).isoformat())
+                state.latest_result["final_decision_state"] = final_state
+                await broadcast_all({"type": "decision_state", "data": final_state})
+                for event in events:
+                    await broadcast_all({"type": "decision_event", "data": event})
 
 
 # ═══ 第 2 層:結構層(純邏輯,禁 AI)═══════════════════════
+
 
 async def job_structure_l2() -> None:
     if not market_is_open():
@@ -221,8 +286,10 @@ async def job_structure_l2() -> None:
         events = []
         if tick is not None:
             from app.services.tiered import check_structure_events
-            events = check_structure_events(tick.mid, state.quote_cache,
-                                            state.event_cooldown)
+
+            events = check_structure_events(
+                tick.mid, state.quote_cache, state.event_cooldown
+            )
         if events:
             reason = ";".join(e.reason_zh for e in events)
             await run_full_analysis(trigger="event", reason_zh=reason)
@@ -231,26 +298,48 @@ async def job_structure_l2() -> None:
         if tick is not None and state.latest_result:
             for key in ("long_scenario", "short_scenario"):
                 sc = state.latest_result.get(key) or {}
-                if sc.get("status") not in ("PREPARE", "TRIGGERED"):
+                if sc.get("status") not in ("WATCH", "PREPARE", "TRIGGERED"):
                     continue
                 rp = sc.get("resolved_prices") or {}
-                lv = rp.get(sc.get("entry_zone_id")) or {}
-                if lv.get("price_low") is None:
-                    continue
-                entry_mid = (lv["price_low"] + lv["price_high"]) / 2
-                dev = abs(tick.mid - entry_mid) / entry_mid if entry_mid else 0
-                if dev > s.setup_stale_deviation_pct and \
-                        state.event_cooldown.allow("setup_stale", 15):
+                source_price = float(sc.get("sourcePrice") or 0)
+                dev = abs(tick.mid - source_price) / source_price if source_price else 0
+                watched = [
+                    value
+                    for zone in rp.values()
+                    if isinstance(zone, dict)
+                    for value in (zone.get("price_low"), zone.get("price_high"))
+                    if isinstance(value, (int, float))
+                ]
+                previous_tick = state.quote_cache.previous_tick
+                crossed = bool(
+                    previous_tick
+                    and any(
+                        min(previous_tick.mid, tick.mid)
+                        <= level
+                        <= max(previous_tick.mid, tick.mid)
+                        for level in watched
+                    )
+                )
+                if (
+                    dev >= s.setup_stale_deviation_pct or crossed
+                ) and state.event_cooldown.allow(f"setup_recalc:{key}", 1):
                     await run_full_analysis(
                         trigger="event",
-                        reason_zh=f"現價已偏離原進場方案 {dev:.2%}(方案過時),重新計算")
+                        reason_zh=(
+                            "價格已穿越劇本關鍵價位，重新計算"
+                            if crossed
+                            else f"現價相對劇本來源價變動 {dev:.2%}，重新計算"
+                        ),
+                    )
                     return
 
         # 定時保底:距上次完整分析超過 tier3_max_age_minutes
         last = state.last_full_analysis
-        overdue = (last is None or
-                   (datetime.now(timezone.utc) - last).total_seconds()
-                   > s.tier3_max_age_minutes * 60)
+        overdue = (
+            last is None
+            or (datetime.now(timezone.utc) - last).total_seconds()
+            > s.tier3_max_age_minutes * 60
+        )
         if overdue:
             await run_full_analysis(trigger="timed", reason_zh=None)
     except Exception:
@@ -259,11 +348,13 @@ async def job_structure_l2() -> None:
 
 # ═══ 第 3 層:完整分析(事件觸發 + 定時保底)═══════════════
 
+
 def _td_soft_limited() -> bool:
     """TD 當日用量達軟上限 → 降級(K 棒只用快取,不再打 TD)。"""
     s = get_settings()
     try:
         from app.providers.twelve_data import get_shared_quota
+
         return get_shared_quota().used_today >= s.twelve_data_soft_limit
     except Exception:  # noqa: BLE001
         return False
@@ -278,55 +369,62 @@ async def run_full_analysis(*, trigger: str, reason_zh: str | None) -> None:
         if degraded and not state.td_degraded_alerted and state.notifier:
             state.td_degraded_alerted = True
             await state.notifier.notify(
-                "RISK", "td_soft_limit",
+                "RISK",
+                "td_soft_limit",
                 f"Twelve Data 今日用量已達 {s.twelve_data_soft_limit} 次,"
-                f"完整分析自動降級:改用既有快取 K 棒,不再打行情 API", severity="WARN")
+                f"完整分析自動降級:改用既有快取 K 棒,不再打行情 API",
+                severity="WARN",
+            )
 
         from app.services.single_flight import run_analysis_shared
+
         tick = state.quote_cache.fresh_tick(max_age_seconds=l1_interval_seconds() * 3)
         # single-flight:與手動 API / 首載共用同一道鎖,並發只實際跑一次
-        result = await run_analysis_shared(state.provider, trigger=trigger,
-                                           tick=tick, cached_only=degraded)
+        result = await run_analysis_shared(
+            state.provider, trigger=trigger, tick=tick, cached_only=degraded
+        )
         state.latest_result = result.model_dump()
         state.last_full_analysis = datetime.now(timezone.utc)
 
         action = result.decision.action
+        entry = state.latest_result.get("entry_engine") or {}
         if state.notifier:
-            entry = state.latest_result.get("entry_engine") or {}
             # Structural monitoring never terminates merely because a long plan was
             # invalidated.  Publish the breakdown/exit-risk event first, then the
             # independent entry-plan event.  Distinct event topics cannot block one another.
             from app.services.short_alert_service import process_short_alert
-            await process_short_alert(state.latest_result, state.notifier, entry_plan=entry)
-            from app.services.entry_engine_service import notify_entry_plan
-            await notify_entry_plan(entry, state.notifier,
-                                    symbol=state.latest_result.get("symbol", "XAUUSD"))
-            if result.data_quality.status in ("STALE", "FAILED"):
-                await state.notifier.notify(
-                    "RISK", "data_quality",
-                    f"資料品質 {result.data_quality.status}: {result.data_quality.warnings[:3]}",
-                    severity="ERROR" if result.data_quality.status == "FAILED" else "WARN")
+
+            await process_short_alert(state.latest_result, None, entry_plan=entry)
+        for event in (state.latest_result.get("final_decision_state") or {}).get(
+            "events", []
+        ):
+            await broadcast_all({"type": "decision_event", "data": event})
         state.last_decision_action = action
 
         from app.services.freshness import annotate_freshness
         from app.services.price_offset import apply_offset_to_result
         from app.services.public_view import public_analysis
+
         fresh_tick = state.quote_cache.fresh_tick(max_age_seconds=600)
         cm = fresh_tick.mid if fresh_tick else None
         await broadcast_all({"type": "candle_closed", "timeframe": "15M"})
         # 公開頻道:公開投影(不含個人 offset/持倉/老師);私人頻道:完整 payload
-        full = annotate_freshness(apply_offset_to_result(state.latest_result), current_mid=cm)
+        full = annotate_freshness(
+            apply_offset_to_result(state.latest_result), current_mid=cm
+        )
         pub = public_analysis(annotate_freshness(state.latest_result, current_mid=cm))
         await broadcast_public({"type": "analysis", "data": pub})
         await broadcast_private({"type": "analysis", "data": full})
     except Exception as exc:
         logger.exception("full_analysis failed")
         if state.notifier:
-            await state.notifier.notify("RISK", "analysis_error", f"分析失敗:{exc}",
-                                        severity="ERROR")
+            await state.notifier.notify(
+                "RISK", "analysis_error", f"分析失敗:{exc}", severity="ERROR"
+            )
 
 
 # ═══ 其他既有 jobs ═════════════════════════════════════════
+
 
 async def job_cross_check() -> None:
     """Twelve Data 交叉驗證(主力=TD 時 secondary 為 None,自動跳過)。"""
@@ -337,6 +435,7 @@ async def job_cross_check() -> None:
         primary = await state.provider.get_live_price()
         secondary = await state.secondary.get_live_price()
         from app.engines.data_quality import check_source_mismatch
+
         mismatch, msg = check_source_mismatch(primary.mid, secondary.mid, None)
         if mismatch and state.notifier:
             await state.notifier.notify("RISK", "source_mismatch", msg)
@@ -347,6 +446,7 @@ async def job_cross_check() -> None:
 async def job_heartbeat() -> None:
     state.mark("heartbeat")
     from app.services.heartbeat import run_monitor
+
     await run_monitor(state)
 
 
@@ -357,35 +457,91 @@ async def job_outcome_backfill() -> None:
     try:
         from app.db.session import db_session
         from app.services.outcome_tracker import backfill_outcomes
+
         with db_session() as db:
             updated = backfill_outcomes(
-                db, now=datetime.now(timezone.utc),
+                db,
+                now=datetime.now(timezone.utc),
                 lookback_days=s.outcome_backfill_lookback_days,
-                limit=s.outcome_backfill_batch_size)
+                limit=s.outcome_backfill_batch_size,
+            )
         if updated:
             logger.info("outcome backfill updated %d horizon values", updated)
     except Exception:
         logger.exception("outcome backfill failed")
 
 
+async def job_telegram_outbox() -> None:
+    """Retry-safe Telegram delivery; rows survive restarts."""
+    state.mark("telegram_outbox")
+    from app.services.decision_outbox import deliver_pending_telegram
+
+    await deliver_pending_telegram()
+
+
 def build_scheduler() -> AsyncIOScheduler:
     s = get_settings()
     sched = AsyncIOScheduler(timezone="UTC")
     startup = datetime.now(timezone.utc)
-    sched.add_job(job_quote_l1, "interval", seconds=l1_interval_seconds(),
-                  id="quote_l1", max_instances=1, coalesce=True,
-                  next_run_time=startup)
-    sched.add_job(job_structure_l2, "interval", seconds=s.tier2_check_seconds,
-                  id="structure_l2", max_instances=1, coalesce=True,
-                  next_run_time=startup + timedelta(seconds=10))
-    sched.add_job(job_candle_close_refresh, "interval", seconds=30,
-                  id="candle_close_refresh", max_instances=1, coalesce=True,
-                  next_run_time=startup + timedelta(seconds=20))
-    sched.add_job(job_outcome_backfill, "interval", seconds=s.outcome_backfill_seconds,
-                  id="outcome_backfill", max_instances=1, coalesce=True,
-                  next_run_time=startup + timedelta(seconds=60))
-    sched.add_job(job_cross_check, "cron", minute="7,22,37,52", id="cross_check",
-                  max_instances=1, coalesce=True)
-    sched.add_job(job_heartbeat, "interval", minutes=s.heartbeat_minutes,
-                  id="heartbeat", max_instances=1, coalesce=True)
+    sched.add_job(
+        job_quote_l1,
+        "interval",
+        seconds=l1_interval_seconds(),
+        id="quote_l1",
+        max_instances=1,
+        coalesce=True,
+        next_run_time=startup,
+    )
+    sched.add_job(
+        job_structure_l2,
+        "interval",
+        seconds=s.tier2_check_seconds,
+        id="structure_l2",
+        max_instances=1,
+        coalesce=True,
+        next_run_time=startup + timedelta(seconds=10),
+    )
+    sched.add_job(
+        job_candle_close_refresh,
+        "interval",
+        seconds=30,
+        id="candle_close_refresh",
+        max_instances=1,
+        coalesce=True,
+        next_run_time=startup + timedelta(seconds=20),
+    )
+    sched.add_job(
+        job_outcome_backfill,
+        "interval",
+        seconds=s.outcome_backfill_seconds,
+        id="outcome_backfill",
+        max_instances=1,
+        coalesce=True,
+        next_run_time=startup + timedelta(seconds=60),
+    )
+    sched.add_job(
+        job_telegram_outbox,
+        "interval",
+        seconds=5,
+        id="telegram_outbox",
+        max_instances=1,
+        coalesce=True,
+        next_run_time=startup + timedelta(seconds=3),
+    )
+    sched.add_job(
+        job_cross_check,
+        "cron",
+        minute="7,22,37,52",
+        id="cross_check",
+        max_instances=1,
+        coalesce=True,
+    )
+    sched.add_job(
+        job_heartbeat,
+        "interval",
+        minutes=s.heartbeat_minutes,
+        id="heartbeat",
+        max_instances=1,
+        coalesce=True,
+    )
     return sched

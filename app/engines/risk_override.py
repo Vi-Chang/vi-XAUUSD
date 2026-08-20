@@ -69,7 +69,9 @@ def detect_short_term_weakness(*, indicators: dict, support_state: str) -> Weakn
         state: Weakness = "accelerating"
     elif len(families) >= 2 and (structure_broken or macd_negative):
         state = "confirmed"
-    elif families:
+    # RSI/KD alone (especially overbought) is location context, not proof that
+    # price structure has weakened. Require structure or MACD/1H momentum.
+    elif structure_broken or macd_negative or h1_cooling:
         state = "early_warning"
     else:
         state = "none"

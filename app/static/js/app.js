@@ -244,6 +244,8 @@ function switchTF(tf) {
 /* ═══ 即時 tick → 未收線 K 棒跳動 + 價格區 ═══ */
 function onTick(t) {
   updatePricePanel(t.bid, t.ask, t.spread);
+  if ($("quick-live-price")) $("quick-live-price").textContent = fmt(t.mid);
+  if ($("quick-live-time")) $("quick-live-time").textContent = new Date(t.time * 1000).toLocaleTimeString("zh-TW", { hour12: false });
   if (!S.lastBar) return;
   const sec = TF_SEC[S.tf];
   const boundary = S.lastBar.time + sec;
@@ -356,6 +358,8 @@ function applyAnalysis(a) {
   renderQuickAction(a);
   renderEntryPlan(a.entry_engine);
   renderDirectionalAlert(a.directional_alert);
+  renderMarketMonitors(a);
+  renderFinalDecision(a.final_decision_state);
 
   // 資料不足 → 醒目「暫不交易」橫幅(資料過期/異常/休市/證據不足時系統一律 NO_TRADE)
   const ntBanner = $("no-trade-banner");
@@ -455,6 +459,108 @@ function renderDirectionalAlert(alert) {
   $("bearish-monitor-message").textContent = alert.message || "持續等待下一個 15M 結構事件。";
 }
 
+function renderFinalDecision(finalState) {
+  if (!finalState) return;
+  const event = finalState.latest_event || {};
+  if (event.eventId) finalState = {
+    ...finalState,
+    state: event.currentState,
+    source_price: event.currentPrice,
+    reason: event.transitionReason,
+    flat_action: event.flatAction,
+    long_manage: event.longManage,
+    short_manage: event.shortManage,
+    confirmation: event.confirmation,
+    quote_time: event.calculatedAt,
+  };
+  const labels = {
+    WAIT: "等待", LONG_WATCH: "多方觀察中", LONG_READY: "多方條件完成",
+    SHORT_WATCH: "空方觀察中", SHORT_READY: "空方條件完成",
+    LONG_MANAGE: "多方獲利管理", SHORT_MANAGE: "空方獲利管理",
+    MISSED_ENTRY: "已錯過進場", INVALIDATED: "舊劇本已失效", DATA_STALE: "資料過期",
+  };
+  $("quick-final-state").textContent = labels[finalState.state] || "等待";
+  $("quick-flat-action").textContent = finalState.flat_action || "等待下一個明確條件";
+  $("quick-position-action").textContent = finalState.direction === "SHORT"
+    ? finalState.short_manage : finalState.long_manage;
+  $("quick-trigger").textContent = finalState.confirmation || "等待下一根 15 分鐘 K 線";
+  $("quick-freshness").textContent = finalState.state === "DATA_STALE" ? "資料過期，禁止進場" : "資料正常";
+  $("quick-live-price").textContent = finalState.source_price == null ? "–" : fmt(finalState.source_price);
+  $("quick-live-time").textContent = fmtTs(finalState.quote_time);
+  $("quick-action-title").textContent = finalState.action || labels[finalState.state] || "等待";
+  $("quick-action-why").textContent = finalState.reason || "等待條件一致";
+  $("quick-action-next").textContent = finalState.flat_action || "等待下一個明確條件";
+  $("quick-action-card").dataset.action = finalState.state === "DATA_STALE" ? "NO_TRADE" : finalState.state;
+}
+
+async function refreshTelegramStatus() {
+  try {
+    const status = await (await fetch("/api/telegram/status")).json();
+    $("telegram-connection").textContent = status.connected ? "已連線" : "未設定／異常";
+    $("telegram-last-event").textContent = status.lastEvent || "尚無事件";
+    $("telegram-last-sent").textContent = status.lastSentAt ? fmtTs(status.lastSentAt) : "尚無成功通知";
+    const labels = { PENDING: "通知傳送中", RETRYING: "通知重試中", FAILED: "Telegram 發送失敗", SENT: "已送達", IDLE: "尚無通知" };
+    $("telegram-delivery").textContent = labels[status.status] || status.status;
+  } catch (e) {
+    $("telegram-connection").textContent = "異常";
+    $("telegram-delivery").textContent = "Telegram 狀態讀取失敗";
+  }
+}
+
+function renderMarketMonitors(a) {
+  const price = (value) => value == null ? "–" : Number(value).toFixed(2);
+  const breakout = a.breakout_alert || {};
+  const breakoutCard = $("breakout-alert-card");
+  if (breakoutCard) {
+    breakoutCard.hidden = !breakout.status || breakout.status === "NEUTRAL";
+    if (!breakoutCard.hidden) {
+      const statusZh = {
+        PENDING_BREAKOUT: "突破中，等待收盤", BREAKOUT_CONFIRMED: "突破已成立",
+        BULLISH_CONTINUATION: "多頭延續已確認", BREAKOUT_RETEST: "突破區回踩",
+        BREAKOUT_FAILED: "突破失敗",
+      };
+      const actionZhMap = {
+        wait_confirmation: "等待確認", wait_pullback: "等待回踩",
+        avoid_chasing: "禁止追價", breakout_failed: "突破失敗",
+      };
+      $("breakout-alert-status").textContent = statusZh[breakout.status] || breakout.status;
+      $("breakout-alert-action").textContent = actionZhMap[breakout.action] || breakout.action || "–";
+      $("breakout-alert-level").textContent = price(breakout.zone_high);
+      $("breakout-alert-closes").textContent = `${breakout.consecutive_closes || 0} 根已收盤 K`;
+      $("breakout-alert-trend").textContent = breakout.trend === "bullish" ? "多頭" : breakout.trend === "bearish" ? "空頭" : "震盪";
+    }
+  }
+
+  const advisor = a.hypothetical_exit_advisor || {};
+  const exitCard = $("hypothetical-exit-card");
+  const plans = advisor.plans || {};
+  if (exitCard) {
+    exitCard.hidden = !plans.LONG && !plans.SHORT;
+    if (!exitCard.hidden) {
+      const longPlan = plans.LONG || {};
+      const shortPlan = plans.SHORT || {};
+      $("hypothetical-long-exit").textContent = longPlan.partial_exit && longPlan.full_exit
+        ? `分批 ${price(longPlan.partial_exit.low)}–${price(longPlan.partial_exit.high)}；全部 ${price(longPlan.full_exit.low)}–${price(longPlan.full_exit.high)}` : "–";
+      $("hypothetical-long-defense").textContent = price(longPlan.defense_price);
+      $("hypothetical-short-exit").textContent = shortPlan.partial_exit && shortPlan.full_exit
+        ? `分批 ${price(shortPlan.partial_exit.low)}–${price(shortPlan.partial_exit.high)}；全部 ${price(shortPlan.full_exit.low)}–${price(shortPlan.full_exit.high)}` : "–";
+      $("hypothetical-short-defense").textContent = price(shortPlan.defense_price);
+    }
+  }
+
+  const tracker = a.virtual_profit_tracker || {};
+  const profitCard = $("virtual-profit-card");
+  if (profitCard) {
+    profitCard.hidden = !tracker.setup_id;
+    if (!profitCard.hidden) {
+      const reached = (tracker.reached_levels || []).join("、") || "尚未到達 TP1";
+      $("virtual-profit-summary").textContent = `若你有在 ${price(tracker.entry_price)} 附近進場：${reached}`;
+      $("virtual-profit-targets").textContent = `${price(tracker.tp1)}／${price(tracker.tp2)}／${price(tracker.tp3)}`;
+      $("virtual-profit-protection").textContent = price(tracker.protection_price);
+    }
+  }
+}
+
 function renderEntryPlan(plan) {
   const card = $("entry-plan-card");
   if (!card) return;
@@ -479,6 +585,7 @@ function renderEntryPlan(plan) {
   $("entry-plan-stop").textContent = price(plan.stop_loss);
   $("entry-plan-tp1").textContent = price(plan.take_profit_1);
   $("entry-plan-tp2").textContent = price(plan.take_profit_2);
+  $("entry-plan-tp3").textContent = price(plan.take_profit_3);
   $("entry-plan-rr").textContent = plan.risk_reward == null ? "–" : `1 : ${Number(plan.risk_reward).toFixed(2)}`;
   $("entry-plan-trigger").textContent = plan.trigger_condition ? `${plan.trigger_timeframe || "15M"} ${plan.trigger_condition}` : "等待已收盤反轉 K 線";
   $("entry-plan-cancel").textContent = plan.cancel_condition || "–";
@@ -1463,6 +1570,12 @@ function connectWS() {
       const msg = JSON.parse(e.data);
       if (msg.type === "tick") onTick(msg);
       else if (msg.type === "analysis") applyAnalysis(msg.data);
+      else if (msg.type === "decision_state") renderFinalDecision(msg.data);
+      else if (msg.type === "decision_event") {
+        if (S.analysis) S.analysis.final_decision_state.latest_event = msg.data;
+        renderFinalDecision({ ...(S.analysis && S.analysis.final_decision_state || {}), latest_event: msg.data });
+        refreshTelegramStatus();
+      }
       else if (msg.type === "analysis_refreshing") {
         $("quick-action-title").textContent = "判斷更新中";
         $("quick-action-why").textContent = "新一根 15 分鐘 K 棒已收盤，系統正在重新判斷。";
@@ -1477,6 +1590,12 @@ function connectWS() {
 /* ═══ 啟動 ═══ */
 async function boot() {
   initChart();
+  const advancedToggle = $("mobile-advanced-toggle");
+  if (advancedToggle) advancedToggle.addEventListener("click", () => {
+    const open = document.body.classList.toggle("mobile-advanced-open");
+    advancedToggle.setAttribute("aria-expanded", String(open));
+    advancedToggle.textContent = open ? "收起進階資訊" : "顯示進階資訊";
+  });
   [["trend-bias", "市場細節"], ["technical-bias", "技術證據與分數"],
    ["event-countdown", "事件資訊"], ["sys-provider", "資料與風險細節"]]
     .forEach(([id, label]) => collapseSideCard(id, label));
@@ -1537,6 +1656,13 @@ async function boot() {
 
   $("admin-login-btn").addEventListener("click", () => ensureLogin());
   $("admin-logout-btn").addEventListener("click", () => doLogout());
+  $("telegram-test-btn").addEventListener("click", async () => {
+    try {
+      await api("/api/telegram/test", { method: "POST" });
+      $("telegram-delivery").textContent = "通知傳送中";
+      setTimeout(refreshTelegramStatus, 1500);
+    } catch (err) { alert("測試通知建立失敗：" + err.message); }
+  });
 
   connectWS();
   await refreshAuthState();          // 判斷是否已登入(session cookie),更新 UI
@@ -1552,6 +1678,8 @@ async function boot() {
     mk.textContent = h.market_open ? "開盤中" : "休市";
     mk.className = "chip " + (h.market_open ? "good" : "warn");
   } catch (e) { /* noop */ }
+  await refreshTelegramStatus();
+  setInterval(refreshTelegramStatus, 15000);
 
   try {
     S.events = await (await fetch("/api/events/upcoming")).json();

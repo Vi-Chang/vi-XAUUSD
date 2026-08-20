@@ -33,6 +33,7 @@ class QuoteCache:
 
     def __init__(self, max_buckets: int = 40) -> None:
         self.last_tick: PriceTick | None = None
+        self.previous_tick: PriceTick | None = None
         self.last_update: datetime | None = None
         self._bucket_start: datetime | None = None
         self._bucket_hi: float | None = None
@@ -41,6 +42,7 @@ class QuoteCache:
 
     def add(self, tick: PriceTick) -> None:
         now = datetime.now(timezone.utc)
+        self.previous_tick = self.last_tick
         self.last_tick = tick
         self.last_update = now
         bucket = now.replace(second=0, microsecond=0)
