@@ -138,4 +138,17 @@ def conflict_metrics() -> dict:
         "out_of_order_decision_count": counts.get("OUT_OF_ORDER_DECISION", 0),
         "duplicate_decision_count": counts.get("DUPLICATE_DECISION", 0),
         "multi_current_decision_count": counts.get("MULTI_CURRENT_DECISION", 0),
+        "stale_entry_blocked_count": sum(counts.get(key, 0) for key in (
+            "STALE_DECISION", "ENTRY_READY_EXPIRED", "NOTIFICATION_TOO_OLD")),
+        "entry_out_of_range_blocked_count": counts.get(
+            "ENTRY_PRICE_OUT_OF_RANGE", 0),
+        "expired_entry_blocked_count": counts.get("ENTRY_READY_EXPIRED", 0),
+        "stale_candle_blocked_count": sum(counts.get(key, 0) for key in (
+            "NEW_CLOSED_CANDLE_REQUIRES_REEVALUATION", "CANDLE_DATA_MISSING",
+            "LATEST_CLOSED_CANDLE_STALE")),
+        "stale_decision_blocked_count": counts.get("STALE_DECISION", 0),
+        "rr_revalidation_failed_count": counts.get("RR_REVALIDATION_FAILED", 0),
+        "notification_queue_expired_count": counts.get("NOTIFICATION_TOO_OLD", 0),
+        "price_drift_revalidation_count": counts.get(
+            "PRICE_DRIFT_REQUIRES_REEVALUATION", 0),
     }

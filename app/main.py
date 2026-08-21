@@ -176,10 +176,12 @@ async def telegram_status_api() -> dict:
 
 @app.get("/api/trading/current-decision")
 async def current_trading_decision_api() -> dict:
-    """Return the persisted SSOT; never recalculate on this read path."""
-    from app.services.current_decision_store import get_current_final_decision
+    """Return the SSOT only after the same delivery-time safety validation."""
+    from app.services.pre_delivery_trade_safety import (
+        get_delivery_safe_current_decision,
+    )
 
-    decision = get_current_final_decision("XAUUSD")
+    decision = get_delivery_safe_current_decision("XAUUSD")
     return {"available": bool(decision), "decision": decision}
 
 
@@ -254,15 +256,35 @@ def _serve_result(raw: dict) -> dict:
     """私人/完整讀取邊界:TMGM Offset 校正 → 時效/一致性標記(BUGFIX R2/R4/R6)。"""
     from app.services.freshness import annotate_freshness
     from app.services.price_offset import apply_offset_to_result
-    return annotate_freshness(apply_offset_to_result(raw), current_mid=_current_mid())
+    return annotate_freshness(
+        apply_offset_to_result(_with_delivery_safe_decision(raw)),
+        current_mid=_current_mid(),
+    )
 
 
 def _serve_public(raw: dict) -> dict:
     """公開讀取邊界:不套用個人 offset(用分析原始價位)→ 時效標記 → 公開投影(allowlist)。"""
     from app.services.freshness import annotate_freshness
     from app.services.public_view import public_analysis
-    annotated = annotate_freshness(raw, current_mid=_current_mid())
+    annotated = annotate_freshness(
+        _with_delivery_safe_decision(raw), current_mid=_current_mid())
     return public_analysis(annotated)
+
+
+def _with_delivery_safe_decision(raw: dict) -> dict:
+    """Overlay the read model with the same fail-closed decision used by Telegram."""
+    from app.engines.decision_snapshot import build_decision_snapshot
+    from app.services.pre_delivery_trade_safety import (
+        get_delivery_safe_current_decision,
+    )
+
+    safe = get_delivery_safe_current_decision(str(raw.get("symbol") or "XAUUSD"))
+    if not safe:
+        return raw
+    served = dict(raw)
+    served["final_decision_state"] = safe
+    served["decision_snapshot"] = build_decision_snapshot(served)
+    return served
 
 
 def _load_last_analysis_from_db() -> dict | None:

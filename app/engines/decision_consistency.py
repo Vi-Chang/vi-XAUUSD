@@ -17,6 +17,8 @@ def validate_final_decision(decision: dict) -> list[str]:
     current = _number(decision.get("currentPrice"))
     chase = _number(decision.get("chaseLimit"))
     invalidation = _number(decision.get("invalidationPrice"))
+    targets = [_number(value) for value in decision.get("targets") or []]
+    tp1 = next((value for value in targets if value is not None), None)
     risk_gate = str(decision.get("riskGate") or "")
     lifecycle = str(decision.get("selectedLifecycleState") or "")
     versions = decision.get("priceScenarioVersions") or {}
@@ -24,6 +26,14 @@ def validate_final_decision(decision: dict) -> list[str]:
 
     if low is not None and high is not None and low > high:
         errors.append("ENTRY_ZONE_REVERSED")
+    if direction == "LONG" and high is not None and chase is not None and high > chase:
+        errors.append("LONG_ENTRY_ZONE_ABOVE_CHASE")
+    if direction == "SHORT" and low is not None and chase is not None and low < chase:
+        errors.append("SHORT_ENTRY_ZONE_BELOW_CHASE")
+    if direction == "LONG" and high is not None and tp1 is not None and tp1 <= high:
+        errors.append("LONG_TARGET_WRONG_SIDE")
+    if direction == "SHORT" and low is not None and tp1 is not None and tp1 >= low:
+        errors.append("SHORT_TARGET_WRONG_SIDE")
     if action in {"ENTER_LONG", "ENTER_SHORT"}:
         if low is None or high is None or current is None or not low <= current <= high:
             errors.append("ENTRY_PRICE_OUTSIDE_ZONE")

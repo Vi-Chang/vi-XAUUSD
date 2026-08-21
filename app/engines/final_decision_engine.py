@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal, cast
 
 from app.config import get_settings
@@ -279,6 +279,8 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
     scenario_id = selected.scenario_id if selected else str(assistant.get("scenarioId") or "")
     zone = selected.entry_zone if selected else None
     chase_limit = selected.chase_limit if selected else None
+    if chase_limit is None and zone and selected:
+        chase_limit = zone[1] if selected.direction == "LONG" else zone[0]
     targets = list(selected.targets if selected and selected.targets else
                    tuple(float(value) for value in assistant.get("targets") or []
                          if isinstance(value, (int, float))))
@@ -312,6 +314,17 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
     severity = ("CRITICAL" if primary in {"DATA_STALE", "SPREAD_TOO_HIGH", "EVENT_BLACKOUT"}
                 else "ACTION" if action in {"ENTER_LONG", "ENTER_SHORT", "MANAGE_POSITION"}
                 else "UPDATE" if major_update else "INFO")
+    evaluated_at = str(data.get("timestamp_utc") or datetime.now(timezone.utc).isoformat())
+    created_at = (evaluated_at if changed else
+                  str(previous.get("decisionCreatedAt") or evaluated_at))
+    ready_until = ""
+    if action in {"ENTER_LONG", "ENTER_SHORT"}:
+        try:
+            created_dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+            ready_until = (created_dt + timedelta(
+                seconds=settings.entry_ready_max_decision_age_seconds)).isoformat()
+        except ValueError:
+            ready_until = ""
     base.update({
         "engineVersion": "final-decision-v1", "decisionId": decision_id,
         "decisionVersion": version, "decisionSignature": signature,
@@ -337,7 +350,9 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
         "qualityGrade": ("A" if raw_score >= 80 else "B" if raw_score >= 65
                          else "C" if raw_score >= 35 else "D"),
         "sourceCandleCloseTime": candle_time,
-        "evaluatedAt": str(data.get("timestamp_utc") or datetime.now(timezone.utc).isoformat()),
+        "decisionCreatedAt": created_at, "evaluatedAt": evaluated_at,
+        "validUntil": ready_until, "entryReadyValidUntil": ready_until,
+        "atr15": atr,
         "sourceDataVersion": int(data.get("version") or 0),
         "priceScenarioVersions": {
             key: selected.scenario_version for key, value in {
