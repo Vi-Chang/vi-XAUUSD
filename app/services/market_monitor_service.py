@@ -25,6 +25,7 @@ from app.engines.hypothetical_exit_advisor import (
     build_hypothetical_exit_plans,
     evaluate_hypothetical_exits,
 )
+from app.engines.regime_state_machine import evaluate_regime_state
 from app.engines.trade_plan import evaluate_trade_plans, migrate_legacy_virtual_profit
 from app.engines.trend_continuation_engine import evaluate_trend_continuation
 from app.engines.unified_decision_state import evaluate_unified_decision
@@ -168,6 +169,10 @@ def evaluate_market_monitors(
         "trend_continuation_engine": {
             **continuation_state, "events": continuation_events},
     }
+    regime_state, regime_events = evaluate_regime_state(
+        data, indicators=indicators, previous=_load(symbol, "regime_state"))
+    _save(symbol, "regime_state", regime_state)
+    monitor_result["regime_state_machine"] = regime_state
     assistant_state, assistant_events = evaluate_decision_assistant(
         {**data, **monitor_result}, latest_candle=latest_closed_15m,
         previous=_load(symbol, "decision_assistant"))
@@ -177,6 +182,7 @@ def evaluate_market_monitors(
     final_state, final_events = evaluate_unified_decision(
         final_input, _load(symbol, "final_decision")
     )
+    final_events.extend(regime_events)
     final_events.extend(assistant_events)
     final_state["events"] = final_events
     if assistant_events:
@@ -208,8 +214,14 @@ def evaluate_live_quote_state(
     if not health["healthy"]:
         normalized["marketDataStatus"] = "STALE"
         normalized["dataHealthReason"] = "；".join(health["reasons"])
+    regime_state, _ = evaluate_regime_state(
+        {**candidate, "normalized_analysis": normalized},
+        previous=_load(symbol, "regime_state"),
+    )
+    _save(symbol, "regime_state", regime_state)
     current, events = evaluate_unified_decision(
-        {**candidate, "normalized_analysis": normalized}, _load(symbol, "final_decision")
+        {**candidate, "normalized_analysis": normalized,
+         "regime_state_machine": regime_state}, _load(symbol, "final_decision")
     )
     from app.services.decision_outbox import persist_decision_events
 

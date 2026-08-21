@@ -136,8 +136,11 @@ def evaluate_unified_decision(
     tp1 = entry.get("take_profit_1")
     net_rr = None
     if all(isinstance(value, (int, float)) for value in (suggested, stop, tp1)):
-        risk = abs(float(suggested) - float(stop))
-        reward = abs(float(tp1) - float(suggested))
+        suggested_value = float(suggested) if isinstance(suggested, (int, float)) else 0.0
+        stop_value = float(stop) if isinstance(stop, (int, float)) else 0.0
+        tp1_value = float(tp1) if isinstance(tp1, (int, float)) else 0.0
+        risk = abs(suggested_value - stop_value)
+        reward = abs(tp1_value - suggested_value)
         if risk > 0:
             net_rr = max(0.0, reward - execution_cost) / (risk + execution_cost)
             if state.endswith("READY") and (
@@ -283,16 +286,36 @@ def evaluate_unified_decision(
             f"舊劇本 {waiting_retest['breakoutTrigger']:.2f} 已確認，等待回踩 "
             f"{waiting_retest['retestZoneLow']:.2f}–{waiting_retest['retestZoneHigh']:.2f}；"
             f"新劇本等待15M收盤突破 {pending_breakout['breakoutTrigger']:.2f}")
-    weak_htf_bullish = (
-        str(normalized.get("trendBias") or "") == "bullish"
-        and str(normalized.get("shortTermMomentum") or "") in {
-            "weakening", "pullback", "reversal_risk"
-        }
-    )
+    regime_state = data.get("regime_state_machine") or {}
+    if not regime_state:
+        # Direct callers and legacy snapshots still receive a fresh, closed-candle
+        # classification; never fall back to a persisted WEAK label.
+        from app.engines.regime_state_machine import evaluate_regime_state
+        regime_state, _ = evaluate_regime_state(data)
+    composite_regime = str(regime_state.get("compositeRegime") or "")
+    weak_htf_bullish = composite_regime == "HTF_BULLISH_LTF_WEAKENING"
+    recovering_htf_bullish = composite_regime == "HTF_BULLISH_LTF_RECOVERING"
+    restored_htf_bullish = composite_regime == "HTF_BULLISH_LTF_BULLISH_RESTORED"
+    bearish_confirmed = composite_regime == "BEARISH_CONFIRMED"
     if (weak_htf_bullish and not stale and not state.endswith(("READY", "MANAGE"))):
         state, direction = "SHORT_TERM_WEAK_HTF_BULLISH", "NONE"
         action = "短線回檔，高週期尚未翻空"
         flat_action = "現在不追多，也先不追空；等待15M重新轉強或15M／1H確認轉空"
+    elif (recovering_htf_bullish and not stale
+          and not state.endswith(("READY", "MANAGE"))):
+        state, direction = "SHORT_TERM_RECOVERING", "NONE"
+        action = "短線正在恢復，還沒完全轉強"
+        flat_action = "先等15M收盤站回重新轉強價；尚未確認前不追價"
+    elif (restored_htf_bullish and not stale
+          and not state.endswith(("READY", "MANAGE"))):
+        state, direction = "SHORT_TERM_BULLISH_RESTORED", "LONG"
+        action = "短線重新轉強"
+        flat_action = "已撤銷短線轉弱；重新評估突破、回踩、追價上限與賺賠比"
+    elif (bearish_confirmed and not stale
+          and not state.endswith(("READY", "MANAGE"))):
+        state, direction = "BEARISH_CONFIRMED", "SHORT"
+        action = "短線已正式轉空"
+        flat_action = "15M與1H結構均已確認轉空；重新評估空方進場與風控"
     long_plan, short_plan = exit_plans.get("LONG") or {}, exit_plans.get("SHORT") or {}
     def management_text(plan: dict, side: str) -> str:
         defense = plan.get("defense_price")
@@ -513,7 +536,9 @@ def evaluate_unified_decision(
     new_trigger = pending_trigger.get("level") if pending_trigger else None
     if old_state == state and old_trigger != new_trigger:
         event_types.append("TRIGGER_CHANGED")
-    ordinary = [(old_state, state, kind, {}) for kind in dict.fromkeys(event_types)]
+    ordinary: list[tuple[str, str, str, dict]] = [
+        (old_state, state, kind, {}) for kind in dict.fromkeys(event_types)
+    ]
     ordinary.extend(
         (old_state, state, trade_event_map[item["event_type"]], item)
         for item in trade_events if item.get("event_type") in trade_event_map

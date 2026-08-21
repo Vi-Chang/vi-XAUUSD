@@ -25,6 +25,19 @@ def _grade(score: int) -> str:
 def classify_regime(data: dict) -> tuple[str, list[str]]:
     """4H sets direction, 1H structure, 15M timing; no single TF can flip regime."""
     n = data.get("normalized_analysis") or {}
+    regime_state = data.get("regime_state_machine") or {}
+    composite = str(regime_state.get("compositeRegime") or "")
+    if composite:
+        mapped = {
+            "HTF_BULLISH_LTF_WEAKENING": "SHORT_WEAK_HTF_BULLISH",
+            "HTF_BULLISH_LTF_RECOVERING": "SHORT_TERM_RECOVERING",
+            "HTF_BULLISH_LTF_BULLISH_RESTORED": "SHORT_TERM_BULLISH_RESTORED",
+            "HTF_BULLISH_LTF_BULLISH": "TREND_BULLISH",
+            "HTF_BEARISH_LTF_BEARISH": "TREND_BEARISH",
+            "BEARISH_CONFIRMED": "BEARISH_CONFIRMED",
+            "MIXED_RANGE": "RANGE",
+        }
+        return mapped.get(composite, "NO_EDGE"), list(regime_state.get("reasons") or [])
     trend = str(n.get("trendBias") or "neutral")
     momentum = str(n.get("shortTermMomentum") or "stable")
     assessments = {str(x.get("timeframe")): x for x in n.get("timeframeAssessments") or []}
@@ -142,7 +155,7 @@ def evaluate_decision_assistant(data: dict, *, latest_candle: dict | None = None
     status = str(selected.get("status") or "NO_SETUP")
     can_enter = (status in READY or status.startswith("ENTRY_READY_")) and rr_passed and score >= 50
     no_trade_reasons = []
-    if regime in {"NO_EDGE", "RANGE", "SHORT_WEAK_HTF_BULLISH",
+    if regime in {"NO_EDGE", "RANGE", "SHORT_WEAK_HTF_BULLISH", "SHORT_TERM_RECOVERING",
                   "OVERHEATED_BULLISH", "OVERSOLD_BEARISH", "REVERSAL_RISK"}:
         no_trade_reasons.append("目前市場型態不適合直接追價")
         can_enter = False
@@ -186,6 +199,7 @@ def evaluate_decision_assistant(data: dict, *, latest_candle: dict | None = None
     should_notify = bool(event_type and changed and trade_state != "NO_TRADE")
     output = {
         "schemaVersion": ENGINE_VERSION, "regime": regime, "regimeReasons": regime_reasons,
+        "regimeState": data.get("regime_state_machine") or {},
         "scenarioId": scenario_id, "scenarioVersion": scenario_version,
         "scenarioType": selected.get("type") or ("BREAKOUT" if trigger else "NONE"),
         "direction": direction, "tradeState": trade_state, "actionSummary": action,
