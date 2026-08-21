@@ -200,6 +200,14 @@ class Settings(BaseSettings):
     trend_flag_max_range_atr_mult: float = 1.20
     trend_flag_min_impulse_atr_mult: float = 1.50
     trend_setup_expiry_bars: int = 4
+    # 空方延續通常比緩升行情更急促，使用較窄的追價範圍與較短有效期，
+    # 避免把已快速下跌的價格誤認為仍可執行的空單位置。
+    trend_short_shallow_zone_atr_mult: float = 0.25
+    trend_short_max_chase_atr_mult: float = 0.28
+    trend_short_momentum_max_chase_atr_mult: float = 0.18
+    trend_short_flag_max_range_atr_mult: float = 1.00
+    trend_short_flag_min_impulse_atr_mult: float = 1.35
+    trend_short_setup_expiry_bars: int = 3
     trend_min_rr: float = 1.5
     trend_overbought_penalty: int = 10
     no_chase_near_level_atr_mult: float = 0.75  # 0.5~1.0 之間,預設 0.75
@@ -210,6 +218,9 @@ class Settings(BaseSettings):
     event_lockout_minutes: int = 30
     event_post_lockout_minutes: int = 15
     post_event_wait_m15_bars: int = 1
+    trend_event_unknown_score_penalty: int = 10
+    trend_event_high_risk_score_penalty: int = 15
+    trend_event_high_risk_expiry_bars: int = 2
 
     # ── 風控預設(spec 十六)──
     risk_per_trade_pct: float = 0.5

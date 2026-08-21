@@ -26,11 +26,13 @@ def higher_tf():
     return frame([100 + i * .8 for i in range(60)], 60)
 
 
-def data(rsi=60, ledger=None):
+def data(rsi=60, ledger=None, event=None):
     return {"symbol": "XAUUSD", "timestamp_utc": "2026-08-21T20:00:00+00:00",
             "normalized_analysis": {"marketDataStatus": "GOOD"},
             "timeframes": {"m15": {"rsi": rsi}},
-            "breakout_setup_manager": ledger or {}}
+            "breakout_setup_manager": ledger or {},
+            "event_risk": event or {"event_impact": "LOW", "time_risk": "LOW",
+                                     "source": "official", "event_lockout": False}}
 
 
 def test_market_type_uses_h4_and_h1_weighted_trend():
@@ -113,6 +115,49 @@ def test_short_trend_uses_symmetric_routes_and_prices():
     planned = next(candidate for candidate in result["candidates"] if candidate.get("stopPrice"))
     assert planned["direction"] == "SHORT"
     assert planned["stopPrice"] > planned["suggestedEntry"] > planned["tp1"]
+    assert result["parameterProfile"] == "SHORT"
+
+
+def test_short_profile_uses_tighter_chase_and_shorter_expiry():
+    long_result, _ = evaluate_trend_continuation(
+        data(), m15=frame([100 + i * .5 for i in range(40)]),
+        h1=higher_tf(), h4=higher_tf())
+    down_higher = frame([150 - i * .8 for i in range(60)], 60)
+    short_result, _ = evaluate_trend_continuation(
+        data(), m15=frame([130 - i * .5 for i in range(40)]),
+        h1=down_higher, h4=down_higher)
+    long_plan = next(c for c in long_result["candidates"] if c.get("maxChaseDistance"))
+    short_plan = next(c for c in short_result["candidates"] if c.get("maxChaseDistance"))
+    assert short_plan["maxChaseDistance"] < long_plan["maxChaseDistance"]
+    assert datetime.fromisoformat(short_plan["expiresAt"]) < datetime.fromisoformat(long_plan["expiresAt"])
+
+
+def test_high_impact_event_raises_threshold_and_blocks_new_entry():
+    event = {"event_impact": "HIGH", "time_risk": "HIGH", "source": "official",
+             "event_lockout": True}
+    result, events = evaluate_trend_continuation(
+        data(event=event), m15=frame([100 + i * .5 for i in range(40)]),
+        h1=higher_tf(), h4=higher_tf())
+    assert result["eventGate"]["lockout"] is True
+    assert result["eventGate"]["scorePenalty"] == 15
+    assert result["eventGate"]["effectiveExpiryBars"] == 2
+    assert result["selected"] is None and events == []
+    assert any("重大事件凍結" in reason
+               for candidate in result["candidates"]
+               for reason in candidate.get("missingConditions") or [])
+
+
+def test_unknown_event_data_disables_aggressive_momentum_route():
+    event = {"event_impact": "UNKNOWN", "time_risk": "UNKNOWN", "source": "none",
+             "event_lockout": False}
+    result, _ = evaluate_trend_continuation(
+        data(event=event), m15=frame([100 + i * .5 for i in range(40)]),
+        h1=higher_tf(), h4=higher_tf())
+    momentum = next(c for c in result["candidates"] if c["type"] == "MOMENTUM_CONTINUATION")
+    assert result["eventGate"]["unknown"] is True
+    assert result["requiredSignalScore"] >= 80
+    assert momentum["status"] == "WAIT_MOMENTUM"
+    assert any("事件資料未知" in reason for reason in momentum["missingConditions"])
 
 
 def test_waiting_setup_keeps_immutable_prices_on_next_candle():
