@@ -13,6 +13,7 @@ from app.engines.confidence import (
 )
 from app.engines.decision_presentation import build_decision_presentation
 from app.engines.entry_engine import EntryPlan, validate_executable_plan
+from app.engines.setup_lifecycle import evaluate_setup_lifecycle
 from app.engines.trigger_lifecycle import resolve_next_trigger
 
 
@@ -109,12 +110,6 @@ def evaluate_unified_decision(
         state = "LONG_BIAS" if direction == "LONG" else "SHORT_BIAS"
     elif status in ("INVALIDATED", "EXITED"):
         state = "INVALIDATED"
-    elif any(
-        (data.get(key) or {}).get("lifecycle_status")
-        in ("MISSED_ENTRY_WAIT_RETEST", "EXPIRED")
-        for key in ("long_scenario", "short_scenario")
-    ):
-        state = "MISSED_ENTRY"
     elif action in ("PREPARE_LONG", "LONG"):
         state, direction = "LONG_BIAS", "LONG"
     elif action in ("PREPARE_SHORT", "SHORT"):
@@ -172,6 +167,36 @@ def evaluate_unified_decision(
             **entry,
             "missing_condition": trigger_result["label"],
         }
+    setup_lifecycle = previous.get("setup_lifecycle") or {}
+    setup_id = str(entry.get("setup_id") or "")
+    if setup_id and direction in ("LONG", "SHORT") and not stale:
+        zone_low, zone_high = entry.get("zone_low"), entry.get("zone_high")
+        setup_lifecycle = evaluate_setup_lifecycle(
+            previous=setup_lifecycle,
+            setup_id=setup_id,
+            direction=direction,
+            confirmation_price=resistance if direction == "LONG" else support,
+            latest_closed_price=latest_closed,
+            closed_candle_time=candle_time,
+            current_price=price,
+            entry_zone_low=float(zone_low) if isinstance(zone_low, (int, float)) else None,
+            entry_zone_high=float(zone_high) if isinstance(zone_high, (int, float)) else None,
+            risk_controls_passed=(
+                status == "ENTRY_TRIGGERED"
+                and not entry.get("missing_condition")
+                and (net_rr is None or net_rr >= settings.setup_min_rr1)
+            ),
+            calculated_at=calculated,
+            invalidated=status in ("INVALIDATED", "EXITED"),
+        )
+        lifecycle_state = setup_lifecycle["state"]
+        state = {
+            "WAIT_CONFIRMATION": "LONG_WATCH" if direction == "LONG" else "SHORT_WATCH",
+            "CONFIRMED_WAIT_RETEST": "CONFIRMED_WAIT_RETEST",
+            "ENTRY_READY": "LONG_READY" if direction == "LONG" else "SHORT_READY",
+            "MISSED_ENTRY": "MISSED_ENTRY",
+            "INVALIDATED": "INVALIDATED",
+        }[lifecycle_state]
     reason = str(
         entry.get("missing_condition") or decision.get("reason") or "等待條件一致"
     )
@@ -182,6 +207,9 @@ def evaluate_unified_decision(
     elif state == "MISSED_ENTRY":
         action = "禁止追價"
         flat_action = "原進場區已錯過；等待價格回踩新的確認區"
+    elif state == "CONFIRMED_WAIT_RETEST":
+        action = "突破確認完成，等待回踩"
+        flat_action = "目前距離理想進場區過遠，暫不追價。"
     elif state == "INVALIDATED":
         action = "舊劇本已失效"
         flat_action = "舊劇本已取消，依最新結構等待新劇本"
@@ -400,6 +428,7 @@ def evaluate_unified_decision(
         event_id = hashlib.sha256(seed.encode()).hexdigest()[:32]
         payload = {
                 "eventId": event_id,
+                "setupId": setup_id,
                 "event_type": event_type,
                 "previousState": previous_state,
                 "currentState": current_state,
@@ -434,6 +463,7 @@ def evaluate_unified_decision(
                 "triggerLevel": (pending_trigger.get("level") if pending_trigger else
                                  (trigger_result["completed"][-1]["level"]
                                   if trigger_result["completed"] else None)),
+                "setupLifecycle": setup_lifecycle,
                 "longDefensePrice": long_plan.get("defense_price"),
                 "shortDefensePrice": short_plan.get("defense_price"),
                 "spread": spread,
@@ -467,6 +497,7 @@ def evaluate_unified_decision(
     out["completed_triggers"] = trigger_result["completed"]
     out["next_trigger_condition"] = pending_trigger
     out["completed_events"] = completed_events
+    out["setup_lifecycle"] = setup_lifecycle
     out["last_event"] = (
         events[-1]["event_type"] if events else previous.get("last_event", "")
     )

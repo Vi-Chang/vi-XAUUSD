@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import and_, or_, select
 
 from app.config import get_settings
-from app.db.models import DecisionEvent, TelegramNotification
+from app.db.models import DecisionEvent, MarketMonitorState, TelegramNotification
 from app.db.session import db_session
 from app.engines.decision_presentation import format_decision_message
 from app.engines.trigger_lifecycle import validate_notification
@@ -192,6 +192,20 @@ async def deliver_pending_telegram(
                 ).scalar_one()
                 row.status, row.message_id, row.sent_at = "SENT", str(message_id), now
                 row.last_error, row.updated_at = "", now
+                lifecycle = payload.get("setupLifecycle") or {}
+                if lifecycle.get("state") == "ENTRY_READY" and payload.get("setupId"):
+                    monitor = db.execute(select(MarketMonitorState).where(
+                        MarketMonitorState.symbol == str(payload.get("symbol") or "XAUUSD"),
+                        MarketMonitorState.monitor_key == "final_decision",
+                    )).scalar_one_or_none()
+                    if monitor is not None:
+                        stored = dict(monitor.payload or {})
+                        current_lifecycle = dict(stored.get("setup_lifecycle") or {})
+                        if current_lifecycle.get("setupId") == payload.get("setupId"):
+                            current_lifecycle["entryNotificationSentAt"] = now.isoformat()
+                            current_lifecycle["wasEntryReady"] = True
+                            stored["setup_lifecycle"] = current_lifecycle
+                            monitor.payload, monitor.updated_at = stored, now
             sent += 1
         except Exception as exc:  # noqa: BLE001
             logger.warning(

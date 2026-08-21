@@ -295,14 +295,15 @@ def _build_scenario(direction: str, conditions: list[str], *, price: float,
             direction, current_price=price, entry=entry_zone,
             first_target=target_zones[0], structure_valid=True,
             confirmations_passed=confirmations_passed)
-    if lifecycle in ("EXPIRED", "MISSED_ENTRY_WAIT_RETEST", "WAITING_FOR_ENTRY",
-                     "BREAKOUT_PENDING"):
+    if lifecycle in ("EXPIRED", "CONFIRMED_WAIT_RETEST", "WAITING_FOR_ENTRY",
+                     "WAITING_FOR_CONFIRMATION", "BREAKOUT_PENDING"):
         status = "WATCH"
     elif lifecycle == "READY" and not reject:
         status = "PREPARE"
     lifecycle_blocks = {
         "EXPIRED": "SETUP_EXPIRED",
-        "MISSED_ENTRY_WAIT_RETEST": "ENTRY_ALREADY_MISSED",
+        "CONFIRMED_WAIT_RETEST": "CONFIRMED_WAIT_RETEST",
+        "WAITING_FOR_CONFIRMATION": "BREAKOUT_NOT_CONFIRMED",
         "WAITING_FOR_ENTRY": "PRICE_OUTSIDE_ENTRY_ZONE",
         "BREAKOUT_PENDING": "BREAKOUT_NOT_CONFIRMED",
     }
@@ -316,7 +317,7 @@ def _build_scenario(direction: str, conditions: list[str], *, price: float,
              [f"等待 15M 已收線{'突破局部高點/形成 HL' if up else '跌破局部低點/形成 LH'}",
               "等待價格回到理想進場區(非追價位置)"])
             + (["原進場機會已錯過，等待重新回踩形成有效劇本"]
-               if lifecycle == "MISSED_ENTRY_WAIT_RETEST" else [])
+               if lifecycle == "CONFIRMED_WAIT_RETEST" else [])
             + (["價格已到達第一目標區，原進場劇本已失效"]
                if lifecycle == "EXPIRED" else [])
             + (["此處進場賺賠比不足(第一目標未達 1.5 倍),等待回到更有優勢的進場位置"]
@@ -446,9 +447,13 @@ def decide(*, quality: DataQualityReport, structures: dict[str, StructureReport]
             action, trade_status = "WATCH", "INVALIDATED"
             reason = "原進場機會已到達第一目標區，劇本已失效；先觀察，等待重新計算。"
             blocked_reason = reason
-        elif sc.lifecycle_status == "MISSED_ENTRY_WAIT_RETEST":
-            action, trade_status = "WATCH", "MISSED_ENTRY"
-            reason = "價格已離開理想進場區，不追價；等待重新回踩形成有效劇本。"
+        elif sc.lifecycle_status == "CONFIRMED_WAIT_RETEST":
+            action, trade_status = "WATCH", "WAIT_CONFIRMATION"
+            reason = "收盤確認已完成，但價格不在合理進場區；等待回踩，不追價。"
+            blocked_reason = reason
+        elif sc.lifecycle_status == "WAITING_FOR_CONFIRMATION":
+            action, trade_status = "WATCH", "WAIT_CONFIRMATION"
+            reason = "最新已收盤 15M 尚未完成方向確認。"
             blocked_reason = reason
         elif sc.lifecycle_status == "WAITING_FOR_ENTRY":
             action = "WATCH"
@@ -463,7 +468,8 @@ def decide(*, quality: DataQualityReport, structures: dict[str, StructureReport]
                 opposing_zone_atr_mult=s.opposing_zone_hard_gate_atr_mult,
                 breakout_buffer_atr_mult=s.breakout_close_buffer_atr_mult,
             )
-        if sc.lifecycle_status in ("EXPIRED", "MISSED_ENTRY_WAIT_RETEST", "WAITING_FOR_ENTRY"):
+        if sc.lifecycle_status in ("EXPIRED", "CONFIRMED_WAIT_RETEST",
+                                   "WAITING_FOR_CONFIRMATION", "WAITING_FOR_ENTRY"):
             pass
         elif gate is not None and gate.blocked:
             action, reason, blocked_reason = "WATCH", gate.reason, gate.reason

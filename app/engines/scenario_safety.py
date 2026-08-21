@@ -135,14 +135,14 @@ def lifecycle_status(
         if current_price >= first_target.low:
             return "EXPIRED"
         if current_price > entry.high:
-            return "MISSED_ENTRY_WAIT_RETEST"
+            return "CONFIRMED_WAIT_RETEST" if confirmations_passed else "WAITING_FOR_CONFIRMATION"
         if current_price < entry.low:
             return "WAITING_FOR_ENTRY"
     else:
         if current_price <= first_target.high:
             return "EXPIRED"
         if current_price < entry.low:
-            return "MISSED_ENTRY_WAIT_RETEST"
+            return "CONFIRMED_WAIT_RETEST" if confirmations_passed else "WAITING_FOR_CONFIRMATION"
         if current_price > entry.high:
             return "WAITING_FOR_ENTRY"
     return "READY" if confirmations_passed else "BREAKOUT_PENDING"

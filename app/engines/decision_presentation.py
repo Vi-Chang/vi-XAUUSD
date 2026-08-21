@@ -25,6 +25,7 @@ def build_decision_presentation(event: dict) -> dict:
         "DATA_STALE": "🔴【資料過期｜暫停交易】",
         "INVALIDATED": "🟠【原交易計畫已失效】",
         "MISSED_ENTRY": "🟡【原進場區已錯過｜禁止追價】",
+        "CONFIRMED_WAIT_RETEST": "🟡【突破確認完成｜等待回踩】",
     }
     if state.endswith("BIAS"):
         action = "等待，尚未到進場區，請勿追價。"

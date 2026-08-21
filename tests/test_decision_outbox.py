@@ -321,6 +321,18 @@ def test_direction_is_part_of_semantic_dedup_identity():
     })
 
 
+def test_setup_id_is_part_of_state_transition_dedup_identity():
+    base = {
+        "symbol": "XAUUSD", "timeframe": "15M",
+        "decisionBasisCandleCloseTime": "2026-08-21T03:00:00+00:00",
+        "direction": "LONG", "currentState": "ENTRY_READY",
+        "alertCategory": "ENTRY_READY", "triggerLevel": 4539.17,
+    }
+    assert semantic_key({**base, "setupId": "setup-a"}) != semantic_key({
+        **base, "setupId": "setup-b"
+    })
+
+
 def test_notification_validator_rejects_completed_next_trigger():
     bad = {
         "eventId": "bad-completed-next", "currentState": "LONG_WATCH",

@@ -131,7 +131,8 @@ class Scenario(BaseModel):
     invalid_fatal: bool = False   # P1:FATAL(程式錯誤級)vs REJECT(條件不足)
     lifecycle_status: Literal[
         "NO_SETUP", "BREAKOUT_PENDING", "WAITING_FOR_ENTRY", "READY",
-        "MISSED_ENTRY_WAIT_RETEST", "FAILED_BREAKOUT", "EXPIRED", "INVALID",
+        "CONFIRMED_WAIT_RETEST", "WAITING_FOR_CONFIRMATION", "MISSED_ENTRY_WAIT_RETEST",
+        "FAILED_BREAKOUT", "EXPIRED", "INVALID",
         "POSITION_MANAGEMENT", "WATCH",
     ] = "NO_SETUP"
     planned_entry: float | None = None

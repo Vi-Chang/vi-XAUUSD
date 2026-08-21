@@ -235,3 +235,50 @@ def test_previously_completed_close_trigger_is_removed_immediately():
     assert state["next_trigger"] is None
     assert all((event.get("nextTriggerCondition") or {}).get("level") != 4532.51
                for event in events)
+
+
+def lifecycle_case(*, price: float, closed: float) -> dict:
+    data = payload(price, status="ENTRY_TRIGGERED")
+    data["entry_engine"].update({
+        "setup_id": "xau-long-4539", "direction": "LONG",
+        "zone_low": 4538.5, "zone_high": 4540.0,
+        "suggested_entry": 4539.0, "stop_loss": 4534.0,
+        "take_profit_1": 4549.0, "risk_reward": 2.0,
+        "missing_condition": "",
+    })
+    data["normalized_analysis"].update({
+        "lastClosedCandlePrice": closed,
+        "confirmationLevels": [
+            {"kind": "support", "timeframe": "15M", "price": 4534.0},
+            {"kind": "resistance", "timeframe": "15M", "price": 4539.17},
+        ],
+    })
+    return data
+
+
+def test_live_quotes_before_closed_confirmation_never_become_missed():
+    first, _ = evaluate_unified_decision(lifecycle_case(price=4534.32, closed=4538.0))
+    second, events = evaluate_unified_decision(
+        lifecycle_case(price=4537.02, closed=4538.0), first
+    )
+    assert first["setup_lifecycle"]["state"] == "WAIT_CONFIRMATION"
+    assert second["setup_lifecycle"]["state"] == "WAIT_CONFIRMATION"
+    assert second["state"] == "LONG_WATCH"
+    assert events == []
+
+
+def test_confirmed_far_price_waits_retest_then_notified_ready_can_be_missed():
+    far, _ = evaluate_unified_decision(lifecycle_case(price=4548.0, closed=4540.0))
+    assert far["state"] == "CONFIRMED_WAIT_RETEST"
+    ready, ready_events = evaluate_unified_decision(
+        lifecycle_case(price=4539.5, closed=4540.0), far
+    )
+    assert ready["state"] == "LONG_READY"
+    assert len([e for e in ready_events if e["currentState"] == "LONG_READY"]) == 1
+    ready["setup_lifecycle"]["entryNotificationSentAt"] = "2026-08-21T03:02:00Z"
+    missed, events = evaluate_unified_decision(
+        lifecycle_case(price=4548.0, closed=4540.0), ready
+    )
+    assert missed["state"] == "MISSED_ENTRY"
+    assert len([e for e in events if e["event_type"] == "STATE_CHANGED"
+                and e["currentState"] == "MISSED_ENTRY"]) == 1
