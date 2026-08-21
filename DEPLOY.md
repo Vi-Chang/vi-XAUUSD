@@ -43,7 +43,7 @@ Gemini 免費層限制:**10 RPM / 250 次每日**。系統內建保護(超限自
 
 ## 存取控制 / 管理權限(Phase 1 安全性)
 
-會改狀態或產生成本的**寫入端點**(分析觸發、老師帶單、offset、持倉操作)受管理權限保護。
+會改狀態或產生成本的**寫入端點**(分析觸發、offset、持倉操作)受管理權限保護。
 
 | 變數 | 說明 |
 |---|---|
@@ -76,10 +76,10 @@ Gemini 免費層限制:**10 RPM / 250 次每日**。系統內建保護(超限自
 - **公開(免登入)**:市場分析 dashboard —— 價格、圖表、市場狀態、技術指標、市場結構、關鍵價位/FVG、事件風險、規則引擎與 AI **市場分析**、公開多空劇本。
   - `GET /api/analysis/latest` 回傳**公開投影**(單一集中 allowlist:`app/services/public_view.py`),移除所有私人欄位;**無副作用**(匿名或已登入的 GET 都不觸發 LLM/provider/新分析/Telegram;無快取時唯讀 DB,再無則回「尚無分析」)。只有受保護的 `POST /api/analysis/run` 或排程可產生新分析。
   - 公開 WebSocket:`/ws`(public alias)—— 只傳公開投影。
-- **私人(需 admin session/header)**:`GET /api/accounts`、`/api/accounts/comparison`、`/api/positions`、`/api/behavior/flags`、`/api/mentor/history`、`/api/mentor/signals`,以及私人 WebSocket `/ws/private`(須有效 session cookie + 同源;session 過期即停止傳送)。
+- **私人(需 admin session/header)**:`GET /api/accounts`、`/api/accounts/comparison`、`/api/positions`,以及私人 WebSocket `/ws/private`(須有效 session cookie + 同源;session 過期即停止傳送)。
   - 未登入回固定 401,不洩露私人欄位是否存在。
   - 前端:未登入時私人面板顯示「🔒 私人資料,登入後查看」(不殘留舊 DOM);單一共享登入流程(多個 401 只跳一次);登入後重載私人面板 + 連 `/ws/private`;登出/過期清除私人 DOM 並關閉私人 WS。永久 token 不進 localStorage/sessionStorage/URL/HTML/cookie。
-- **隱私不變式**:公開 payload 以 allowlist 建構(新增欄位預設不公開),並有遞迴 key 斷言禁止 `position_management`/`mentor_comparison`/`trading_coach`/`lot_size`/`pnl`/`account`/`behavior_flags`/`note` 等私人 key。公開 AI 文字為市場分析(生成時未餵入個人持倉/老師資料);決策以「市場層 `market_decision`」呈現,不洩露持倉 MANAGE 覆寫。
+- **隱私不變式**:公開 payload 以 allowlist 建構(新增欄位預設不公開),並有遞迴 key 斷言禁止 `position_management`/`lot_size`/`pnl`/`account`/`note` 等私人 key。公開 AI 文字只使用市場資料；決策以「市場層 `market_decision`」呈現,不洩露持倉 MANAGE 覆寫。
 - **舊資料(text-level leakage)防線**:公開投影有版本戳記 `privacy_boundary_version`。只有此版 position-free pipeline 產生的分析才可公開 AI/summary/mistake 等**自由文字**;舊資料(無戳記或缺 `market_decision`)一律回 `{available:false, reason:"analysis_refresh_required"}`,**不** fallback 舊 decision、不做關鍵字清洗。投影任何例外/型別錯誤一律 fail-closed(回安全 envelope,絕不外送原始 full payload;log 只含錯誤類別 + version/id)。
 - **首次部署**:privacy 版本上線後,舊分析不公開;排程產生第一筆新版分析後公開 dashboard 自動恢復。匿名 GET 不會為刷新而觸發分析;admin 可經受保護 `POST /api/analysis/run` 立即刷新。UI 顯示「分析格式已更新,等待下一次排程」(不揭露內部版本/安全細節)。
 - **`privacy_boundary_version` 升版規則**:此戳記(`app/services/public_view.py`,單一真實來源)代表「公開自由文字的資料來源與 AI snapshot 已通過隱私審查」。**下列任一改變都必須重新審查並 +1**:(1) AI snapshot/input fields、(2) public allowlist、(3) `market_decision` 生成位置、(4) summary/mistake 資料來源、(5) private/public projection、(6) legacy fallback 政策。升版後,舊戳記的既有分析自動停止公開(fail-closed),直到排程/管理員產生新版。`tests/test_privacy_boundary.py` 的 invariant test 會確認常數、pipeline 蓋章、schema 欄位同源(禁止硬編碼三份數字)。
@@ -102,7 +102,7 @@ Readiness `reason` 值:`ok` / `market_closed` / `api_only`(刻意關排程)/ `wa
 ## 部署流程
 
 1. 停掉本機 dev server(否則 `xauusd_dev.db` 被鎖住)。
-2. 把 `.env`、`*.db`、`mentor_trades*.json` 暫移出專案目錄(Zeabur 會上傳整個工作目錄)。
+2. 把 `.env`、`*.db` 暫移出專案目錄(Zeabur 會上傳整個工作目錄)。
 3. `npx zeabur@latest deploy -i=false --project-id 6a5b6a73b2014c9217fe6752 --service-id 6a5b6aa7b2014c9217fe6765 --environment-id 6a5b6a73b0b7a4abeb4e4d89`
 4. 檔案移回,以 `npx zeabur@latest deployment get -i=false --service-id … --env-id … --json`
    等 `status == "RUNNING"`(**不要**用 /health 判斷 —— 滾動更新期間舊容器也回 200)。

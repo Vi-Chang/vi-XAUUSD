@@ -11,7 +11,6 @@ from app.services import public_view as pv
 
 PRIVATE_GETS = [
     "/api/accounts", "/api/accounts/comparison", "/api/positions",
-    "/api/behavior/flags", "/api/mentor/history", "/api/mentor/signals",
 ]
 
 
@@ -74,8 +73,7 @@ def test_private_get_with_session(client):
 
 def _full_result_with_private(stamped: bool = True) -> dict:
     from app.schemas.analysis import (
-        AnalysisResult, Decision, PositionManagement, MentorComparison,
-        MentorSignalView, TradingCoachView,
+        AnalysisResult, Decision, PositionManagement,
     )
     from app.services.public_view import PRIVACY_BOUNDARY_VERSION
     r = AnalysisResult()
@@ -87,11 +85,6 @@ def _full_result_with_private(stamped: bool = True) -> dict:
     r.position_management = PositionManagement(
         has_position=True, position_side="LONG", entry_price=4000.0,
         current_r_multiple=1.2, recommended_action="續抱")
-    r.mentor_comparison = MentorComparison(
-        has_signals=True, signals=[MentorSignalView(
-            id=1, direction="LONG", entry_price=4000.0, note="老師私人筆記:加碼")])
-    r.trading_coach = TradingCoachView(
-        behavior_flags=["STOP_WIDENING"], corrective_action="別凹單")
     d = r.model_dump()
     d["some_future_unknown_field"] = {"lot_size": 0.5, "secret": "x"}   # 未來新欄位
     return d
@@ -110,8 +103,6 @@ def test_public_projection_excludes_unknown_new_field():
     pub = pv.public_analysis(_full_result_with_private(stamped=True))
     assert "some_future_unknown_field" not in pub          # 未在 allowlist → 不公開
     assert "position_management" not in pub
-    assert "mentor_comparison" not in pub
-    assert "trading_coach" not in pub
     assert "offset_info" not in pub
 
 

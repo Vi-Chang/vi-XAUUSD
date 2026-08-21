@@ -1,4 +1,4 @@
-"""帳戶層統計:老師帶單 vs 自己交易,分開統計 + 對照(spec 二十四之統計指標)。
+"""實際交易帳戶統計與績效對照。
 
 統計來源 = 該帳戶「已平倉」的手動持倉(realized);
 依 spec 二十四:不得只用勝率評估,優先看 Expectancy(平均 R)、
@@ -11,7 +11,7 @@ import logging
 from sqlalchemy import select
 
 from app.config import get_settings
-from app.db.models import Account, BehaviorFlag, Position
+from app.db.models import Account, Position
 from app.db.session import db_session
 
 logger = logging.getLogger(__name__)
@@ -62,9 +62,6 @@ def account_stats(account_id: int) -> dict:
         closed = db.execute(select(Position).where(
             Position.account_id == account_id, Position.is_open.is_(False))
             .order_by(Position.close_time)).scalars().all()
-        pos_ids = {p.id for p in db.execute(select(Position).where(
-            Position.account_id == account_id)).scalars().all()}
-        flags = db.execute(select(BehaviorFlag)).scalars().all()
 
     pnls = [realized_pnl(p) for p in closed]
     rs = [r for r in (realized_r(p) for p in closed) if r is not None]
@@ -79,9 +76,6 @@ def account_stats(account_id: int) -> dict:
         peak = max(peak, equity)
         max_dd = max(max_dd, peak - equity)
 
-    flag_count = sum(1 for f in flags
-                     if (f.evidence or {}).get("position_id") in pos_ids)
-
     n = len(closed)
     return {
         "total_trades": n,
@@ -93,7 +87,6 @@ def account_stats(account_id: int) -> dict:
         "profit_factor": (round(gross_win / gross_loss, 2) if gross_loss > 0
                           else (None if not wins else float("inf"))),
         "max_drawdown_r": round(max_dd, 2),
-        "behavior_flags": flag_count,
     }
 
 

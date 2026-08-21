@@ -69,7 +69,6 @@ def test_dangerous_fields_go_through_h_template():
     assert not re.search(r'innerHTML\s*=\s*`', APP_JS), \
         "發現未經 h`` 的 innerHTML 模板(可能有 XSS)"
     # 具體危險欄位確有經 h`` 呈現
-    assert "老師備註:${" in APP_JS and "mentor-memo" in APP_JS   # note 走模板
     assert 'class="ai-oneliner">${ai.one_liner' in APP_JS         # AI one-liner
 
 

@@ -204,16 +204,6 @@ class PositionManagement(BaseModel):
     data_timestamp: str = ""
 
 
-class TradingCoachView(BaseModel):
-    behavior_flags: list[str] = Field(default_factory=list)
-    early_exit_risk: str = ""
-    greed_risk: str = ""
-    chasing_risk: str = ""
-    revenge_trade_risk: str = ""
-    stop_loss_discipline: str = ""
-    message: str = ""
-
-
 DecisionAction = Literal[
     "NO_TRADE", "WATCH", "PREPARE_LONG", "PREPARE_SHORT", "LONG", "SHORT", "MANAGE", "EXIT"
 ]
@@ -435,28 +425,6 @@ class NormalizedAnalysisState(BaseModel):
     tradingDecision: TradingDecision = Field(default_factory=TradingDecision)
 
 
-class MentorSignalView(BaseModel):
-    """老師帶單一筆 + 與系統方向的比對(純參考,不影響決策)。"""
-    id: int
-    direction: str
-    entry_price: float
-    stop_loss: float | None = None
-    targets: list[float] = Field(default_factory=list)
-    note: str = ""
-    signal_time: str = ""
-    system_direction: str | None = None
-    alignment: str = "SYSTEM_NEUTRAL"           # ALIGNED / OPPOSITE / SYSTEM_NEUTRAL
-    alignment_text: str = ""
-    entry_vs_current: float | None = None
-    entry_vs_current_text: str = ""
-
-
-class MentorComparison(BaseModel):
-    has_signals: bool = False
-    signals: list[MentorSignalView] = Field(default_factory=list)
-    note: str = "老師帶單僅供參考比對,不影響系統任何進出場判斷與證據分數"
-
-
 class OffsetInfo(BaseModel):
     """價格校正資訊(讀取時由 price_offset 服務依當前資料源填入)。"""
     mode: str = "manual"                 # manual | auto
@@ -601,8 +569,6 @@ class AnalysisResult(BaseModel):
     decision_trace: DecisionTrace = Field(default_factory=DecisionTrace)
     risk_manager: RiskManagerView = RiskManagerView()
     position_management: PositionManagement = PositionManagement()
-    mentor_comparison: MentorComparison = MentorComparison()
-    trading_coach: TradingCoachView = TradingCoachView()
     decision: Decision = Decision()
     # 市場層決策(未被「持倉管理 MANAGE 覆寫」污染);公開投影以此為 decision,避免洩露持倉。
     market_decision: Decision = Decision()

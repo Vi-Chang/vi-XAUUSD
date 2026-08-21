@@ -407,14 +407,6 @@ body {
 .pos-hist ul { margin: 4px 0 0 18px; color: var(--text-dim); }
 .pos-closed-tag { font-size: .7rem; color: var(--text-dim); border: 1px solid var(--border); padding: 1px 8px; border-radius: 999px; }
 
-.coach-flag {
-  border: 1px solid rgba(240,160,32,.35); border-radius: 8px; padding: 10px 12px; margin: 8px 0;
-  font-size: .8rem;
-}
-.coach-flag .cf-name { color: var(--warn); font-weight: 700; font-family: var(--mono); }
-.coach-flag .cf-time { color: var(--text-dim); font-size: .7rem; margin-left: 8px; }
-.coach-flag p { margin-top: 4px; color: var(--text-dim); }
-
 @media (max-width: 900px) {
   .pos-form { grid-template-columns: 1fr 1fr; }
   .pf-wide { grid-column: span 2; }
@@ -426,23 +418,6 @@ body {
 .hist-table th { color: var(--text-dim); font-weight: 400; font-size: .72rem; text-transform: uppercase; letter-spacing: 1px; }
 .hist-table td.num { color: var(--text); }
 .act-pill { font-family: var(--mono); font-size: .72rem; padding: 2px 8px; border-radius: 5px; }
-
-/* ═══ 老師帶單 ═══ */
-.mentor-note { font-size: .82rem; color: var(--text-dim); margin-bottom: 12px;
-  padding: 8px 12px; border-left: 3px solid var(--info); background: rgba(88,166,255,.06);
-  border-radius: 0 6px 6px 0; }
-.mentor-note b { color: var(--info); }
-.mentor-card { border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px;
-  margin: 10px 0; }
-.mentor-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
-.mentor-memo { margin-top: 6px; font-size: .78rem; color: var(--text-dim); }
-.mentor-section-title { font-size: .72rem; color: var(--text-dim); text-transform: uppercase;
-  letter-spacing: 1.5px; margin: 18px 0 8px; border-top: 1px solid var(--border); padding-top: 12px; }
-.mentor-summary { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
-.mentor-gap { font-size: .76rem; color: var(--warn); background: rgba(240,160,32,.07);
-  border-left: 3px solid var(--warn); padding: 6px 10px; border-radius: 0 6px 6px 0;
-  margin-bottom: 10px; }
-.mentor-nodata { color: var(--text-dim); cursor: help; }
 
 /* ═══ 對照統計 ═══ */
 .cmp-table td:first-child { color: var(--text-dim); }

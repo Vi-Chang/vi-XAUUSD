@@ -79,15 +79,6 @@ def init_db() -> None:
             "can_enter": "BOOLEAN DEFAULT FALSE",
             "blocked_reason": "TEXT DEFAULT ''",
         },
-        "mentor_signals": {   # IMPORT-MENTOR-HISTORY 歷史紀錄擴充
-            "status": "VARCHAR(8) DEFAULT 'OPEN'",
-            "open_time": "TIMESTAMPTZ", "close_time": "TIMESTAMPTZ",
-            "close_price": "FLOAT", "lots": "FLOAT",
-            "pl_usd": "FLOAT", "swap_usd": "FLOAT", "net_usd": "FLOAT",
-            "points": "FLOAT", "r_multiple": "FLOAT",
-            "r_source": "VARCHAR(12)", "import_batch": "VARCHAR(48)",
-            "account_no": "VARCHAR(24)",
-        },
     }
     inspector = inspect(engine)
     with engine.begin() as conn:
@@ -96,10 +87,13 @@ def init_db() -> None:
             for col, ddl in cols_ddl.items():
                 if col not in existing:
                     conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}"))
-        # 冪等匯入唯一索引(SQLite 與 PostgreSQL 皆支援 IF NOT EXISTS)
+        # 已永久移除的老師資料與交易教練資料，不保留歷史表或相容層。
+        conn.execute(text("DROP TABLE IF EXISTS mentor_signals"))
+        conn.execute(text("DROP TABLE IF EXISTS behavior_flags"))
         conn.execute(text(
-            "CREATE UNIQUE INDEX IF NOT EXISTS uq_mentor_import ON mentor_signals "
-            "(account_no, close_time, entry_price, close_price)"))
+            "UPDATE positions SET account_id = NULL WHERE account_id IN "
+            "(SELECT id FROM accounts WHERE strategy_source = 'TEACHER')"))
+        conn.execute(text("DELETE FROM accounts WHERE strategy_source = 'TEACHER'"))
         conn.execute(text(
             "CREATE UNIQUE INDEX IF NOT EXISTS uq_telegram_semantic_dedup "
             "ON telegram_notifications (semantic_dedup_key)"))
@@ -107,12 +101,10 @@ def init_db() -> None:
     from app.services.confidence_history import backfill_confidence_history
     backfill_confidence_history()
 
-    # 預設帳戶種子(帳戶A 老師帶單 / 帳戶B 自己交易)
+    # 僅保留使用者自己的實際交易帳戶。
     from datetime import datetime, timezone
     with db_session() as db:
         if db.query(models.Account).count() == 0:
             now = datetime.now(timezone.utc)
-            db.add(models.Account(name="帳戶A・老師帶單", strategy_source="TEACHER",
-                                  description="跟隨老師訊號執行的交易", created_at=now))
-            db.add(models.Account(name="帳戶B・自己交易", strategy_source="SELF",
+            db.add(models.Account(name="我的交易帳戶", strategy_source="SELF",
                                   description="依本系統/自己判斷執行的交易", created_at=now))

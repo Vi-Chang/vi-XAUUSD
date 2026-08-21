@@ -56,7 +56,7 @@
 ## MVP 邊界
 
 18. 經濟事件目前只讀 `data/manual_events.json`(Finnhub/FMP 為 Phase 6);來源失效 → `EVENT_RISK_UNKNOWN`。
-19. `trading_coach` / `position_management` / `cross_market_context` 欄位在 MVP 輸出中為空殼(Schema 已定,Phase 6–7 填入)。
+19. `position_management` / `cross_market_context` 欄位由確定性規則填入。
 20. LLM 完全未接(`llm_cost_usd_today` 恆為 0);觸發政策與預算欄位已預留。
 21. 週線 K 棒的 close_time 推算為「開盤後第 5 個交易日 17:00 ET」;以 OANDA 回傳實際值為準(儲存時用 provider 值覆蓋)。
 

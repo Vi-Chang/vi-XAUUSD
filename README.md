@@ -108,7 +108,7 @@ scripts/run_demo.py          # 零 Key 一鍵展示
 instruments、candles(含 bid/ask/spread/is_closed/provider)、live_prices、indicators、
 market_structures(含確認 K 棒與失效價)、key_levels、**candidate_levels**(價位候選編號制)、
 economic_events、news_items、analysis_runs(完整 JSON 快照 + 事後結果回填)、
-trade_scenarios(價位欄位=候選 ID)、positions、trade_journal、behavior_flags、
+trade_scenarios(價位欄位=候選 ID)、positions、trade_journal、
 alerts、provider_health(含 Twelve Data 配額)、system_settings、market_calendar、llm_usage。
 
 ## 6. 關鍵設計(防呆機制)

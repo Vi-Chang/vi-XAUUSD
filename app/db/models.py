@@ -27,7 +27,7 @@ class Base(DeclarativeBase):
 
 
 class Account(Base):
-    """帳戶層:區分策略來源(老師帶單 vs 自己交易),供分開統計與對照。"""
+    """使用者實際交易帳戶。"""
     __tablename__ = "accounts"
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(64), unique=True)
@@ -253,43 +253,6 @@ class Position(Base):
     account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id"), nullable=True)
 
 
-class MentorSignal(Base):
-    """老師帶單(僅供參考)— 老師發出的方向與價位,我並未實際下單,不算持倉。
-
-    完全獨立於 positions:純參考比對用,絕不進入「有無持倉」判斷、
-    不影響任何進出場決策、不加減證據分數。
-    """
-    __tablename__ = "mentor_signals"
-    id: Mapped[int] = mapped_column(primary_key=True)
-    direction: Mapped[str] = mapped_column(String(8))          # LONG / SHORT
-    entry_price: Mapped[float] = mapped_column(Float)
-    stop_loss: Mapped[float | None] = mapped_column(Float, nullable=True)
-    targets: Mapped[list | None] = mapped_column(JSON, nullable=True)
-    note: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    signal_time: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    # ── 歷史紀錄擴充(IMPORT-MENTOR-HISTORY:已平倉匯入單)──
-    status: Mapped[str] = mapped_column(String(8), default="OPEN")   # OPEN | CLOSED
-    open_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    close_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    close_price: Mapped[float | None] = mapped_column(Float, nullable=True)
-    lots: Mapped[float | None] = mapped_column(Float, nullable=True)
-    pl_usd: Mapped[float | None] = mapped_column(Float, nullable=True)    # 不含持倉費用
-    swap_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
-    net_usd: Mapped[float | None] = mapped_column(Float, nullable=True)   # pl - swap
-    points: Mapped[float | None] = mapped_column(Float, nullable=True)
-    r_multiple: Mapped[float | None] = mapped_column(Float, nullable=True)
-    r_source: Mapped[str | None] = mapped_column(String(12), nullable=True)  # ACTUAL/ESTIMATED/UNKNOWN
-    import_batch: Mapped[str | None] = mapped_column(String(48), nullable=True)
-    account_no: Mapped[str | None] = mapped_column(String(24), nullable=True)
-    __table_args__ = (
-        # 冪等匯入:重跑不得重複寫入
-        Index("uq_mentor_import", "account_no", "close_time", "entry_price",
-              "close_price", unique=True),
-    )
-
-
 class TradeJournal(Base):
     """13. trade_journal — 成交紀錄(Trading Coach 輸入)"""
     __tablename__ = "trade_journal"
@@ -305,17 +268,6 @@ class TradeJournal(Base):
     raw: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     source: Mapped[str] = mapped_column(String(16), default="oanda")
     account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id"), nullable=True)
-
-
-class BehaviorFlag(Base):
-    """14. behavior_flags — 交易教練行為標籤(spec 十九)"""
-    __tablename__ = "behavior_flags"
-    id: Mapped[int] = mapped_column(primary_key=True)
-    flag: Mapped[str] = mapped_column(String(32))          # EARLY_EXIT/GREED_HOLD/...
-    detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    evidence: Mapped[dict] = mapped_column(JSON)           # 實際價格/時間/持倉紀錄
-    corrective_action: Mapped[str] = mapped_column(Text)
-    trade_journal_id: Mapped[int | None] = mapped_column(ForeignKey("trade_journal.id"), nullable=True)
 
 
 class Alert(Base):

@@ -5,6 +5,7 @@ import hashlib
 
 from app.engines.confidence import get_confidence_grade
 from app.engines.data_health_gate import evaluate_data_health
+from app.engines.execution_context import execution_cost, market_session
 
 
 def _selected_setup(data: dict) -> dict:
@@ -16,6 +17,9 @@ def _selected_setup(data: dict) -> dict:
 
 
 def build_decision_snapshot(data: dict, *, risk_mode: str = "STANDARD") -> dict:
+    from app.config import get_settings
+
+    settings = get_settings()
     final = data.get("final_decision_state") or {}
     setup = _selected_setup(data)
     health = evaluate_data_health(data)
@@ -57,6 +61,8 @@ def build_decision_snapshot(data: dict, *, risk_mode: str = "STANDARD") -> dict:
         "currentPrice": health["currentPrice"], "marketDataTimestamp": health["marketDataTimestamp"],
         "quoteTime": health["quoteTime"], "calculatedAt": data.get("timestamp_utc") or health["evaluatedAt"],
         "dataHealth": health, "riskMode": risk_mode.upper(),
+        "marketSession": market_session(health["marketDataTimestamp"]),
+        "executionCost": execution_cost(data, slippage_abs=settings.estimated_slippage_abs),
         "eventRisk": event.get("risk_level") or event.get("status") or "UNKNOWN",
         "eventDataStatus": event.get("data_status") or "UNKNOWN",
         "positionMode": "TRACKED" if (data.get("position_management") or {}).get("has_position") else "FLAT",

@@ -317,57 +317,6 @@ async def trigger_analysis() -> dict:
     return _serve_result(state.latest_result)
 
 
-class MentorSignalReq(BaseModel):
-    direction: str
-    entry_price: float
-    stop_loss: float | None = None
-    targets: list[float] = Field(default_factory=list)
-    note: str | None = None
-
-
-@app.get("/api/mentor/signals", dependencies=[Depends(require_admin)])
-async def get_mentor_signals() -> dict:
-    """老師帶單(僅供參考)+ 與目前系統方向的比對。"""
-    from app.services.mentor_service import comparison_block
-    action = "NO_TRADE"
-    if state.latest_result:
-        action = state.latest_result.get("decision", {}).get("action", "NO_TRADE")
-    cur = None
-    try:
-        cur = (await state.provider.get_live_price()).mid
-    except Exception:
-        logger.debug("comparison live price unavailable", exc_info=True)
-    return comparison_block(action, cur)
-
-
-@app.post("/api/mentor/signals", dependencies=[Depends(require_admin)])
-async def create_mentor_signal(req: MentorSignalReq) -> dict:
-    """新增一筆老師帶單(不算持倉,純參考比對)。"""
-    from app.services.mentor_service import create_signal
-    try:
-        return create_signal(direction=req.direction, entry_price=req.entry_price,
-                             stop_loss=req.stop_loss, targets=req.targets, note=req.note)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
-
-
-@app.get("/api/mentor/history", dependencies=[Depends(require_admin)])
-async def get_mentor_history() -> dict:
-    """老師帶單歷史紀錄(CLOSED 匯入單)+ 統計 + 已知缺口。與進行中訊號分開。"""
-    from app.services.mentor_service import history_block
-    return history_block()
-
-
-@app.post("/api/mentor/signals/{signal_id}/deactivate", dependencies=[Depends(require_admin)])
-async def deactivate_mentor_signal(signal_id: int) -> dict:
-    from app.services.mentor_service import deactivate_signal
-    try:
-        deactivate_signal(signal_id)
-    except ValueError as exc:
-        raise HTTPException(404, str(exc)) from exc
-    return {"ok": True}
-
-
 @app.get("/api/offset")
 async def get_offset_api() -> dict:
     """TMGM 價格校正資訊(右上角資訊面板 + 校正說明)。"""
@@ -586,7 +535,7 @@ async def _price_or_market(price: float | None) -> float:
 
 @app.get("/api/accounts", dependencies=[Depends(require_admin)])
 async def get_accounts() -> list[dict]:
-    """帳戶清單(帳戶A 老師帶單 / 帳戶B 自己交易,可擴充)。"""
+    """使用者實際交易帳戶清單。"""
     from app.services.account_service import list_accounts
     return list_accounts()
 
@@ -633,16 +582,11 @@ async def create_position_api(req: PositionCreateReq) -> dict:
 async def modify_stop_api(position_id: int, req: StopModifyReq) -> dict:
     from app.services.position_service import modify_stop, position_view
     try:
-        pos, flag = modify_stop(position_id, req.stop_loss)
+        pos, _ = modify_stop(position_id, req.stop_loss)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     cur = await _price_or_market(None)
     out = position_view(pos, cur)
-    out["behavior_flag"] = flag
-    if flag and state.notifier:
-        await state.notifier.notify("RISK", f"behavior:{flag}",
-                                    f"交易教練:偵測到 {flag}(停損往虧損方向移動)。"
-                                    f"請恢復原結構失效點停損。")
     return out
 
 
@@ -668,11 +612,10 @@ async def partial_exit_api(position_id: int, req: PartialExitReq) -> dict:
     from app.services.position_service import partial_exit, position_view
     price = await _price_or_market(req.price)
     try:
-        pos, flag = partial_exit(position_id, req.percent, price)
+        pos, _ = partial_exit(position_id, req.percent, price)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     out = position_view(pos, price)
-    out["behavior_flag"] = flag
     return out
 
 
@@ -681,18 +624,11 @@ async def close_position_api(position_id: int, req: CloseReq) -> dict:
     from app.services.position_service import close_position, position_view
     price = await _price_or_market(req.price)
     try:
-        pos, flag = close_position(position_id, price)
+        pos, _ = close_position(position_id, price)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     out = position_view(pos, price)
-    out["behavior_flag"] = flag
     return out
-
-
-@app.get("/api/behavior/flags", dependencies=[Depends(require_admin)])
-async def behavior_flags(limit: int = 20) -> list[dict]:
-    from app.services.position_service import recent_behavior_flags
-    return recent_behavior_flags(limit=max(1, min(limit, 100)))
 
 
 @app.get("/api/price")
