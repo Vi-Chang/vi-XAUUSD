@@ -260,7 +260,8 @@ def evaluate_unified_decision(
                            if item.get("status") in {"WAIT_RETEST", "WAIT_PULLBACK_CONFIRMATION"}), None)
     pending_breakout = next((item for item in reversed(breakout_setups)
                              if item.get("status") in {"WAIT_BREAKOUT_CONFIRMATION",
-                                                       "WAIT_BREAKOUT_OR_PULLBACK"}), None)
+                                                       "WAIT_BREAKOUT_OR_PULLBACK",
+                                                       "PULLBACK_BREACH_PENDING_CLOSE"}), None)
     continuation = data.get("trend_continuation_engine") or {}
     continuation_selected = continuation.get("selected") or {}
     continuation_live = bool(continuation_selected and not continuation.get("shadowMode", True))
@@ -283,18 +284,24 @@ def evaluate_unified_decision(
             f"{waiting_retest['retestZoneLow']:.2f}–{waiting_retest['retestZoneHigh']:.2f}；"
             f"新劇本等待15M收盤突破 {pending_breakout['breakoutTrigger']:.2f}")
     long_plan, short_plan = exit_plans.get("LONG") or {}, exit_plans.get("SHORT") or {}
-    long_manage = (
-        f"若持有多單：防守 {long_plan.get('defense_price'):.2f}，依序分批止盈"
-        if isinstance(long_plan.get("defense_price"), (int, float))
-        else "若持有多單：等待最新 15M 防守價"
-    )
+    def management_text(plan: dict, side: str) -> str:
+        defense = plan.get("defense_price")
+        partial, full = plan.get("partial_exit") or {}, plan.get("full_exit") or {}
+        if not isinstance(defense, (int, float)):
+            return f"若持有{side}：等待最新15M防守價與明確止盈區"
+        if all(isinstance(value, (int, float)) for value in (
+                partial.get("low"), partial.get("high"), full.get("low"), full.get("high"))):
+            return (f"若持有{side}：{float(partial['low']):.2f}–{float(partial['high']):.2f}"
+                    f"先平倉30%；{float(full['low']):.2f}–{float(full['high']):.2f}"
+                    f"評估剩餘部位；防守價 {float(defense):.2f}")
+        return f"若持有{side}：防守價 {float(defense):.2f}；止盈價區尚在重新計算"
+
+    long_manage = management_text(long_plan, "多單")
     short_manage = (
         f"若持有空單：{short_plan.get('defense_price'):.2f} 防守條件已觸發，依風控規則處理"
         if isinstance(short_plan.get("defense_price"), (int, float))
         and price > float(short_plan["defense_price"])
-        else f"若持有空單：防守 {short_plan.get('defense_price'):.2f}，依序分批止盈"
-        if isinstance(short_plan.get("defense_price"), (int, float))
-        else "若持有空單：等待最新 15M 防守價"
+        else management_text(short_plan, "空單")
     )
     if (isinstance(long_plan.get("defense_price"), (int, float))
             and price < float(long_plan["defense_price"])):
@@ -449,7 +456,7 @@ def evaluate_unified_decision(
         "THIRD_TARGET_REACHED": "第三目標已到，可全數平倉或啟動移動停利",
         "PROTECTION_EXIT_REACHED": "15M 收盤觸及最新獲利保護價",
         "EXIT_APPROACHING": "價格接近條件式出場區",
-        "EXIT_ZONE_REACHED": "價格已進入條件式出場區",
+        "EXIT_ZONE_REACHED": "價格已到達本次計畫的明確分批處理價區",
         "EXIT_NOW": "反向收盤已突破防守價，建議立即降低風險",
         "CANDLE_CLOSE_CONFIRMED": "新的 15M K 線已收盤，決策完成重新確認",
         "INTRABAR_BREACH": "價格盤中測試關鍵位，尚未收盤確認",
@@ -485,6 +492,7 @@ def evaluate_unified_decision(
         "PULLBACK_ENTRY_READY": "價格回到動態支撐區且15M已確認止跌",
         "PULLBACK_INVALIDATED": "15M收盤跌破回踩失效價，取消多方回踩劇本",
         "PULLBACK_ZONE_UPDATED": "新結構成立，回踩觀察區已更新",
+        "PULLBACK_BREACH_PENDING_CLOSE": "即時價格跌穿回踩防守位，暫停進場並等待15M收盤",
         "SETUP_EXPIRED": "突破劇本已到期",
         "ENTRY_READY_SHALLOW_PULLBACK": "強勢趨勢淺回踩已由15M確認",
         "ENTRY_READY_BREAKOUT_RETEST": "固定突破位回踩守住，風控已通過",

@@ -146,6 +146,9 @@ class Settings(BaseSettings):
     source_mismatch_atr_mult: float = 0.3       # × 15M ATR
     source_mismatch_event_relax_mult: float = 2.0  # 高波動事件時段放寬倍數
     stale_price_seconds: int = 60
+    # 即時報價若與最新已收盤 15M 相差過大，先等待 K 棒同步，避免混用不同快照。
+    quote_candle_divergence_atr_mult: float = 1.5
+    quote_candle_divergence_min_abs: float = 12.0
 
     # ── 交易資格閘門(stale-data no-trade gate;資料不足/異常/休市/證據不足 → NO_TRADE)──
     # 單一權威(app/engines/trade_gate.evaluate_trade_eligibility);門檻一律可設定,不硬編。

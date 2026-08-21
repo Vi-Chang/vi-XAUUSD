@@ -37,6 +37,7 @@ def _plain_lifecycle(state: str) -> str:
         "BREAKOUT_ENTRY_READY": "突破進場條件成立",
         "PULLBACK_ENTRY_READY": "回踩進場條件成立",
         "PULLBACK_INVALIDATED": "原本看漲的回踩條件已被破壞",
+        "PULLBACK_BREACH_PENDING_CLOSE": "價格盤中跌穿回踩防守位，暫停進場並等待15M收盤",
         "MISSED_ENTRY": "進場點已錯過，現在不要追價",
         "MISS_ENTRY": "進場點已錯過，現在不要追價",
         "EXPIRED": "原本的進場條件已失效，已重新計算",
@@ -242,7 +243,7 @@ def _format_breakout_setup_event(event: dict, breakout_event: dict) -> str:
                        if item.get("setupId") != setup.get("setupId")
                        and item.get("direction") == direction
                        and item.get("status") == "WAIT_BREAKOUT_CONFIRMATION"), None)
-    if state in {"EXPIRED", "SETUP_EXPIRED", "INVALIDATED"}:
+    if state in {"EXPIRED", "SETUP_EXPIRED", "INVALIDATED", "PULLBACK_INVALIDATED"}:
         lifecycle_text = ("原本判斷已失效，等待新的機會" if state == "INVALIDATED"
                           else "原本的進場條件已失效，已重新計算")
         lines = ["🔄【進場條件已更新】",
@@ -268,7 +269,13 @@ def _format_breakout_setup_event(event: dict, breakout_event: dict) -> str:
     pullback_zone = (f"{float(pullback_low):.2f}–{float(pullback_high):.2f}"
                      if isinstance(pullback_low, (int, float)) and isinstance(pullback_high, (int, float))
                      else "尚未形成有效重疊區")
-    if state in {"WAIT_RETEST", "WAIT_PULLBACK_CONFIRMATION"}:
+    if state == "PULLBACK_BREACH_PENDING_CLOSE":
+        lines.extend([
+            "原因：即時價格已跌穿原回踩防守位，但15分鐘K棒尚未收盤。",
+            "現在：暫停這個回踩機會，不接下跌中的價格。",
+            "收盤後：若仍在失效價下方，正式取消；若重新站回，才重新評估。",
+        ])
+    elif state in {"WAIT_RETEST", "WAIT_PULLBACK_CONFIRMATION"}:
         distance = (max(0.0, current - float(setup.get("retestZoneHigh") or current))
                     if direction == "LONG" else
                     max(0.0, float(setup.get("retestZoneLow") or current) - current))

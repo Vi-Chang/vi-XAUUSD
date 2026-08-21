@@ -346,7 +346,9 @@ def build_normalized_state(*, generated_at: str, market_timestamp: str, current_
                       "既有持倉須依原始交易週期與停損計畫判斷，不自動推導平倉。")
         mistake = "把暫停新多單誤當成既有多單必須平倉，或只憑超賣搶反彈。"
     elif weakness.state in ("confirmed", "early_warning") and dims["marketRegime"] in ("bullish", "strong_bullish"):
-        script = "大週期偏多，但短線已轉弱；暫停新多單。若已有多單，優先處理風險。"
+        script = ("現在先不要開新多單：15分鐘走勢已轉弱。"
+                  "若你已持有多單，請依頁面列出的防守價與分批止盈區處理；"
+                  "等待15分鐘收盤重新站回確認位後，系統才會重新評估做多。")
         mistake = "把大週期偏多誤認為多單可以放心續抱或繼續追多。"
     elif dims["marketRegime"] in ("bullish", "strong_bullish") and dims["shortTermMomentum"] in ("pullback", "weakening"):
         script = (f"大週期維持多頭，但短線正在回調。重新站回{resistance_text}且收盤確認，"
