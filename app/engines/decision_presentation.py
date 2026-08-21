@@ -10,6 +10,37 @@ from app.engines.confidence import confidence_label, normalize_signal_score
 TAIPEI = ZoneInfo("Asia/Taipei")
 
 
+def plain_trade_status(state: str, *, can_enter: bool = False) -> str:
+    """Translate engine lifecycle states into an unambiguous user action."""
+    value = str(state or "WAIT")
+    if can_enter or value.endswith("READY") or value.startswith("ENTRY_READY_"):
+        return "🟢 現在可以進場"
+    if value in {"MISSED_ENTRY", "MISS_ENTRY"}:
+        return "🔴 這個進場點已經錯過，不要追價"
+    if value in {"EXPIRED", "SETUP_EXPIRED", "INVALIDATED", "NO_ENTRY", "NO_SETUP"}:
+        return "⚪ 目前沒有適合的進場機會"
+    return "🟡 現在先不要進場"
+
+
+def _plain_lifecycle(state: str) -> str:
+    return {
+        "WAIT_CONFIRMATION": "還不能進場，正在等確認",
+        "WAIT_BREAKOUT_CONFIRMATION": "等 15 分鐘 K 棒收盤突破後才能進場",
+        "BREAKOUT_CONFIRMED": "突破已由收盤確認，正在檢查進場位置",
+        "WAIT_RETEST": "突破已確認，但目前偏離合理位置，等待回踩",
+        "CONFIRMED_WAIT_RETEST": "突破已確認，但目前偏離合理位置，等待回踩",
+        "ENTRY_READY": "可以進場",
+        "ENTRY_READY_BREAKOUT": "突破進場條件成立",
+        "ENTRY_READY_RETEST": "回踩進場條件成立",
+        "MISSED_ENTRY": "進場點已錯過，現在不要追價",
+        "MISS_ENTRY": "進場點已錯過，現在不要追價",
+        "EXPIRED": "原本的進場條件已失效，已重新計算",
+        "SETUP_EXPIRED": "原本的進場條件已失效，已重新計算",
+        "INVALIDATED": "原本判斷已失效，等待新的機會",
+        "NO_ENTRY": "目前沒有合格的進場機會",
+    }.get(state, "等待新的市場條件")
+
+
 def build_decision_presentation(event: dict) -> dict:
     state = str(event.get("currentState") or event.get("state") or "WAIT")
     direction = str(event.get("direction") or "NONE")
@@ -90,17 +121,16 @@ def format_decision_message(event: dict) -> str:
     state = str(event.get("currentState") or "WAIT")
     score = normalize_signal_score(event.get("signalScore"))
     score_text = str(score) if score is not None else "無有效分數"
+    headline = plain_trade_status(state, can_enter=bool(event.get("canEnter")))
     lines = [
-        view["title"],
-        f"目前動作：{view['currentAction']}",
+        "【XAUUSD 現在怎麼做】",
+        headline,
         f"現價：{price:.2f}",
+        f"市場方向：{view['title']}",
+        f"原因：{event.get('blockedReason') or view['missingCondition'] or event.get('transitionReason') or view['currentAction']}",
         f"訊號信心：{confidence_label(score)}（{score_text}）",
-        f"交易狀態：{event.get('tradeStatus') or 'WAIT_CONFIRMATION'}",
-        f"進場許可：{'可以考慮進場' if event.get('canEnter') else '尚不可進場'}",
         f"最新已收盤 15M：{closed_price}（{closed_time}，UTC+8）",
     ]
-    if event.get("blockedReason"):
-        lines.append(f"阻擋原因：{event['blockedReason']}")
     reasons = list(event.get("transitionReasons") or [])
     if not reasons and event.get("transitionReason"):
         reasons = [str(event["transitionReason"])]
@@ -122,9 +152,11 @@ def format_decision_message(event: dict) -> str:
         ])
     else:
         lines.extend([
-            f"尚未成立：{view['missingCondition'] or event.get('flatAction') or '等待確認'}",
             f"下一個觸發：{view['nextTrigger']}",
-            f"條件失效價：{view['invalidation']}",
+            "確認方式：不是瞬間碰到價格，而是等這根 15 分鐘 K 棒真正收完。",
+            "條件成立後：系統會重新檢查進場區、追價上限與風控，符合才通知可以進場。",
+            f"判斷取消：{view['invalidation']}（碰到這裡代表原本方向不再成立）",
+            "下一步：條件成立、失效或出現新的回踩機會時，系統會主動通知。",
         ])
     lines.append(f"資料時間：{data_time}（UTC+8）")
     return "\n".join(lines)
@@ -166,7 +198,6 @@ def _format_breakout_setup_event(event: dict, breakout_event: dict) -> str:
     setup = breakout_event.get("setup") or {}
     state = str(breakout_event.get("currentState") or "")
     direction = str(setup.get("direction") or "LONG")
-    side = "多單" if direction == "LONG" else "空單"
     trigger = float(setup.get("breakoutTrigger") or 0)
     zone = f"{float(setup.get('entryZoneLow') or 0):.2f}–{float(setup.get('entryZoneHigh') or 0):.2f}"
     retest = f"{float(setup.get('retestZoneLow') or 0):.2f}–{float(setup.get('retestZoneHigh') or 0):.2f}"
@@ -178,7 +209,8 @@ def _format_breakout_setup_event(event: dict, breakout_event: dict) -> str:
                      float(setup.get("entryZoneHigh") or trigger))
         rr = reward / risk if risk else 0
         return "\n".join([
-            f"🟢【{side}進場條件成立｜可以進場】",
+            "🟢🟢【進場條件成立】",
+            f"方向：{'做多' if direction == 'LONG' else '做空'}",
             f"劇本：{setup.get('setupId')}",
             f"進場類型：{entry_type}",
             f"建議進場區：{zone}",
@@ -188,27 +220,63 @@ def _format_breakout_setup_event(event: dict, breakout_event: dict) -> str:
             f"TP2：{float(setup.get('tp2') or 0):.2f}",
             f"TP3：{float(setup.get('tp3') or 0):.2f}",
             f"賺賠比：{rr:.2f}",
+            "目前狀態：可以進場",
             f"條件失效：15M 收盤反向越過 {float(setup.get('stopPrice') or 0):.2f}",
             f"資料時間：{_local_time(str(event.get('calculatedAt') or ''))}（UTC+8）",
         ])
-    titles = {
-        "WAIT_BREAKOUT_CONFIRMATION": f"🟡【{side}延續劇本建立｜等待收盤確認】",
-        "BREAKOUT_CONFIRMED": f"🟡【{side}突破已確認｜評估進場位置】",
-        "WAIT_RETEST": f"🟡【{side}延續｜等待合理進場】",
-        "EXPIRED": "🟠【交易劇本已到期】",
-        "INVALIDATED": "🟠【交易劇本已失效】",
-    }
+    current = float(event.get("currentPrice") or 0)
+    max_chase = float(setup.get("maxChasePrice") or 0)
+    verb = "站上" if direction == "LONG" else "跌破"
+    breakout_zone = zone
+    next_setup = next((item for item in reversed(event.get("breakoutSetups") or [])
+                       if item.get("setupId") != setup.get("setupId")
+                       and item.get("direction") == direction
+                       and item.get("status") == "WAIT_BREAKOUT_CONFIRMATION"), None)
+    if state in {"EXPIRED", "SETUP_EXPIRED", "INVALIDATED"}:
+        lifecycle_text = ("原本判斷已失效，等待新的機會" if state == "INVALIDATED"
+                          else "原本的進場條件已失效，已重新計算")
+        lines = ["🔄【進場條件已更新】",
+                 plain_trade_status(state),
+                 lifecycle_text,
+                 f"舊條件：15 分鐘 K 棒收盤{verb} {trigger:.2f}，現在已不再使用。"]
+        if next_setup:
+            next_trigger = float(next_setup.get("breakoutTrigger") or 0)
+            lines.append(f"新條件：15 分鐘 K 棒收盤{verb} {next_trigger:.2f}。")
+        else:
+            lines.append("新條件：市場結構正在重新計算，形成後會再通知。")
+        lines.extend(["原因：市場結構已改變，舊條件不再適用。",
+                      "下一步：等待新的突破或回踩機會，現在不要追價。",
+                      f"資料時間：{_local_time(str(event.get('calculatedAt') or ''))}（UTC+8）"])
+        return "\n".join(lines)
     lines = [
-        titles.get(state, "🟡【交易劇本更新】"),
-        f"劇本：{setup.get('setupId')}",
-        f"突破門檻：15M 收盤{'站上' if direction == 'LONG' else '跌破'} {trigger:.2f}",
-        f"目前狀態：{state}",
+        "🟡【XAUUSD｜現在先不要進場】",
+        f"現價：{current:.2f}",
+        f"目前情況：{_plain_lifecycle(state)}。",
     ]
     if state == "WAIT_RETEST":
-        lines.extend([f"回踩進場區：{retest}", "目前動作：等待回踩確認，尚不可進場。"])
+        distance = (max(0.0, current - float(setup.get("retestZoneHigh") or current))
+                    if direction == "LONG" else
+                    max(0.0, float(setup.get("retestZoneLow") or current) - current))
+        lines.extend([
+            f"原因：目前價格已離合理回踩區約 {distance:.2f}，所以現在不要追。",
+            "↩️ 回踩進場",
+            f"等待價格回到 {retest}，並由 15 分鐘 K 棒確認守住。",
+            f"符合後可觀察的進場範圍：{breakout_zone}。",
+        ])
     else:
-        lines.append(f"最大追價界線：{float(setup.get('maxChasePrice') or 0):.2f}")
-    lines.append(f"資料時間：{_local_time(str(event.get('calculatedAt') or ''))}（UTC+8）")
+        lines.extend([
+            "🚀 突破進場",
+            f"正在等：15 分鐘 K 棒「收盤」{verb} {trigger:.2f}，不是盤中瞬間碰到。",
+            f"確認後可接受進場範圍：{breakout_zone}。",
+            (f"超過 {max_chase:.2f}：不要追價，系統會改找回踩機會。"
+             if max_chase else "若突破後離合理進場區太遠：不要追價，改等回踩。"),
+            (f"目前還差 {abs(trigger-current):.2f} 才到確認價；還沒到不代表錯過。"),
+        ])
+    lines.extend([
+        f"判斷取消：15 分鐘 K 棒反向越過 {float(setup.get('stopPrice') or 0):.2f}，代表原本判斷不成立。",
+        "下一步：可以進場、失效或出現回踩機會時，系統會主動通知。",
+        f"資料時間：{_local_time(str(event.get('calculatedAt') or ''))}（UTC+8）",
+    ])
     return "\n".join(lines)
 
 
@@ -267,6 +335,7 @@ def _format_management_plan(event: dict, plan: dict) -> str:
                    "TP2" if "TAKE_PROFIT_2" not in completed else "TP3／移動止盈")
     return "\n".join([
         f"🔵【{side}持倉管理｜下一目標{next_target}】",
+        f"若你持有{side}，可依下列條件管理；系統不假設你已經進場。",
         f"現價：{float(event.get('currentPrice') or 0):.2f}",
         f"參考進場區：{float(plan['entryZoneLow']):.2f}–{float(plan['entryZoneHigh']):.2f}",
         f"目前浮盈／風險倍數：{float(plan.get('currentR') or 0):.2f}R",

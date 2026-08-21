@@ -144,7 +144,7 @@ def test_telegram_message_uses_plain_chinese_not_internal_only():
     )
     message = format_telegram_event(events[-1])
     assert "行情偏多" in message
-    assert "目前動作" in message
+    assert "現在先不要進場" in message
     assert "資料時間" in message
 
 
@@ -159,8 +159,8 @@ def test_watch_telegram_is_yellow_and_explicitly_forbids_entry():
         "cancelCondition": "15M 收盤跌破 4520.00",
     }
     message = format_telegram_event(event)
-    assert message.startswith("🟡【偏多等待確認｜尚不可進場】")
-    assert "目前動作：等待，尚不可進場，請勿追價。" in message
+    assert message.startswith("【XAUUSD 現在怎麼做】")
+    assert "🟡 現在先不要進場" in message
     assert "最新已收盤 15M：4530.00" in message
     assert "下一個觸發：等 15 分鐘收盤站上 4532.51" in message
 
@@ -175,7 +175,8 @@ def test_ready_telegram_has_complete_entry_and_risk_plan():
         "targets": [4540, 4550], "cancelCondition": "15M 收盤跌破 4520",
     }
     message = format_telegram_event(event)
-    assert message.startswith("🟢【多單進場條件成立】")
+    assert message.startswith("【XAUUSD 現在怎麼做】")
+    assert "🟢 現在可以進場" in message
     assert "建議進場區間：4527–4529" in message
     assert "防守價：4520" in message
     assert "分批止盈價：4540／4550" in message

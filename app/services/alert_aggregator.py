@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import hashlib
 
+ALERT_PRIORITY = {"ENTRY_READY": 50, "POSITION_MANAGEMENT": 40,
+                  "MISSED_ENTRY": 30, "SCENARIO_UPDATED": 20, "WAIT": 10}
+
 
 def alert_category(event: dict) -> str:
     if event.get("tradePlanId"):
@@ -14,6 +17,12 @@ def alert_category(event: dict) -> str:
         return "ENTRY_READY"
     if state.endswith("MANAGE"):
         return "POSITION_MANAGEMENT"
+    if state in {"MISSED_ENTRY", "MISS_ENTRY"}:
+        return "MISSED_ENTRY"
+    if state in {"EXPIRED", "SETUP_EXPIRED", "INVALIDATED"}:
+        return "SCENARIO_UPDATED"
+    if state.endswith("WATCH") or state.startswith("WAIT"):
+        return "WAIT"
     return state
 
 
@@ -30,6 +39,7 @@ def semantic_key(event: dict) -> str:
             str(event.get("symbol") or "XAUUSD"), str(event.get("setupId") or ""),
             str(event.get("direction") or "NONE"), str(event.get("currentState") or ""),
             str(event.get("triggerLevel") or ""),
+            str(event.get("decisionBasisCandleCloseTime") or event.get("candleCloseTime") or ""),
             f"{zone.get('low', '')}:{zone.get('high', '')}",
             str(event.get("blockedReason") or ""), str(event.get("event_type") or ""),
         ))
@@ -58,21 +68,26 @@ def aggregate_signal_facts(symbol: str, events: list[dict]) -> list[dict]:
 
     Raw events remain available as ``signalFacts`` for audit and UI evidence.
     """
-    groups: dict[str, list[dict]] = {}
+    # A single evaluation may invalidate an old scenario and create a new one.
+    # Users need one consolidated action, not a burst of lifecycle messages.
+    cycles: dict[str, list[dict]] = {}
     for event in events:
         enriched = {**event, "symbol": symbol,
                     "timeframe": str(event.get("timeframe") or "15M")}
         enriched["alertCategory"] = alert_category(enriched)
-        key = semantic_key(enriched)
-        groups.setdefault(key, []).append(enriched)
+        cycle = str(enriched.get("evaluationCycleId") or
+                    f"{enriched.get('dataVersion', 0)}:{enriched.get('calculatedAt', '')}")
+        cycles.setdefault(cycle, []).append(enriched)
     aggregated = []
-    for key, facts in groups.items():
-        representative = dict(facts[-1])
+    for cycle, facts in cycles.items():
+        representative = dict(max(
+            enumerate(facts),
+            key=lambda pair: (ALERT_PRIORITY.get(alert_category(pair[1]), 15), pair[0]),
+        )[1])
+        key = semantic_key(representative)
         reasons = list(dict.fromkeys(
             str(f.get("transitionReason") or f.get("triggerReason") or "")
             for f in facts if f.get("transitionReason") or f.get("triggerReason")))
-        cycle = str(representative.get("evaluationCycleId") or
-                    f"{representative.get('dataVersion', 0)}:{representative.get('calculatedAt', '')}")
         event_id = (str(representative.get("eventId")) if len(facts) == 1
                     else hashlib.sha256(f"{key}|{cycle}".encode()).hexdigest()[:32])
         representative.update({
