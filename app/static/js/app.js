@@ -603,7 +603,12 @@ function renderEntryPlan(plan) {
   $("entry-plan-status").textContent = status[displayStatus] || displayStatus;
   $("entry-plan-direction").textContent = direction;
   $("entry-plan-direction").className = "chip " + (plan.direction === "LONG" ? "good" : plan.direction === "SHORT" ? "bad" : "info");
-  $("entry-plan-missing").textContent = plan.missing_condition || (displayStatus === "ENTRY_TRIGGERED" ? "進場條件已完成" : "");
+  const qualityText = plan.entry_quality_score != null
+    ? `短線進場品質 ${Number(plan.entry_quality_score).toFixed(0)}/100（不是勝率）` : "";
+  $("entry-plan-missing").textContent = [
+    plan.missing_condition || (displayStatus === "ENTRY_TRIGGERED" ? "進場條件已完成" : ""),
+    qualityText,
+  ].filter(Boolean).join("；");
   const price = (value) => value == null ? "–" : Number(value).toFixed(2);
   $("entry-plan-zone").textContent = plan.zone_low == null || plan.zone_high == null ? "–" : `${price(plan.zone_low)}–${price(plan.zone_high)}`;
   $("entry-plan-entry").textContent = price(plan.suggested_entry);

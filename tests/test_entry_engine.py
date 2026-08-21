@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 
@@ -121,7 +121,7 @@ def test_long_entry_is_symmetric_and_requires_closed_bullish_trigger():
     triggered = evaluate_entry_engine(
         data("failed_breakdown", direction="LONG", price=100.2, closed_price=100.2),
         watch.plan,
-        m15_closed=bullish,
+        m5_closed=bullish,
         now=NOW,
     )
     assert triggered.plan.status == "ENTRY_TRIGGERED"
@@ -209,3 +209,57 @@ def test_executable_plan_with_missing_condition_fails_closed():
         missing_condition="尚缺反轉 K 線",
     )
     assert validate_executable_plan(plan) == (False, "進場條件仍有缺項")
+
+
+def test_15m_reversal_cannot_replace_required_closed_5m_trigger():
+    watch = evaluate_entry_engine(
+        data("failed_breakdown", direction="LONG", price=100), now=NOW
+    ).plan
+    bullish = frame((100, 100.5, 99.5, 100), (99.8, 100.3, 99.7, 100.2))
+    result = evaluate_entry_engine(
+        data("failed_breakdown", direction="LONG", price=100.2), watch,
+        m15_closed=bullish, now=NOW)
+    assert result.plan.status == "SETUP_WATCH"
+    assert result.should_notify is False
+
+
+def test_triggered_entry_has_traceable_quality_dimensions_not_probability():
+    watch = evaluate_entry_engine(data("confirmed_breakdown"), now=NOW).plan
+    bearish = frame((100, 100.5, 99.5, 100), (100.2, 100.3, 99.7, 99.8))
+    triggered = evaluate_entry_engine(
+        data("confirmed_breakdown"), watch, m5_closed=bearish, now=NOW)
+    assert triggered.plan.status == "ENTRY_TRIGGERED"
+    assert triggered.plan.entry_quality_score >= 70
+    assert set(triggered.plan.entry_quality_breakdown or {}) == {
+        "structure", "location", "momentum", "risk_reward", "execution", "freshness"}
+    assert "不是勝率" in triggered.message
+
+
+def test_confirmed_5m_too_far_from_zone_is_wait_retest_not_entry():
+    watch = evaluate_entry_engine(
+        data("confirmed_breakdown", tp1=90, tp2=85), now=NOW).plan
+    chased = frame((100, 100.5, 99.5, 100), (100.2, 100.3, 95.5, 96.0))
+    result = evaluate_entry_engine(
+        data("confirmed_breakdown", tp1=90, tp2=85), watch,
+        m5_closed=chased, now=NOW)
+    assert result.plan.status == "ENTRY_READY"
+    assert "超過最大追價距離" in result.plan.missing_condition
+
+
+def test_setup_expiry_is_capped_at_four_15m_bars():
+    watch = evaluate_entry_engine(data("confirmed_breakdown"), now=NOW).plan
+    assert watch.expiry_bars == 4
+    assert datetime.fromisoformat(watch.expires_at) - NOW == timedelta(minutes=60)
+
+
+def test_low_quality_from_poor_location_and_execution_cost_blocks_entry():
+    source = data("confirmed_breakdown", tp1=90, tp2=85)
+    watch = evaluate_entry_engine(source, now=NOW).plan
+    source["current_price"] = {"spread": 2.0}
+    weak_location = frame(
+        (100, 100.5, 99.5, 100), (100.2, 100.3, 96.3, 96.8))
+    result = evaluate_entry_engine(
+        source, watch, m5_closed=weak_location, now=NOW)
+    assert result.plan.status == "ENTRY_READY"
+    assert result.plan.entry_quality_score < 70
+    assert "短線進場品質" in result.plan.missing_condition

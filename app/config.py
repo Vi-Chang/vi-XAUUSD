@@ -175,6 +175,14 @@ class Settings(BaseSettings):
     tactical_short_chase_atr_mult: float = 1.5
     tactical_setup_expiry_bars: int = 4
     tactical_min_rr: float = 1.5
+    short_entry_min_quality_score: int = 70
+    short_entry_max_chase_atr_mult: float = 0.35
+    short_entry_expiry_min_bars: int = 2
+    short_entry_expiry_max_bars: int = 4
+    short_entry_quality_weights: dict[str, float] = {
+        "structure": 0.25, "location": 0.25, "momentum": 0.20,
+        "risk_reward": 0.15, "execution": 0.10, "freshness": 0.05,
+    }
     no_chase_near_level_atr_mult: float = 0.75  # 0.5~1.0 之間,預設 0.75
     opposing_zone_hard_gate_atr_mult: float = 0.75
     breakout_close_buffer_atr_mult: float = 0.10
