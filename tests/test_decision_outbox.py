@@ -256,7 +256,7 @@ async def test_same_cycle_three_facts_make_one_telegram_call():
     base["normalized_analysis"]["lastClosedCandleTimestamp"] = "2026-08-20T15:34:00+00:00"
     facts = []
     reasons = [
-        ("EXIT_ZONE_REACHED", "價格進入條件式出場區"),
+        ("EXIT_ZONE_REACHED", "價格已到達本次計畫的明確分批處理價區"),
         ("EXIT_NOW", "反向收盤突破防守價"),
         ("BULLISH_CONTINUATION", "連續收盤站穩突破位，多方延續"),
     ]

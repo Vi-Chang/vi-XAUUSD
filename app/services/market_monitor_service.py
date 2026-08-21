@@ -19,6 +19,7 @@ from app.engines.breakout_setup_manager import (
     evaluate_breakout_setups,
     migrate_legacy_breakout_setup,
 )
+from app.engines.data_health_gate import evaluate_data_health
 from app.engines.hypothetical_exit_advisor import (
     build_hypothetical_exit_plans,
     evaluate_hypothetical_exits,
@@ -68,7 +69,12 @@ def evaluate_market_monitors(
     indicators: dict | None = None
 ) -> dict:
     symbol = str(data.get("symbol") or "XAUUSD")
-    normalized = data.get("normalized_analysis") or {}
+    normalized = dict(data.get("normalized_analysis") or {})
+    health = evaluate_data_health(data)
+    if not health["healthy"]:
+        normalized["marketDataStatus"] = "STALE"
+        normalized["dataHealthReason"] = "；".join(health["reasons"])
+        data = {**data, "normalized_analysis": normalized, "data_health": health}
     indicators = indicators or {}
     exit_state, exit_events = evaluate_hypothetical_exits(
         data, _load(symbol, "hypothetical_exit")
@@ -185,8 +191,15 @@ def evaluate_live_quote_state(
     normalized = dict(data.get("normalized_analysis") or {})
     normalized["currentPrice"] = price
     normalized["marketDataTimestamp"] = quote_time
+    candidate = {**data, "normalized_analysis": normalized,
+                 "current_price": {**(data.get("current_price") or {}),
+                                   "mid": price, "last_update": quote_time}}
+    health = evaluate_data_health(candidate)
+    if not health["healthy"]:
+        normalized["marketDataStatus"] = "STALE"
+        normalized["dataHealthReason"] = "；".join(health["reasons"])
     current, events = evaluate_unified_decision(
-        {**data, "normalized_analysis": normalized}, _load(symbol, "final_decision")
+        {**candidate, "normalized_analysis": normalized}, _load(symbol, "final_decision")
     )
     from app.services.decision_outbox import persist_decision_events
 

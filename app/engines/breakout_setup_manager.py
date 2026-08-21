@@ -222,11 +222,22 @@ def _evaluate_setup(setup: dict, data: dict) -> tuple[dict, list[dict]]:
                           blockedReason=f"15M 收盤已越過回踩失效價 {invalid:.2f}")
             events.append(_event(result, old, result["status"], "PULLBACK_INVALIDATED"))
             return result, events
+        intrabar_breached = price < invalid if direction == "LONG" else price > invalid
+        if intrabar_breached:
+            result.update(
+                status="PULLBACK_BREACH_PENDING_CLOSE",
+                blockedReason=(f"即時價格已越過回踩失效價 {invalid:.2f}，但15M尚未收盤；"
+                               "暫停這個回踩機會，等待收盤判定"),
+            )
+            if old != result["status"]:
+                events.append(_event(result, old, result["status"],
+                                     "PULLBACK_BREACH_PENDING_CLOSE"))
+            return result, events
     confirmed = isinstance(closed, (int, float)) and (
         (direction == "LONG" and float(closed) > trigger)
         or (direction == "SHORT" and float(closed) < trigger))
     waiting = old in {"WAIT_BREAKOUT_CONFIRMATION", "WAIT_BREAKOUT_OR_PULLBACK",
-                      "WAIT_PULLBACK_CONFIRMATION"}
+                      "WAIT_PULLBACK_CONFIRMATION", "PULLBACK_BREACH_PENDING_CLOSE"}
     pullback_ready = False
     evidence: list[str] = []
     if waiting and has_pullback and isinstance(closed, (int, float)):

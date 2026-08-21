@@ -637,6 +637,7 @@ function renderBreakoutSetupLedger(manager) {
     ENTRY_READY_RETEST: "回踩進場成立", MISSED_ENTRY: "已錯過",
     BREAKOUT_ENTRY_READY: "突破進場成立", PULLBACK_ENTRY_READY: "回踩進場成立",
     PULLBACK_INVALIDATED: "回踩劇本已取消",
+    PULLBACK_BREACH_PENDING_CLOSE: "盤中跌穿，等待收盤判定",
     INVALIDATED: "已失效", EXPIRED: "已到期",
   };
   const ready = setups.find((s) => String(s.status).includes("ENTRY_READY"));

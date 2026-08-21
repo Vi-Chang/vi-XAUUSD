@@ -68,6 +68,20 @@ def test_pullback_close_below_invalidation_cancels_setup():
     assert [event["event_type"] for event in events] == ["PULLBACK_INVALIDATED"]
 
 
+def test_intrabar_pullback_breach_pauses_entry_until_candle_closes():
+    state, _ = advance(snapshot())
+    invalidation = state["activeSetup"]["pullbackInvalidationPrice"]
+    state, events = advance(snapshot(price=invalidation - 1, closed=invalidation + 2,
+        at="2026-08-21T10:01:00+00:00"), state)
+    setup = state["activeSetup"]
+    assert setup["status"] == "PULLBACK_BREACH_PENDING_CLOSE"
+    assert "15M尚未收盤" in setup["blockedReason"]
+    assert [event["event_type"] for event in events] == ["PULLBACK_BREACH_PENDING_CLOSE"]
+    _, repeated = advance(snapshot(price=invalidation - 2, closed=invalidation + 2,
+        at="2026-08-21T10:02:00+00:00"), state)
+    assert repeated == []
+
+
 def test_closed_breakout_inside_chase_is_ready():
     state, _ = advance(snapshot())
     state, events = advance(snapshot(price=4568.2, closed=4568.0,

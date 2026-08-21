@@ -43,6 +43,29 @@ def test_source_divergence_is_not_tradable():
     assert evaluate_data_health(data)["status"] == "SOURCE_DIVERGENCE"
 
 
+def test_quote_and_closed_candle_large_gap_waits_for_sync():
+    data = _base(90)
+    data["normalized_analysis"].update({
+        "lastClosedCandlePrice": 4602.83,
+        "atr15": 11.97,
+    })
+    data["current_price"]["mid"] = 4582.84
+    health = evaluate_data_health(data)
+    assert health["status"] == "QUOTE_CANDLE_DIVERGENCE"
+    assert health["healthy"] is False
+    assert "等待下一根K棒更新" in health["reasons"][0]
+    snapshot = build_decision_snapshot(data)
+    assert snapshot["state"] == "DATA_STALE"
+    assert snapshot["canEnter"] is False
+
+
+def test_normal_intrabar_move_does_not_trigger_sync_guard():
+    data = _base()
+    data["normalized_analysis"].update({"lastClosedCandlePrice": 4600, "atr15": 12})
+    data["current_price"]["mid"] = 4592
+    assert evaluate_data_health(data)["status"] == "HEALTHY"
+
+
 def test_snapshot_is_stable_for_quote_only_refresh():
     first = build_decision_snapshot(_base())
     data = _base()
