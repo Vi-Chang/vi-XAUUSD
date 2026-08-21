@@ -181,6 +181,35 @@ def test_ready_telegram_has_complete_entry_and_risk_plan():
     assert "分批止盈價：4540／4550" in message
 
 
+@pytest.mark.parametrize(("direction", "kind", "title", "name", "invalidation"), [
+    ("LONG", "SHALLOW_PULLBACK_LONG", "多單進場條件成立", "淺回踩續漲", "收盤跌破 4520.00"),
+    ("SHORT", "SHALLOW_PULLBACK_SHORT", "空單進場條件成立", "淺反彈續跌", "收盤站上 4550.00"),
+])
+def test_continuation_telegram_is_directionally_symmetric(
+        direction, kind, title, name, invalidation):
+    setup = {
+        "setupId": f"tc-{direction.lower()}", "direction": direction, "type": kind,
+        "entryZoneLow": 4530, "entryZoneHigh": 4532, "suggestedEntry": 4531,
+        "stopPrice": 4520 if direction == "LONG" else 4550,
+        "tp1": 4545 if direction == "LONG" else 4515,
+        "tp2": 4560 if direction == "LONG" else 4500,
+        "tp3": 4580 if direction == "LONG" else 4480,
+        "riskReward": 1.5, "signalScore": 82,
+    }
+    event = {
+        "currentState": f"{direction}_READY", "currentPrice": 4531,
+        "calculatedAt": "2026-08-21T12:30:00+00:00",
+        "trendContinuationEvent": {
+            "setupId": setup["setupId"], "direction": direction, "setup": setup,
+        },
+    }
+    message = format_telegram_event(event)
+    assert title in message
+    assert f"劇本：{name}" in message
+    assert invalidation in message
+    assert "TP1：" in message and "TP2：" in message and "TP3：" in message
+
+
 def test_tp_and_stop_telegram_are_actionable_and_semantically_distinct():
     base = {
         "currentState": "LONG_MANAGE", "currentPrice": 4510,

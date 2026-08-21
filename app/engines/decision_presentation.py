@@ -132,10 +132,22 @@ def format_decision_message(event: dict) -> str:
 
 def _format_trend_continuation_event(event: dict, continuation_event: dict) -> str:
     setup = continuation_event.get("setup") or {}
-    names = {"SHALLOW_PULLBACK_LONG": "淺回踩", "BREAKOUT_RETEST_LONG": "突破回踩",
-             "BULL_FLAG_CONTINUATION": "旗形突破", "MOMENTUM_CONTINUATION": "動能延續（風險較高）"}
+    direction = str(setup.get("direction") or continuation_event.get("direction") or "LONG")
+    is_long = direction == "LONG"
+    side = "多單" if is_long else "空單"
+    close_action = "跌破" if is_long else "站上"
+    names = {
+        "SHALLOW_PULLBACK_LONG": "淺回踩續漲",
+        "BREAKOUT_RETEST_LONG": "突破回踩做多",
+        "BULL_FLAG_CONTINUATION": "旗形突破做多",
+        "MOMENTUM_CONTINUATION": "多方動能延續（風險較高）",
+        "SHALLOW_PULLBACK_SHORT": "淺反彈續跌",
+        "BREAKOUT_RETEST_SHORT": "跌破回測做空",
+        "BEAR_FLAG_CONTINUATION": "空方旗形跌破",
+        "MOMENTUM_CONTINUATION_SHORT": "空方動能延續（風險較高）",
+    }
     return "\n".join([
-        "🟢【多單進場條件成立｜可以進場】",
+        f"🟢【{side}進場條件成立｜可以進場】",
         f"劇本：{names.get(setup.get('type'), setup.get('type'))}",
         f"建議進場區：{float(setup.get('entryZoneLow') or 0):.2f}–{float(setup.get('entryZoneHigh') or 0):.2f}",
         f"現價：{float(event.get('currentPrice') or 0):.2f}",
@@ -145,7 +157,7 @@ def _format_trend_continuation_event(event: dict, continuation_event: dict) -> s
         f"TP3：{float(setup.get('tp3') or 0):.2f}",
         f"預估賺賠比：{float(setup.get('riskReward') or 0):.2f}",
         f"訊號信心：{int(setup.get('signalScore') or 0)}（不是勝率）",
-        f"條件失效：15M 收盤跌破 {float(setup.get('stopPrice') or 0):.2f}",
+        f"條件失效：15M 收盤{close_action} {float(setup.get('stopPrice') or 0):.2f}",
         f"資料時間：{_local_time(str(event.get('calculatedAt') or ''))}（UTC+8）",
     ])
 
