@@ -78,6 +78,10 @@ def backfill_decision_event_outcomes(db, *, now: datetime,
                 entry_price=entry, created_at=now, updated_at=now)
             db.add(row)
         row.initial_risk, row.transaction_cost = risk, cost
+        assistant = (event.payload or {}).get("decisionAssistant") or {}
+        row.setup_type = str(assistant.get("scenarioType") or "OTHER")
+        row.market_regime = str(assistant.get("regime") or "NO_EDGE")
+        row.entry_quality_score = assistant.get("entryQualityScore")
         row.horizons = horizon_values
         row.tp1_hit, row.stop_hit = tp1_hit, stop_hit
         row.max_favorable_r = round(favorable / risk, 3) if risk else None
@@ -112,16 +116,26 @@ def decision_event_performance(db, *, limit: int = 5000) -> dict:
         event = events.get(row.event_id)
         payload = event.payload if event else {}
         setup = (payload or {}).get("setup") or {}
-        setup_type = str(setup.get("type") or payload.get("setupType") or "OTHER")
-        bucket = by_setup.setdefault(setup_type, {"sample_size": 0, "net_r": [], "wins": 0})
+        setup_type = str(row.setup_type or setup.get("type") or payload.get("setupType") or "OTHER")
+        bucket = by_setup.setdefault(setup_type, {"sample_size": 0, "net_r": [], "wins": 0,
+                                                  "mfe": [], "mae": [], "false_breaks": 0})
         net_r = float((row.horizons.get("1h") or {}).get("net_r") or 0)
         bucket["sample_size"] += 1
         bucket["net_r"].append(net_r)
         bucket["wins"] += int(net_r > 0)
+        if row.max_favorable_r is not None:
+            bucket["mfe"].append(float(row.max_favorable_r))
+        if row.max_adverse_r is not None:
+            bucket["mae"].append(float(row.max_adverse_r))
+        bucket["false_breaks"] += int(row.classification == "STOPPED" and net_r < 0)
     setup_report = {name: {
         "sample_size": values["sample_size"],
         "win_rate_pct": round(100 * values["wins"] / values["sample_size"], 1),
         "average_net_r": round(sum(values["net_r"]) / values["sample_size"], 3),
+        "expectancy_r": round(sum(values["net_r"]) / values["sample_size"], 3),
+        "average_mfe_r": round(sum(values["mfe"]) / len(values["mfe"]), 3) if values["mfe"] else None,
+        "average_mae_r": round(sum(values["mae"]) / len(values["mae"]), 3) if values["mae"] else None,
+        "false_breakout_rate_pct": round(100 * values["false_breaks"] / values["sample_size"], 1),
         "calibration_ready": values["sample_size"] >= 30,
     } for name, values in by_setup.items()}
     return {"sample_size": len(rows), "settled_1h": len(settled),

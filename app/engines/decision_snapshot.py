@@ -21,13 +21,14 @@ def build_decision_snapshot(data: dict, *, risk_mode: str = "STANDARD") -> dict:
 
     settings = get_settings()
     final = data.get("final_decision_state") or {}
+    assistant = data.get("decision_assistant") or {}
     setup = _selected_setup(data)
     health = evaluate_data_health(data)
     decision = data.get("decision") or {}
     score = decision.get("signal_score", decision.get("evidence_score"))
     grade = get_confidence_grade(score)
-    state = str(final.get("state") or setup.get("status") or "WAIT")
-    can_enter = bool(decision.get("can_enter")) and ("READY" in state) and health["healthy"]
+    state = str(assistant.get("tradeState") or final.get("state") or setup.get("status") or "WAIT")
+    can_enter = bool(assistant.get("canEnter")) and health["healthy"]
     if not health["healthy"]:
         state, can_enter, action = "DATA_STALE", False, "DATA_UNAVAILABLE"
     elif can_enter:
@@ -44,20 +45,24 @@ def build_decision_snapshot(data: dict, *, risk_mode: str = "STANDARD") -> dict:
     decision_id = hashlib.sha256(raw.encode()).hexdigest()[:24]
     event = data.get("event_risk") or {}
     return {
-        "schemaVersion": "decision-snapshot-v2", "decisionId": decision_id,
+        "schemaVersion": "decision-snapshot-v3", "decisionId": decision_id,
         "symbol": data.get("symbol") or "XAUUSD", "setupId": setup_id,
         "setupVersion": setup.get("setupVersion") or "", "direction": setup.get("direction") or final.get("direction") or "NEUTRAL",
-        "marketType": (data.get("trend_continuation_engine") or {}).get("marketType") or "UNDEFINED",
+        "marketType": assistant.get("regime") or (data.get("trend_continuation_engine") or {}).get("marketType") or "UNDEFINED",
         "state": state, "action": action, "canEnter": can_enter,
         "signalScore": score, "confidenceGrade": None if grade == "U" else grade,
         "confidenceLabel": {"A": "A級（高信心）", "B": "B級（中高信心）",
                             "C": "C級（中低信心）", "D": "D級（低信心）"}.get(grade, "未評級"),
-        "setupQualityScore": setup.get("signalScore"), "tradeStatus": decision.get("trade_status") or state,
+        "setupQualityScore": assistant.get("entryQualityScore", setup.get("signalScore")),
+        "entryQualityGrade": assistant.get("entryQualityGrade"),
+        "tradeStatus": decision.get("trade_status") or state,
         "blockedReason": ("；".join(health["reasons"]) if not health["healthy"] else
                           decision.get("blocked_reason") or final.get("reason") or ""),
         "entryZone": {"low": setup.get("entryZoneLow"), "high": setup.get("entryZoneHigh")},
         "stopLoss": setup.get("stopPrice"), "targets": [setup.get("tp1"), setup.get("tp2"), setup.get("tp3")],
-        "riskReward": setup.get("riskReward"), "nextTrigger": final.get("next_trigger") or final.get("confirmation") or "等待新結構形成",
+        "riskReward": assistant.get("rewardRiskRatio", setup.get("riskReward")),
+        "actionSummary": assistant.get("actionSummary") or action,
+        "nextTrigger": assistant.get("nextTrigger") or final.get("next_trigger") or final.get("confirmation") or "等待新結構形成",
         "currentPrice": health["currentPrice"], "marketDataTimestamp": health["marketDataTimestamp"],
         "quoteTime": health["quoteTime"], "calculatedAt": data.get("timestamp_utc") or health["evaluatedAt"],
         "dataHealth": health, "riskMode": risk_mode.upper(),
@@ -66,5 +71,7 @@ def build_decision_snapshot(data: dict, *, risk_mode: str = "STANDARD") -> dict:
         "eventRisk": event.get("risk_level") or event.get("status") or "UNKNOWN",
         "eventDataStatus": event.get("data_status") or "UNKNOWN",
         "positionMode": "TRACKED" if (data.get("position_management") or {}).get("has_position") else "FLAT",
-        "reasons": setup.get("passedReasons") or [], "missingConditions": setup.get("missingConditions") or [],
+        "reasons": assistant.get("regimeReasons") or setup.get("passedReasons") or [],
+        "missingConditions": assistant.get("noTradeReasons") or setup.get("missingConditions") or [],
+        "decisionAssistant": assistant,
     }

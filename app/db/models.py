@@ -341,6 +341,10 @@ class DecisionEvent(Base):
     candle_close_time: Mapped[str] = mapped_column(String(64), default="")
     calculated_at: Mapped[str] = mapped_column(String(64), default="")
     data_version: Mapped[int] = mapped_column(Integer, default=0)
+    scenario_type: Mapped[str] = mapped_column(String(40), default="")
+    scenario_version: Mapped[int] = mapped_column(Integer, default=1)
+    entry_quality_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    expected_rr: Mapped[float | None] = mapped_column(Float, nullable=True)
     payload: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
@@ -384,6 +388,9 @@ class DecisionEventOutcome(Base):
     max_favorable_r: Mapped[float | None] = mapped_column(Float, nullable=True)
     max_adverse_r: Mapped[float | None] = mapped_column(Float, nullable=True)
     classification: Mapped[str] = mapped_column(String(24), default="PENDING")
+    setup_type: Mapped[str] = mapped_column(String(40), default="OTHER")
+    market_regime: Mapped[str] = mapped_column(String(40), default="NO_EDGE")
+    entry_quality_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
     evaluated_through: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

@@ -120,6 +120,14 @@ def persist_decision_events(symbol: str, events: list[dict]) -> list[dict]:
                     candle_close_time=str(payload.get("candleCloseTime") or ""),
                     calculated_at=str(payload.get("calculatedAt") or ""),
                     data_version=int(payload.get("dataVersion") or 0),
+                    scenario_type=str((payload.get("decisionAssistant") or {}).get(
+                        "scenarioType") or payload.get("setupType") or ""),
+                    scenario_version=int((payload.get("decisionAssistant") or {}).get(
+                        "scenarioVersion") or 1),
+                    entry_quality_score=(payload.get("decisionAssistant") or {}).get(
+                        "entryQualityScore"),
+                    expected_rr=(payload.get("decisionAssistant") or {}).get(
+                        "rewardRiskRatio"),
                     payload=payload,
                     created_at=now,
                 )

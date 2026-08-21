@@ -221,6 +221,15 @@ class Settings(BaseSettings):
     trend_short_flag_min_impulse_atr_mult: float = 1.35
     trend_short_setup_expiry_bars: int = 3
     trend_min_rr: float = 1.5
+    decision_assistant_min_rr: float = 1.5
+    decision_assistant_approaching_atr: float = 0.20
+    decision_assistant_missed_entry_atr: float = 0.70
+    decision_assistant_trigger_hysteresis_atr: float = 0.10
+    decision_assistant_min_price_delta: float = 0.50
+    long_breakout_threshold_atr: float = 0.10
+    short_breakout_threshold_atr: float = 0.12
+    long_pullback_threshold_atr: float = 0.70
+    short_pullback_threshold_atr: float = 0.60
     trend_overbought_penalty: int = 10
     no_chase_near_level_atr_mult: float = 0.75  # 0.5~1.0 之間,預設 0.75
     opposing_zone_hard_gate_atr_mult: float = 0.75

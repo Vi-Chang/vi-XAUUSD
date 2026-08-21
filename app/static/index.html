@@ -86,6 +86,19 @@
       <strong class="quick-action-title" id="quick-action-title">載入中…</strong>
       <p class="quick-action-why" id="quick-action-why"></p>
       <p class="calibration-note" id="calibration-note" hidden></p>
+      <div class="quick-decision-grid" id="quick-v3-grid" hidden>
+        <div><span>目前方向</span><b id="v3-direction">–</b></div>
+        <div><span>現在能不能進</span><b id="v3-can-enter">–</b></div>
+        <div><span>最佳進場區</span><b class="num" id="v3-entry-zone">–</b></div>
+        <div><span>失效位</span><b class="num" id="v3-invalidation">–</b></div>
+        <div><span>第一目標</span><b class="num" id="v3-target">–</b></div>
+        <div><span>訊號品質</span><b id="v3-quality">–</b></div>
+        <div><span>下一個觸發</span><b id="v3-trigger">–</b></div>
+      </div>
+      <details class="bias-details" id="v3-why" hidden>
+        <summary>為什麼？</summary>
+        <ul id="v3-why-list"></ul>
+      </details>
       <div class="quick-decision-grid">
         <div><span>即時價格／更新</span><b class="num" id="quick-live-price">–</b><small id="quick-live-time">–</small></div>
         <div><span>最新已收盤 15M</span><b class="num" id="quick-closed-price">–</b><small id="quick-closed-time">–</small></div>

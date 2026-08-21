@@ -20,6 +20,7 @@ from app.engines.breakout_setup_manager import (
     migrate_legacy_breakout_setup,
 )
 from app.engines.data_health_gate import evaluate_data_health
+from app.engines.decision_assistant import evaluate_decision_assistant
 from app.engines.hypothetical_exit_advisor import (
     build_hypothetical_exit_plans,
     evaluate_hypothetical_exits,
@@ -167,10 +168,19 @@ def evaluate_market_monitors(
         "trend_continuation_engine": {
             **continuation_state, "events": continuation_events},
     }
+    assistant_state, assistant_events = evaluate_decision_assistant(
+        {**data, **monitor_result}, latest_candle=latest_closed_15m,
+        previous=_load(symbol, "decision_assistant"))
+    _save(symbol, "decision_assistant", assistant_state)
+    monitor_result["decision_assistant"] = assistant_state
     final_input = {**data, **monitor_result}
     final_state, final_events = evaluate_unified_decision(
         final_input, _load(symbol, "final_decision")
     )
+    final_events.extend(assistant_events)
+    final_state["events"] = final_events
+    if assistant_events:
+        final_state["latest_event"] = assistant_events[-1]
     _save(
         symbol,
         "final_decision",

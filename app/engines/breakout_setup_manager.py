@@ -102,6 +102,7 @@ def build_breakout_setup(data: dict, *, direction: str, previous_setup_id: str =
                + timedelta(hours=2)).isoformat()
     return {
         "setupId": setup_id, "setupVersion": SETUP_VERSION,
+        "scenarioVersion": 1,
         "direction": direction, "createdAt": created,
         "breakoutTrigger": round(trigger, 2), "breakoutConfirmedAt": None,
         "confirmedCandleTime": None,
@@ -309,6 +310,7 @@ def evaluate_breakout_setups(data: dict, previous: dict | None = None) -> tuple[
         if created:
             if latest:
                 created["oldTrigger"] = latest["breakoutTrigger"]
+                created["scenarioVersion"] = int(latest.get("scenarioVersion") or 1) + 1
             setups.append(created)
             events.append(_event(created, "NONE", created["status"], "NEW_SETUP_CREATED"))
         elif error:

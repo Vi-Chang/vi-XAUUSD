@@ -79,6 +79,17 @@ def init_db() -> None:
             "can_enter": "BOOLEAN DEFAULT FALSE",
             "blocked_reason": "TEXT DEFAULT ''",
         },
+        "decision_events": {
+            "scenario_type": "VARCHAR(40) DEFAULT ''",
+            "scenario_version": "INTEGER DEFAULT 1",
+            "entry_quality_score": "INTEGER",
+            "expected_rr": "FLOAT",
+        },
+        "decision_event_outcomes": {
+            "setup_type": "VARCHAR(40) DEFAULT 'OTHER'",
+            "market_regime": "VARCHAR(40) DEFAULT 'NO_EDGE'",
+            "entry_quality_score": "INTEGER",
+        },
     }
     inspector = inspect(engine)
     with engine.begin() as conn:
