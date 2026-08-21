@@ -365,6 +365,15 @@ def test_privacy_version_stamped_end_to_end():
     assert pv.public_analysis(r.model_dump())["available"] is True
 
 
+def test_decision_assistant_is_in_position_free_public_allowlist():
+    from app.services import public_view as pv
+
+    assert "decision_assistant" in pv.PUBLIC_ALLOWLIST
+    assert not ({"position_management", "account", "pnl", "lot_size"}
+                & {"regime", "scenarioId", "actionSummary", "entryQualityScore",
+                   "rewardRiskRatio", "why"})
+
+
 # ── AI 送出的 user_payload 遞迴無私人 key(position-free 完整性)──
 
 def test_ai_user_payload_has_no_private_keys(monkeypatch):
