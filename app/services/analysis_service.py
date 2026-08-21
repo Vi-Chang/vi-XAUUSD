@@ -713,8 +713,8 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
         from app.services.decision_outbox import persist_decision_events
         from app.services.market_monitor_service import persist_final_decision_state
 
+        persist_final_decision_state(symbol, result.final_decision_state)
         result.final_decision_state["events"] = persist_decision_events(
             symbol, result.final_decision_state.get("events", []))
-        persist_final_decision_state(symbol, result.final_decision_state)
 
     return result

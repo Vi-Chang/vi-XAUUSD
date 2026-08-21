@@ -8,7 +8,12 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import and_, or_, select
 
 from app.config import get_settings
-from app.db.models import DecisionEvent, MarketMonitorState, TelegramNotification
+from app.db.models import (
+    CurrentFinalDecision,
+    DecisionEvent,
+    MarketMonitorState,
+    TelegramNotification,
+)
 from app.db.session import db_session
 from app.engines.decision_presentation import format_decision_message
 from app.engines.trigger_lifecycle import validate_notification
@@ -57,6 +62,14 @@ def persist_decision_events(symbol: str, events: list[dict]) -> list[dict]:
             event_id = str(payload.get("eventId") or "")
             semantic_key = str(payload.get("semanticDedupKey") or "")
             if not event_id:
+                continue
+            current = db.execute(select(CurrentFinalDecision).where(
+                CurrentFinalDecision.symbol == symbol)).scalar_one_or_none()
+            payload_decision_id = str(payload.get("decisionId") or "")
+            is_test = str(payload.get("event_type") or "") == "TEST_NOTIFICATION"
+            if (current is not None and not is_test
+                    and payload_decision_id != current.decision_id):
+                logger.warning("non-current decision event rejected before enqueue: %s", event_id)
                 continue
             existing_notice = db.execute(select(TelegramNotification).where(
                 TelegramNotification.semantic_dedup_key == semantic_key
@@ -137,6 +150,14 @@ def persist_decision_events(symbol: str, events: list[dict]) -> list[dict]:
                     event_id=event_id,
                     semantic_dedup_key=semantic_key or None,
                     status="PENDING",
+                    decision_id=str(payload.get("decisionId") or ""),
+                    decision_version=int(payload.get("decisionVersion") or 0),
+                    decision_snapshot={
+                        key: payload.get(key) for key in (
+                            "decisionId", "decisionVersion", "scenarioVersion",
+                            "finalDecision", "currentPrice", "entryZone", "chaseLimit",
+                            "stopLoss", "targets", "effectiveRR", "qualityScore")
+                    },
                     attempts=0,
                     next_attempt_at=now + timedelta(
                         seconds=get_settings().alert_aggregation_window_seconds),
@@ -214,18 +235,42 @@ async def deliver_pending_telegram(
         )
         claimed = []
         for row in rows:
+            event = db.execute(
+                select(DecisionEvent).where(DecisionEvent.event_id == row.event_id)
+            ).scalar_one()
+            current = db.execute(select(CurrentFinalDecision).where(
+                CurrentFinalDecision.symbol == event.symbol).with_for_update()
+            ).scalar_one_or_none()
+            if (current is not None and row.decision_id
+                    and (row.decision_id != current.decision_id
+                         or row.decision_version < current.decision_version)):
+                row.status = "CANCELLED"
+                row.cancellation_reason = (
+                    "STALE_DECISION_VERSION" if row.decision_version < current.decision_version
+                    else "CANCELLED_SUPERSEDED")
+                row.updated_at = now
+                logger.warning("superseded Telegram notification blocked: %s", row.event_id)
+                continue
             prior_status = row.status
             row.status = "RETRYING"
             row.attempts += 1
             row.updated_at = now
-            event = db.execute(
-                select(DecisionEvent).where(DecisionEvent.event_id == row.event_id)
-            ).scalar_one()
             claimed.append((row.event_id, dict(event.payload), row.attempts,
                             prior_status, row.message_id))
     sent = 0
     for claimed_event_id, payload, attempts, prior_status, prior_message_id in claimed:
         try:
+            with db_session() as db:
+                current = db.execute(select(CurrentFinalDecision).where(
+                    CurrentFinalDecision.symbol == str(payload.get("symbol") or "XAUUSD")
+                )).scalar_one_or_none()
+                if (current is not None and str(payload.get("decisionId") or "") != current.decision_id):
+                    row = db.execute(select(TelegramNotification).where(
+                        TelegramNotification.event_id == claimed_event_id)).scalar_one()
+                    row.status = "CANCELLED"
+                    row.cancellation_reason = "CANCELLED_SUPERSEDED"
+                    row.updated_at = now
+                    continue
             if prior_status == "EDIT_PENDING" and prior_message_id and editor:
                 message_id = await editor(prior_message_id, format_telegram_event(payload))
             else:

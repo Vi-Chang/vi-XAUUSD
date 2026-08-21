@@ -174,6 +174,22 @@ async def telegram_status_api() -> dict:
     return telegram_delivery_status()
 
 
+@app.get("/api/trading/current-decision")
+async def current_trading_decision_api() -> dict:
+    """Return the persisted SSOT; never recalculate on this read path."""
+    from app.services.current_decision_store import get_current_final_decision
+
+    decision = get_current_final_decision("XAUUSD")
+    return {"available": bool(decision), "decision": decision}
+
+
+@app.get("/api/admin/decision-conflicts", dependencies=[Depends(require_admin)])
+async def decision_conflict_metrics_api() -> dict:
+    from app.services.current_decision_store import conflict_metrics
+
+    return conflict_metrics()
+
+
 @app.post("/api/telegram/test", dependencies=[Depends(require_admin)])
 async def telegram_test_api() -> dict:
     """Enqueue a test through the same durable DecisionEvent outbox."""

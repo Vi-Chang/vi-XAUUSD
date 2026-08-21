@@ -188,11 +188,9 @@ def evaluate_market_monitors(
     final_state["events"] = final_events
     if final_events:
         final_state["latest_event"] = final_events[-1]
-    _save(
-        symbol,
-        "final_decision",
-        {k: v for k, v in final_state.items() if k != "events"},
-    )
+    from app.services.current_decision_store import publish_current_final_decision
+    final_state, _ = publish_current_final_decision(symbol, final_state)
+    final_events = list(final_state.get("events") or [])
     if final_state.get("decisionChanged"):
         from app.services.decision_replay import persist_decision_replay
         persist_decision_replay(symbol, final_input, final_state)
@@ -227,13 +225,14 @@ def evaluate_live_quote_state(
         {**candidate, "normalized_analysis": normalized,
          "regime_state_machine": regime_state}, _load(symbol, "final_decision")
     )
+    from app.services.current_decision_store import publish_current_final_decision
+    current, published = publish_current_final_decision(symbol, current)
+    events = list(current.get("events") or []) if published else []
     from app.services.decision_outbox import persist_decision_events
-
     events = persist_decision_events(symbol, events)
     current["events"] = events
     if events:
         current["latest_event"] = events[-1]
-    _save(symbol, "final_decision", {k: v for k, v in current.items() if k != "events"})
     if current.get("decisionChanged"):
         from app.services.decision_replay import persist_decision_replay
         persist_decision_replay(symbol, candidate, current)
@@ -241,7 +240,10 @@ def evaluate_live_quote_state(
 
 
 def persist_final_decision_state(symbol: str, state: dict) -> None:
-    _save(symbol, "final_decision", {k: v for k, v in state.items() if k != "events"})
+    from app.services.current_decision_store import publish_current_final_decision
+    canonical, _ = publish_current_final_decision(symbol, state)
+    state.clear()
+    state.update(canonical)
 
 
 async def notify_market_monitor_events(result: dict, notifier) -> None:

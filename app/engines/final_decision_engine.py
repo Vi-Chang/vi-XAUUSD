@@ -29,6 +29,8 @@ class SignalCandidate:
     trigger_price: float | None = None
     invalidation_price: float | None = None
     entry_zone: tuple[float, float] | None = None
+    chase_limit: float | None = None
+    targets: tuple[float, ...] = field(default_factory=tuple)
     expires_at: str | None = None
     scenario_id: str = ""
     scenario_version: int = 1
@@ -126,6 +128,10 @@ def collect_signal_candidates(data: dict) -> list[SignalCandidate]:
             confidence=int(item.get("confidence") or item.get("signalScore") or 50),
             reason_codes=[str(x) for x in reasons + missing], trigger_price=trigger,
             invalidation_price=invalidation, entry_zone=_zone(item),
+            chase_limit=_number(item.get("maxChasePrice")),
+            targets=tuple(value for value in (
+                _number(item.get("tp1")), _number(item.get("tp2")),
+                _number(item.get("tp3"))) if value is not None),
             expires_at=str(item.get("expiresAt") or "") or None,
             scenario_id=scenario, scenario_version=version, lineage_id=lineage,
             setup_type=str(item.get("type") or "OTHER"),
@@ -158,6 +164,9 @@ def collect_signal_candidates(data: dict) -> list[SignalCandidate]:
             reason_codes=list(assistant.get("noTradeReasons") or []),
             invalidation_price=_number(assistant.get("invalidation")),
             entry_zone=(low, high) if low is not None and high is not None else None,
+            chase_limit=_number(assistant.get("maxChasePrice")),
+            targets=tuple(float(value) for value in assistant.get("targets") or []
+                          if isinstance(value, (int, float))),
             scenario_id=str(assistant.get("scenarioId") or ""),
             scenario_version=int(assistant.get("scenarioVersion") or 1),
             lineage_id=str(assistant.get("scenarioId") or ""),
@@ -248,8 +257,31 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
     if str(assistant.get("regime")) == "SHORT_WEAK_HTF_BULLISH":
         secondary.append("TIMEFRAME_CONFLICT")
 
+    candle_time = str((data.get("normalized_analysis") or {}).get(
+        "lastClosedCandleTimestamp") or "")
+    previous_zone = previous.get("entryZone") or {}
+    previous_action = str(previous.get("finalAction") or "")
+    same_candle = candle_time == str(previous.get("sourceCandleCloseTime") or "")
+    still_in_previous_zone = (
+        isinstance(previous_zone.get("low"), (int, float))
+        and isinstance(previous_zone.get("high"), (int, float))
+        and float(previous_zone["low"]) <= current_price <= float(previous_zone["high"])
+    )
+    critical_override = primary in {"DATA_STALE", "EVENT_BLACKOUT", "SPREAD_TOO_HIGH"}
+    if (previous_action in {"ENTER_LONG", "ENTER_SHORT"} and action != previous_action
+            and same_candle and still_in_previous_zone and not critical_override):
+        sticky = dict(previous)
+        sticky.update({"currentPrice": current_price,
+                       "evaluatedAt": str(data.get("timestamp_utc") or ""),
+                       "decisionChanged": False, "events": []})
+        return sticky, []
+
     scenario_id = selected.scenario_id if selected else str(assistant.get("scenarioId") or "")
     zone = selected.entry_zone if selected else None
+    chase_limit = selected.chase_limit if selected else None
+    targets = list(selected.targets if selected and selected.targets else
+                   tuple(float(value) for value in assistant.get("targets") or []
+                         if isinstance(value, (int, float))))
     hysteresis_delta = max(settings.decision_assistant_min_price_delta,
                            atr * settings.decision_assistant_trigger_hysteresis_atr)
     def stable_level(value: float | None) -> float | None:
@@ -261,6 +293,7 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
         str(assistant.get("regime") or ""),
         tuple(stable_level(v) for v in zone) if zone else None,
         stable_level(selected.invalidation_price) if selected else None,
+        stable_level(chase_limit), tuple(stable_level(v) for v in targets),
     )
     signature = hashlib.sha256(repr(signature_payload).encode()).hexdigest()[:24]
     previous_signature = str(previous.get("decisionSignature") or "")
@@ -293,6 +326,26 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
         "selectedScenarioVersion": selected.scenario_version if selected else 1,
         "selectedLineageId": selected.lineage_id if selected else scenario_id,
         "selectedSetupType": selected.setup_type if selected else "OTHER",
+        "selectedLifecycleState": selected.lifecycle_state if selected else "SETUP",
+        "direction": selected.direction if selected else "NEUTRAL",
+        "currentPrice": current_price,
+        "entryZone": ({"low": zone[0], "high": zone[1]} if zone else None),
+        "chaseLimit": chase_limit,
+        "invalidationPrice": selected.invalidation_price if selected else None,
+        "targets": targets,
+        "qualityScore": selected.confidence if selected else raw_score,
+        "qualityGrade": ("A" if raw_score >= 80 else "B" if raw_score >= 65
+                         else "C" if raw_score >= 35 else "D"),
+        "sourceCandleCloseTime": candle_time,
+        "evaluatedAt": str(data.get("timestamp_utc") or datetime.now(timezone.utc).isoformat()),
+        "sourceDataVersion": int(data.get("version") or 0),
+        "priceScenarioVersions": {
+            key: selected.scenario_version for key, value in {
+                "entryZone": zone, "chaseLimit": chase_limit,
+                "invalidation": selected.invalidation_price if selected else None,
+                "targets": targets,
+            }.items() if value is not None and value != []
+        },
         "effectiveRR": rr,
         "stateHysteresis": {
             "minimumPriceDelta": round(hysteresis_delta, 3),
@@ -303,30 +356,47 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
         "dataAgeSeconds": health.get("dataAgeSeconds"),
         "notificationSeverity": severity,
     })
+    ready_directions = {candidate.direction for candidate in candidates
+                        if candidate.lifecycle_state == "ENTRY_READY"
+                        and candidate.direction in {"LONG", "SHORT"}}
+    if len(ready_directions) > 1:
+        base.update({"finalAction": "NO_TRADE", "state": "NO_TRADE",
+                     "canEnter": False, "primaryReason": "TIMEFRAME_CONFLICT",
+                     "noTradeReason": "TIMEFRAME_CONFLICT", "riskGate": "RISK_BLOCK",
+                     "humanSummary": _summary("TIMEFRAME_CONFLICT", "NO_TRADE")})
+    from app.engines.decision_consistency import fail_closed, validate_final_decision
+    consistency_errors = validate_final_decision(base)
+    if consistency_errors:
+        base = fail_closed(base, consistency_errors)
     events: list[dict] = []
     notify = changed and base["notificationSeverity"] in {"CRITICAL", "ACTION", "UPDATE"}
     if notify:
-        candle_time = str((data.get("normalized_analysis") or {}).get(
-            "lastClosedCandleTimestamp") or "")
-        event_id = hashlib.sha256(f"{decision_id}|{action}|{candle_time}".encode()).hexdigest()[:32]
+        published_action = str(base["finalAction"])
+        published_state = state_map.get(published_action, str(base.get("state") or "NO_TRADE"))
+        event_id = hashlib.sha256(
+            f"{decision_id}|{published_action}|{candle_time}".encode()).hexdigest()[:32]
         canonical_event_type = ("REGIME_MAJOR_CHANGE" if fact_types & {
-            "BULLISH_RESTORED", "BEARISH_CONFIRMED"} else action)
+            "BULLISH_RESTORED", "BEARISH_CONFIRMED"} else published_action)
         events.append({
             "eventId": event_id, "event_type": canonical_event_type,
             "previousState": str(previous.get("state") or "WAIT"),
-            "currentState": state_map[action], "transitionReason": base["humanSummary"],
+            "currentState": published_state, "transitionReason": base["humanSummary"],
             "marketState": str(assistant.get("regime") or ""),
-            "finalDecision": action, "currentPrice": current_price,
-            "entryZone": ({"low": zone[0], "high": zone[1]} if zone else None),
-            "stopLoss": selected.invalidation_price if selected else None,
-            "targets": list(assistant.get("targets") or []),
+            "finalDecision": base["finalAction"], "currentPrice": current_price,
+            "entryZone": base.get("entryZone"), "chaseLimit": base.get("chaseLimit"),
+            "stopLoss": base.get("invalidationPrice"), "targets": base.get("targets") or [],
             "candleCloseTime": candle_time,
             "calculatedAt": str(data.get("timestamp_utc") or datetime.now(timezone.utc).isoformat()),
             "dataVersion": int(data.get("version") or 0), "direction": (
-                "LONG" if action == "ENTER_LONG" else "SHORT" if action == "ENTER_SHORT" else "NONE"),
+                "LONG" if published_action == "ENTER_LONG" else
+                "SHORT" if published_action == "ENTER_SHORT" else "NONE"),
             "setupId": scenario_id, "decisionId": decision_id,
             "decisionVersion": version, "notificationSeverity": base["notificationSeverity"],
-            "primaryReason": primary, "humanSummary": base["humanSummary"],
+            "primaryReason": base["primaryReason"], "humanSummary": base["humanSummary"],
+            "scenarioVersion": base.get("selectedScenarioVersion"),
+            "lineageId": base.get("selectedLineageId"),
+            "qualityScore": base.get("qualityScore"), "qualityGrade": base.get("qualityGrade"),
+            "effectiveRR": base.get("effectiveRR"),
             "signalFacts": list(data.get("signal_facts") or []),
             "notificationEligible": True,
         })

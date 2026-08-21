@@ -41,7 +41,7 @@ def build_decision_snapshot(data: dict, *, risk_mode: str = "STANDARD") -> dict:
         action = "NO_CHASE"
     else:
         action = "WAIT_CONFIRMATION"
-    setup_id = str(setup.get("setupId") or final.get("setup_id") or "")
+    setup_id = str(final.get("selectedScenarioId") or setup.get("setupId") or "")
     candle_time = str(final.get("last_closed_candle_time") or health["marketDataTimestamp"] or "")
     raw = f"XAUUSD|{setup_id}|{state}|{candle_time}|{action}"
     decision_id = hashlib.sha256(raw.encode()).hexdigest()[:24]
@@ -50,7 +50,8 @@ def build_decision_snapshot(data: dict, *, risk_mode: str = "STANDARD") -> dict:
         "schemaVersion": "decision-snapshot-v3", "decisionId": final.get("decisionId") or decision_id,
         "decisionVersion": final.get("decisionVersion", 0),
         "symbol": data.get("symbol") or "XAUUSD", "setupId": setup_id,
-        "setupVersion": setup.get("setupVersion") or "", "direction": setup.get("direction") or final.get("direction") or "NEUTRAL",
+        "setupVersion": final.get("selectedScenarioVersion") or setup.get("setupVersion") or "",
+        "direction": final.get("direction") or "NEUTRAL",
         "marketType": assistant.get("regime") or (data.get("trend_continuation_engine") or {}).get("marketType") or "UNDEFINED",
         "state": state, "action": action, "canEnter": can_enter,
         "signalScore": score, "confidenceGrade": None if grade == "U" else grade,
@@ -61,9 +62,10 @@ def build_decision_snapshot(data: dict, *, risk_mode: str = "STANDARD") -> dict:
         "tradeStatus": decision.get("trade_status") or state,
         "blockedReason": ("；".join(health["reasons"]) if not health["healthy"] else
                           final.get("humanSummary") or decision.get("blocked_reason") or final.get("reason") or ""),
-        "entryZone": {"low": setup.get("entryZoneLow"), "high": setup.get("entryZoneHigh")},
-        "stopLoss": setup.get("stopPrice"), "targets": [setup.get("tp1"), setup.get("tp2"), setup.get("tp3")],
-        "riskReward": assistant.get("rewardRiskRatio", setup.get("riskReward")),
+        "entryZone": final.get("entryZone"),
+        "chaseLimit": final.get("chaseLimit"),
+        "stopLoss": final.get("invalidationPrice"), "targets": final.get("targets") or [],
+        "riskReward": final.get("effectiveRR"),
         "actionSummary": final.get("humanSummary") or assistant.get("actionSummary") or action,
         "nextTrigger": assistant.get("nextTrigger") or final.get("next_trigger") or final.get("confirmation") or "等待新結構形成",
         "currentPrice": health["currentPrice"], "marketDataTimestamp": health["marketDataTimestamp"],
