@@ -100,6 +100,18 @@ def test_failed_event_data_caps_confidence_without_erasing_direction():
     assert state["confidence_grade"] == "A"
 
 
+def test_short_term_weakness_with_bullish_higher_timeframe_is_neutral():
+    data = payload(4581.84, status="SETUP_WATCH")
+    data["entry_engine"]["direction"] = "LONG"
+    data["normalized_analysis"].update({
+        "trendBias": "bullish", "shortTermMomentum": "pullback",
+    })
+    state, _events = evaluate_unified_decision(data)
+    assert state["state"] == "SHORT_TERM_WEAK_HTF_BULLISH"
+    assert state["direction"] == "NONE"
+    assert "不追多，也先不追空" in state["flat_action"]
+
+
 def test_completed_breakout_is_not_reused_and_short_defense_is_triggered():
     data = payload(4520.91, status="SETUP_WATCH")
     data["entry_engine"]["direction"] = "LONG"

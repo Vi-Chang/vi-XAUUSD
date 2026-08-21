@@ -326,7 +326,7 @@ async def job_structure_l2() -> None:
                     await run_full_analysis(
                         trigger="event",
                         reason_zh=(
-                            "價格已穿越劇本關鍵價位，重新計算"
+                            "價格已到達劇本關鍵價位，重新計算"
                             if crossed
                             else f"現價相對劇本來源價變動 {dev:.2%}，重新計算"
                         ),

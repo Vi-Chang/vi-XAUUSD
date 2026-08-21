@@ -2,9 +2,15 @@
 from __future__ import annotations
 
 import hashlib
+import math
 
-ALERT_PRIORITY = {"ENTRY_READY": 50, "POSITION_MANAGEMENT": 40,
-                  "MISSED_ENTRY": 30, "SCENARIO_UPDATED": 20, "WAIT": 10}
+from app.config import get_settings
+
+ALERT_PRIORITY = {
+    "ENTRY_READY": 70, "EXIT_WARNING": 60, "MISSED_ENTRY": 50,
+    "SCENARIO_INVALIDATED": 40, "PULLBACK_ZONE_CREATED": 30,
+    "MEANINGFUL_SCENARIO_UPDATE": 20, "WAIT": 10,
+}
 
 
 def _price(value) -> str:
@@ -12,6 +18,88 @@ def _price(value) -> str:
         return f"{float(value):.2f}"
     except (TypeError, ValueError):
         return ""
+
+
+def _number(value) -> float | None:
+    return float(value) if isinstance(value, (int, float)) else None
+
+
+def _profile(event: dict) -> dict:
+    wrapper = event.get("breakoutSetupEvent") or event.get("trendContinuationEvent") or {}
+    setup = wrapper.get("setup") or {}
+    zone = event.get("entryZone") or {}
+    return {
+        "status": str(setup.get("status") or wrapper.get("currentState")
+                      or event.get("currentState") or "WAIT"),
+        "setupId": str(setup.get("setupId") or wrapper.get("setupId")
+                       or event.get("setupId") or ""),
+        "eventType": str(event.get("event_type") or ""),
+        "direction": str(setup.get("direction") or event.get("direction") or "NONE"),
+        "trigger": _number(setup.get("breakoutTrigger") if setup.get("breakoutTrigger") is not None
+                           else event.get("triggerLevel")),
+        "chase": _number(setup.get("maxChasePrice") if setup.get("maxChasePrice") is not None
+                         else event.get("chaseLimit")),
+        "invalidation": _number(setup.get("stopPrice") if setup.get("stopPrice") is not None
+                                else event.get("stopLoss")),
+        "entryLow": _number(setup.get("entryZoneLow") if setup.get("entryZoneLow") is not None
+                            else zone.get("low")),
+        "entryHigh": _number(setup.get("entryZoneHigh") if setup.get("entryZoneHigh") is not None
+                             else zone.get("high")),
+        "pullbackLow": _number(setup.get("pullbackEntryZoneLow")),
+        "pullbackHigh": _number(setup.get("pullbackEntryZoneHigh")),
+        "atr": max(_number(setup.get("atr15")) or _number(event.get("atr15")) or 0.0, 0.0),
+    }
+
+
+def is_meaningful_change(previous: dict | None, current: dict) -> tuple[bool, str]:
+    """Quote, distance, timestamps and tiny recalculations are never decisions."""
+    if not previous:
+        return True, "FIRST_NOTIFICATION"
+    old, new = _profile(previous), _profile(current)
+    if old["status"] != new["status"]:
+        return True, "STATUS_CHANGED"
+    if old["direction"] != new["direction"]:
+        return True, "DIRECTION_CHANGED"
+    if old["setupId"] != new["setupId"]:
+        return True, "NEW_SCENARIO"
+    category = alert_category(current)
+    if old["eventType"] != new["eventType"] and category in {
+            "ENTRY_READY", "EXIT_WARNING", "MISSED_ENTRY",
+            "SCENARIO_INVALIDATED", "PULLBACK_ZONE_CREATED"}:
+        return True, category
+    settings = get_settings()
+    atr = max(old["atr"], new["atr"])
+    checks = (
+        ("trigger", settings.telegram_trigger_change_atr_ratio,
+         settings.telegram_trigger_change_min_delta),
+        ("entryLow", settings.telegram_entry_zone_change_atr_ratio,
+         settings.telegram_entry_zone_change_min_delta),
+        ("entryHigh", settings.telegram_entry_zone_change_atr_ratio,
+         settings.telegram_entry_zone_change_min_delta),
+        ("invalidation", settings.telegram_invalidation_change_atr_ratio,
+         settings.telegram_invalidation_change_min_delta),
+        ("chase", settings.telegram_chase_change_atr_ratio,
+         settings.telegram_chase_change_min_delta),
+    )
+    for field, ratio, minimum in checks:
+        before, after = old[field], new[field]
+        if before is None and after is not None:
+            return True, f"{field.upper()}_CREATED"
+        if before is not None and after is None:
+            return True, f"{field.upper()}_REMOVED"
+        if (before is not None and after is not None
+                and abs(after - before) >= max(atr * ratio, minimum)):
+            return True, f"{field.upper()}_CHANGED"
+    old_pullback = (old["pullbackLow"], old["pullbackHigh"])
+    new_pullback = (new["pullbackLow"], new["pullbackHigh"])
+    if old_pullback == (None, None) and new_pullback != (None, None):
+        return True, "PULLBACK_ZONE_CREATED"
+    threshold = max(atr * settings.telegram_entry_zone_change_atr_ratio,
+                    settings.telegram_entry_zone_change_min_delta)
+    for before, after in zip(old_pullback, new_pullback, strict=True):
+        if before is not None and after is not None and abs(after - before) >= threshold:
+            return True, "PULLBACK_ZONE_CHANGED"
+    return False, "NO_MEANINGFUL_DECISION_CHANGE"
 
 
 def notification_fingerprint_parts(event: dict) -> dict[str, str]:
@@ -55,27 +143,48 @@ def notification_fingerprint_parts(event: dict) -> dict[str, str]:
 
 def notification_fingerprint(event: dict) -> str:
     parts = notification_fingerprint_parts(event)
-    raw = "|".join(parts.values())
+    settings = get_settings()
+    steps = {
+        "triggerPrice": settings.telegram_trigger_change_min_delta,
+        "chaseLimit": settings.telegram_chase_change_min_delta,
+        "invalidationPrice": settings.telegram_invalidation_change_min_delta,
+    }
+    stable = dict(parts)
+    for field, step in steps.items():
+        value = _number(parts.get(field))
+        if value is not None and step > 0:
+            stable[field] = f"{math.floor(value / step) * step:.2f}"
+    if parts.get("pullbackZone"):
+        values = str(parts["pullbackZone"]).split("-")
+        step = settings.telegram_entry_zone_change_min_delta
+        stable["pullbackZone"] = "-".join(
+            f"{math.floor(float(value) / step) * step:.2f}" for value in values)
+    raw = "|".join(stable.values())
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
 def alert_category(event: dict) -> str:
+    event_type = str(event.get("event_type") or "")
     if event.get("tradePlanId"):
-        return str(event.get("event_type") or "POSITION_MANAGEMENT")
+        return "EXIT_WARNING"
     state = str(event.get("currentState") or "WAIT")
     if state == "DATA_STALE":
         return "DATA_STATUS"
     if state.endswith("READY") or state.startswith("ENTRY_READY_"):
         return "ENTRY_READY"
-    if state.endswith("MANAGE"):
-        return "POSITION_MANAGEMENT"
+    if state.endswith("MANAGE") or event_type in {
+            "TAKE_PROFIT_1", "TAKE_PROFIT_2", "TAKE_PROFIT_3", "EARLY_EXIT",
+            "STOP_TRIGGERED", "STRUCTURE_INVALIDATED", "EXIT_NOW", "EXIT_ZONE_REACHED"}:
+        return "EXIT_WARNING"
     if state in {"MISSED_ENTRY", "MISS_ENTRY"}:
         return "MISSED_ENTRY"
     if state in {"EXPIRED", "SETUP_EXPIRED", "INVALIDATED", "PULLBACK_INVALIDATED"}:
-        return "SCENARIO_UPDATED"
+        return "SCENARIO_INVALIDATED"
+    if event_type == "PULLBACK_ZONE_UPDATED":
+        return "PULLBACK_ZONE_CREATED"
     if state.endswith("WATCH") or state.startswith("WAIT"):
         return "WAIT"
-    return state
+    return "MEANINGFUL_SCENARIO_UPDATE"
 
 
 def semantic_key(event: dict) -> str:
@@ -127,7 +236,7 @@ def aggregate_signal_facts(symbol: str, events: list[dict]) -> list[dict]:
         # announcing that same WAIT setup again.
         wait_basis = next((fact for fact in reversed(facts)
                            if alert_category(fact) == "WAIT"), None)
-        key_basis = (wait_basis if alert_category(representative) == "SCENARIO_UPDATED"
+        key_basis = (wait_basis if alert_category(representative) == "SCENARIO_INVALIDATED"
                      and wait_basis else representative)
         key = semantic_key(key_basis)
         reasons = list(dict.fromkeys(

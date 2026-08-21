@@ -283,6 +283,16 @@ def evaluate_unified_decision(
             f"舊劇本 {waiting_retest['breakoutTrigger']:.2f} 已確認，等待回踩 "
             f"{waiting_retest['retestZoneLow']:.2f}–{waiting_retest['retestZoneHigh']:.2f}；"
             f"新劇本等待15M收盤突破 {pending_breakout['breakoutTrigger']:.2f}")
+    weak_htf_bullish = (
+        str(normalized.get("trendBias") or "") == "bullish"
+        and str(normalized.get("shortTermMomentum") or "") in {
+            "weakening", "pullback", "reversal_risk"
+        }
+    )
+    if (weak_htf_bullish and not stale and not state.endswith(("READY", "MANAGE"))):
+        state, direction = "SHORT_TERM_WEAK_HTF_BULLISH", "NONE"
+        action = "短線回檔，高週期尚未翻空"
+        flat_action = "現在不追多，也先不追空；等待15M重新轉強或15M／1H確認轉空"
     long_plan, short_plan = exit_plans.get("LONG") or {}, exit_plans.get("SHORT") or {}
     def management_text(plan: dict, side: str) -> str:
         defense = plan.get("defense_price")
@@ -447,9 +457,9 @@ def evaluate_unified_decision(
             f"價格收復關鍵位 {support:.2f}" if support is not None else "價格收復關鍵位"
         ),
         "AWAIT_CLOSE_CONFIRMATION": (
-            f"價格穿越 {resistance:.2f}，等待 15M 收盤確認"
+            f"盤中價格已高於 {resistance:.2f}，等待 15M 收盤站上確認"
             if resistance is not None
-            else "價格穿越局部高點，等待 15M 收盤確認"
+            else "盤中價格已高於局部高點，等待 15M 收盤站上確認"
         ),
         "FIRST_TARGET_REACHED": "第一目標已到，進入條件式獲利管理",
         "SECOND_TARGET_REACHED": "第二目標已到，進一步鎖定獲利",
@@ -457,7 +467,7 @@ def evaluate_unified_decision(
         "PROTECTION_EXIT_REACHED": "15M 收盤觸及最新獲利保護價",
         "EXIT_APPROACHING": "價格接近條件式出場區",
         "EXIT_ZONE_REACHED": "價格已到達本次計畫的明確分批處理價區",
-        "EXIT_NOW": "反向收盤已突破防守價，建議立即降低風險",
+        "EXIT_NOW": "15M 收盤已使防守條件成立，建議立即降低風險",
         "CANDLE_CLOSE_CONFIRMED": "新的 15M K 線已收盤，決策完成重新確認",
         "INTRABAR_BREACH": "價格盤中測試關鍵位，尚未收盤確認",
         "BREAKDOWN_CONFIRMED": "15M 收盤確認跌破關鍵位",
