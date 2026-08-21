@@ -6,6 +6,7 @@ import hashlib
 from dataclasses import asdict, dataclass
 
 from app.config import get_settings
+from app.engines.trigger_lifecycle import resolve_next_trigger
 
 
 @dataclass(frozen=True)
@@ -134,13 +135,9 @@ def evaluate_unified_decision(
         confidence = min(confidence, 55)
     if market_mode == "range" and state.endswith("READY"):
         confidence = min(confidence, 65)
-    trigger = (
-        resistance
-        if direction == "LONG"
-        else support
-        if direction == "SHORT"
-        else resistance
-    )
+    latest_closed_raw = normalized.get("lastClosedCandlePrice")
+    latest_closed = (float(latest_closed_raw)
+                     if isinstance(latest_closed_raw, (int, float)) else None)
     reason = str(
         entry.get("missing_condition") or decision.get("reason") or "等待條件一致"
     )
@@ -183,10 +180,21 @@ def evaluate_unified_decision(
         else "若持有多單：等待最新 15M 防守價"
     )
     short_manage = (
-        f"若持有空單：防守 {short_plan.get('defense_price'):.2f}，依序分批止盈"
+        f"若持有空單：{short_plan.get('defense_price'):.2f} 防守條件已觸發，依風控規則處理"
+        if isinstance(short_plan.get("defense_price"), (int, float))
+        and price > float(short_plan["defense_price"])
+        else f"若持有空單：防守 {short_plan.get('defense_price'):.2f}，依序分批止盈"
         if isinstance(short_plan.get("defense_price"), (int, float))
         else "若持有空單：等待最新 15M 防守價"
     )
+    if (isinstance(long_plan.get("defense_price"), (int, float))
+            and price < float(long_plan["defense_price"])):
+        long_manage = (f"若持有多單：{long_plan['defense_price']:.2f} "
+                       "防守條件已觸發，依風控規則處理")
+    trigger_result = resolve_next_trigger(
+        resistance=resistance, support=support, latest_closed=latest_closed,
+        direction=direction, state=state)
+    pending_trigger = trigger_result["next"]
     current = UnifiedDecision(
         state=state,
         direction=direction,
@@ -196,14 +204,8 @@ def evaluate_unified_decision(
         flat_action=flat_action,
         long_manage=long_manage,
         short_manage=short_manage,
-        next_trigger=trigger,
-        confirmation=(
-            f"等 15 分鐘收盤站上 {resistance:.2f}"
-            if direction != "SHORT" and resistance is not None
-            else f"等 15 分鐘收盤跌破 {support:.2f}"
-            if support is not None
-            else "等待下一根 15 分鐘 K 線收盤"
-        ),
+        next_trigger=(pending_trigger.get("level") if pending_trigger else None),
+        confirmation=trigger_result["label"],
         quote_time=quote_time,
         last_closed_candle_time=candle_time,
         calculated_at=calculated,
@@ -219,6 +221,18 @@ def evaluate_unified_decision(
         float(previous.get("source_price") or price),
     )
     event_types: list[str] = ["STATE_CHANGED"] if old_state != state else []
+    previous_completed = {item.get("code") for item in previous.get("completed_events", [])}
+    completed_events = []
+    if (isinstance(long_plan.get("defense_price"), (int, float))
+            and price < float(long_plan["defense_price"])):
+        completed_events.append({"code": "LONG_DEFENSE_TRIGGERED",
+                                 "level": long_plan["defense_price"]})
+    if (isinstance(short_plan.get("defense_price"), (int, float))
+            and price > float(short_plan["defense_price"])):
+        completed_events.append({"code": "SHORT_DEFENSE_TRIGGERED",
+                                 "level": short_plan["defense_price"]})
+    event_types.extend(item["code"] for item in completed_events
+                       if item["code"] not in previous_completed)
     transition_chain: list[tuple[str, str, str]] = []
     if false_breakout and old_state not in ("FALSE_BREAKOUT", "BULLISH_RECOVERY"):
         transition_chain = [
@@ -305,6 +319,8 @@ def evaluate_unified_decision(
         "SHORT_INVALIDATED": "空方劇本失效，停止沿用原空方進場區",
         "FALSE_BREAKOUT": "15M 收盤重新站回失守位，確認為假跌破",
         "BULLISH_RECOVERY": "價格收復關鍵位，行情由偏空轉為多方恢復",
+        "LONG_DEFENSE_TRIGGERED": "多單防守條件已觸發",
+        "SHORT_DEFENSE_TRIGGERED": "空單防守條件已觸發",
     }
     ordinary = [(old_state, state, kind) for kind in dict.fromkeys(event_types)]
     for previous_state, current_state, event_type in transition_chain or ordinary:
@@ -325,7 +341,8 @@ def evaluate_unified_decision(
         ]
         seed = (
             f"{data.get('symbol', 'XAUUSD')}|{previous_state}|{current_state}|"
-            f"{event_type}|{candle_time}|{price:.2f}|{data.get('version', 0)}"
+            f"{event_type}|{candle_time}|"
+            f"{pending_trigger.get('level') if pending_trigger else ''}"
         )
         event_id = hashlib.sha256(seed.encode()).hexdigest()[:32]
         events.append(
@@ -349,6 +366,15 @@ def evaluate_unified_decision(
                 "longManage": long_manage,
                 "shortManage": short_manage,
                 "confirmation": current.confirmation,
+                "decisionBasisCandleCloseTime": candle_time,
+                "latestClosedCandlePrice": latest_closed,
+                "nextTriggerCondition": pending_trigger,
+                "completedTriggers": trigger_result["completed"],
+                "triggerLevel": (pending_trigger.get("level") if pending_trigger else
+                                 (trigger_result["completed"][-1]["level"]
+                                  if trigger_result["completed"] else None)),
+                "longDefensePrice": long_plan.get("defense_price"),
+                "shortDefensePrice": short_plan.get("defense_price"),
                 "spread": spread,
                 "executionCosts": {
                     "spread": spread,
@@ -365,6 +391,10 @@ def evaluate_unified_decision(
             }
         )
     out = asdict(current)
+    out["triggers"] = trigger_result["triggers"]
+    out["completed_triggers"] = trigger_result["completed"]
+    out["next_trigger_condition"] = pending_trigger
+    out["completed_events"] = completed_events
     out["last_event"] = (
         events[-1]["event_type"] if events else previous.get("last_event", "")
     )

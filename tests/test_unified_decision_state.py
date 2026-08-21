@@ -96,3 +96,29 @@ def test_failed_event_data_caps_confidence_without_erasing_direction():
     state, _ = evaluate_unified_decision(data)
     assert state["state"] == "LONG_WATCH"
     assert state["confidence"] == 55
+
+
+def test_completed_breakout_is_not_reused_and_short_defense_is_triggered():
+    data = payload(4520.91, status="SETUP_WATCH")
+    data["entry_engine"]["direction"] = "LONG"
+    data["normalized_analysis"].update({
+        "lastClosedCandlePrice": 4520.50,
+        "confirmationLevels": [
+            {"kind": "support", "timeframe": "15M", "price": 4497.02},
+            {"kind": "resistance", "timeframe": "15M", "price": 4495.12},
+        ],
+    })
+    data["hypothetical_exit_advisor"] = {"plans": {
+        "LONG": {"defense_price": 4449.56},
+        "SHORT": {"defense_price": 4497.02},
+    }}
+    data["breakout_alert"] = {"event": {"event_type": "BULLISH_CONTINUATION"}}
+    state, events = evaluate_unified_decision(data)
+    completed = next(item for item in state["triggers"] if item["level"] == 4495.12)
+    assert completed["status"] == "SATISFIED"
+    assert state["next_trigger"] is None
+    assert "等待新結構" in state["confirmation"]
+    assert "4497.02 防守條件已觸發" in state["short_manage"]
+    assert any(event["event_type"] == "SHORT_DEFENSE_TRIGGERED" for event in events)
+    assert all((event.get("nextTriggerCondition") or {}).get("level") != 4495.12
+               for event in events)
