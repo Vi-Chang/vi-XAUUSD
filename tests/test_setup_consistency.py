@@ -146,8 +146,10 @@ class TestRuleEngineInvalidPath:
         closes = zigzag_path([(20, 2.0), (8, -1.0), (20, 2.0), (8, -1.0), (25, 2.0)])
         d, _ = _decide_with(closes)
         assert d.long_scenario.status == "INVALID"
-        assert d.evidence_score == 0
-        assert d.confidence_grade == "X"
+        assert d.evidence_score == 70
+        assert d.confidence_grade == "B"
+        assert d.trade_status == "INVALIDATED"
+        assert d.can_enter is False
         assert "暫無有效方案" in d.reason
 
 
@@ -219,7 +221,9 @@ class TestFreshness:
         assert sc["stale"] is True
         assert "偏離" in sc["stale_reason"]
         assert out["decision"]["action"] == "WATCH"        # 不再是可執行狀態
-        assert out["decision"]["evidence_score"] == 0      # 分數不得沿用
+        assert out["decision"]["evidence_score"] == 60     # 訊號分數與交易許可分離
+        assert out["decision"]["can_enter"] is False
+        assert out["decision"]["trade_status"] == "BLOCKED_DATA"
         assert "過時" in out["decision"]["reason"]
 
     def test_fresh_setup_not_stale(self):

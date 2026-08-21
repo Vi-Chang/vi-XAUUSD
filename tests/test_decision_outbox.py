@@ -57,18 +57,17 @@ def test_false_breakout_continues_to_bullish_recovery_and_long_watch():
     assert [event["currentState"] for event in events[:3]] == [
         "SHORT_INVALIDATED",
         "FALSE_BREAKOUT",
-        "BULLISH_RECOVERY",
+        "LONG_BIAS",
     ]
     intrabar, _ = evaluate_unified_decision(market(4480), recovered)
-    assert intrabar["state"] == "BULLISH_RECOVERY"
+    assert intrabar["state"] == "LONG_BIAS"
     stronger, events = evaluate_unified_decision(market(4494), intrabar)
-    assert stronger["state"] == "BULLISH_RECOVERY"
+    assert stronger["state"] == "LONG_BIAS"
     assert any(event["event_type"] == "AWAIT_CLOSE_CONFIRMATION" for event in events)
     watch, events = evaluate_unified_decision(
         market(4494, entry_status="SETUP_WATCH", direction="LONG"), stronger
     )
-    assert watch["state"] == "LONG_WATCH"
-    assert any(event["currentState"] == "LONG_WATCH" for event in events)
+    assert watch["state"] == "LONG_BIAS"
 
 
 @pytest.mark.asyncio
@@ -144,9 +143,67 @@ def test_telegram_message_uses_plain_chinese_not_internal_only():
         {"state": "SHORT_WATCH", "source_price": 4479},
     )
     message = format_telegram_event(events[-1])
-    assert "行情轉強" in message
-    assert "未持倉" in message
+    assert "行情偏多" in message
+    assert "目前動作" in message
     assert "資料時間" in message
+
+
+def test_watch_telegram_is_yellow_and_explicitly_forbids_entry():
+    event = {
+        "currentState": "LONG_WATCH", "direction": "LONG",
+        "currentPrice": 4529.96, "latestClosedCandlePrice": 4530,
+        "candleCloseTime": "2026-08-20T15:15:00+00:00",
+        "calculatedAt": "2026-08-20T15:16:00+00:00",
+        "missingCondition": "15M 收盤尚未站上 4532.51",
+        "confirmation": "等 15 分鐘收盤站上 4532.51",
+        "cancelCondition": "15M 收盤跌破 4520.00",
+    }
+    message = format_telegram_event(event)
+    assert message.startswith("🟡【偏多等待確認｜尚不可進場】")
+    assert "目前動作：等待，尚不可進場，請勿追價。" in message
+    assert "最新已收盤 15M：4530.00" in message
+    assert "下一個觸發：等 15 分鐘收盤站上 4532.51" in message
+
+
+def test_ready_telegram_has_complete_entry_and_risk_plan():
+    event = {
+        "currentState": "LONG_READY", "direction": "LONG",
+        "currentPrice": 4534, "latestClosedCandlePrice": 4533,
+        "candleCloseTime": "2026-08-20T15:30:00+00:00",
+        "calculatedAt": "2026-08-20T15:31:00+00:00",
+        "entryZone": {"low": 4527, "high": 4529}, "stopLoss": 4520,
+        "targets": [4540, 4550], "cancelCondition": "15M 收盤跌破 4520",
+    }
+    message = format_telegram_event(event)
+    assert message.startswith("🟢【多單進場條件成立】")
+    assert "建議進場區間：4527–4529" in message
+    assert "防守價：4520" in message
+    assert "分批止盈價：4540／4550" in message
+
+
+def test_tp_and_stop_telegram_are_actionable_and_semantically_distinct():
+    base = {
+        "currentState": "LONG_MANAGE", "currentPrice": 4510,
+        "calculatedAt": "2026-08-21T03:01:00+00:00",
+    }
+    tp = {**base, "positionEvent": {
+        "tradePlanId": "tp-long-1", "event_type": "TAKE_PROFIT_1",
+        "side": "LONG", "price": 4510, "targetPrice": 4510,
+        "percent": 30, "newProtectionPrice": 4500, "nextLevel": 4520,
+    }}
+    tp_message = format_telegram_event(tp)
+    assert tp_message.startswith("🟢【多單第一止盈觸發】")
+    assert "若你持有多單：建議平倉 30%" in tp_message
+    assert "剩餘部位防守調整至：4500.00" in tp_message
+    stop = {**base, "currentState": "SHORT_MANAGE", "positionEvent": {
+        "tradePlanId": "tp-short-1", "event_type": "STOP_TRIGGERED",
+        "side": "SHORT", "price": 4560, "percent": 100,
+        "newProtectionPrice": 4560,
+    }}
+    stop_message = format_telegram_event(stop)
+    assert stop_message.startswith("🔴【空單防守條件已觸發】")
+    assert "依風控規則退出" in stop_message
+    assert "不是止盈訊號" in stop_message
 
 
 def test_outbox_worker_is_scheduled_within_five_seconds():
@@ -278,6 +335,29 @@ def test_live_prices_share_dedup_key_for_same_basis_candle_state_and_trigger():
     assert len(keys) == 1
 
 
+def test_direction_is_part_of_semantic_dedup_identity():
+    base = {
+        "symbol": "XAUUSD", "timeframe": "15M",
+        "decisionBasisCandleCloseTime": "2026-08-20T15:45:00+00:00",
+        "currentState": "WAIT", "alertCategory": "WAIT", "triggerLevel": 4532.51,
+    }
+    assert semantic_key({**base, "direction": "LONG"}) != semantic_key({
+        **base, "direction": "SHORT"
+    })
+
+
+def test_setup_id_is_part_of_state_transition_dedup_identity():
+    base = {
+        "symbol": "XAUUSD", "timeframe": "15M",
+        "decisionBasisCandleCloseTime": "2026-08-21T03:00:00+00:00",
+        "direction": "LONG", "currentState": "ENTRY_READY",
+        "alertCategory": "ENTRY_READY", "triggerLevel": 4539.17,
+    }
+    assert semantic_key({**base, "setupId": "setup-a"}) != semantic_key({
+        **base, "setupId": "setup-b"
+    })
+
+
 def test_notification_validator_rejects_completed_next_trigger():
     bad = {
         "eventId": "bad-completed-next", "currentState": "LONG_WATCH",
@@ -300,4 +380,4 @@ def test_message_lists_completed_trigger_separately_from_next_trigger():
     }
     message = format_telegram_event(event)
     assert "已完成：15M 收盤站上 4495.12" in message
-    assert "下一觸發：原突破條件已完成，正在等待新結構形成" in message
+    assert "下一個觸發：原突破條件已完成，正在等待新結構形成" in message

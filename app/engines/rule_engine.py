@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from app.config import get_settings
+from app.engines.confidence import GRADING_VERSION, get_confidence_grade
 from app.engines.data_quality import DataQualityReport
 from app.engines.key_levels import CandidateLevel, nearest_zone
 from app.engines.market_structure import StructureReport
@@ -27,7 +28,7 @@ class RuleDecision:
     action: str                       # NO_TRADE / WATCH / PREPARE_LONG / PREPARE_SHORT
     reason: str
     evidence_score: int
-    confidence_grade: str             # S/A/B/C/X
+    confidence_grade: str             # A/B/C/D/U, derived only from signal_score
     long_scenario: Scenario
     short_scenario: Scenario
     chase_flags: list[str] = field(default_factory=list)
@@ -38,6 +39,11 @@ class RuleDecision:
     bear_evidence: list[str] = field(default_factory=list)
     bull_pct: int = 50
     bear_pct: int = 50
+    signal_score: int | None = None
+    grading_version: str = GRADING_VERSION
+    trade_status: str = "WAIT_CONFIRMATION"
+    can_enter: bool = False
+    blocked_reason: str = ""
 
 
 def evidence_bias(long_conds: list[str], short_conds: list[str]) -> tuple[int, int]:
@@ -289,14 +295,15 @@ def _build_scenario(direction: str, conditions: list[str], *, price: float,
             direction, current_price=price, entry=entry_zone,
             first_target=target_zones[0], structure_valid=True,
             confirmations_passed=confirmations_passed)
-    if lifecycle in ("EXPIRED", "MISSED_ENTRY_WAIT_RETEST", "WAITING_FOR_ENTRY",
-                     "BREAKOUT_PENDING"):
+    if lifecycle in ("EXPIRED", "CONFIRMED_WAIT_RETEST", "WAITING_FOR_ENTRY",
+                     "WAITING_FOR_CONFIRMATION", "BREAKOUT_PENDING"):
         status = "WATCH"
     elif lifecycle == "READY" and not reject:
         status = "PREPARE"
     lifecycle_blocks = {
         "EXPIRED": "SETUP_EXPIRED",
-        "MISSED_ENTRY_WAIT_RETEST": "ENTRY_ALREADY_MISSED",
+        "CONFIRMED_WAIT_RETEST": "CONFIRMED_WAIT_RETEST",
+        "WAITING_FOR_CONFIRMATION": "BREAKOUT_NOT_CONFIRMED",
         "WAITING_FOR_ENTRY": "PRICE_OUTSIDE_ENTRY_ZONE",
         "BREAKOUT_PENDING": "BREAKOUT_NOT_CONFIRMED",
     }
@@ -310,7 +317,7 @@ def _build_scenario(direction: str, conditions: list[str], *, price: float,
              [f"等待 15M 已收線{'突破局部高點/形成 HL' if up else '跌破局部低點/形成 LH'}",
               "等待價格回到理想進場區(非追價位置)"])
             + (["原進場機會已錯過，等待重新回踩形成有效劇本"]
-               if lifecycle == "MISSED_ENTRY_WAIT_RETEST" else [])
+               if lifecycle == "CONFIRMED_WAIT_RETEST" else [])
             + (["價格已到達第一目標區，原進場劇本已失效"]
                if lifecycle == "EXPIRED" else [])
             + (["此處進場賺賠比不足(第一目標未達 1.5 倍),等待回到更有優勢的進場位置"]
@@ -364,17 +371,22 @@ def decide(*, quality: DataQualityReport, structures: dict[str, StructureReport]
         else:
             reason = "資料品質有狀況,先不進場,免得照到錯的價格做決定。"
         return RuleDecision("NO_TRADE", reason,
-                            0, "X", empty_long, empty_short, no_trade_code=code,
+                            0, "U", empty_long, empty_short, no_trade_code=code,
                             bull_evidence=bull_conds, bear_evidence=bear_conds,
-                            bull_pct=bp, bear_pct=bs)
+                            bull_pct=bp, bear_pct=bs, signal_score=None,
+                            trade_status="BLOCKED_DATA", blocked_reason=reason)
     if event_lockout:
         return RuleDecision("NO_TRADE",
                             f"快公布重要數據了(剩 {s.event_lockout_minutes} 分鐘),"
                             f"先別進場,等公布後塵埃落定再看。",
-                            0, "X", empty_long, empty_short, no_trade_code="EVENT_LOCKOUT")
+                            0, "U", empty_long, empty_short, no_trade_code="EVENT_LOCKOUT",
+                            signal_score=None, trade_status="BLOCKED_EVENT",
+                            blocked_reason="重要事件鎖定期間")
     if market_state == "INSUFFICIENT_DATA":
         return RuleDecision("NO_TRADE", "資料還不夠,硬猜方向只會賠錢,先等一下。",
-                            0, "X", empty_long, empty_short, no_trade_code="NO_TRADE_DATA_QUALITY")
+                            0, "U", empty_long, empty_short, no_trade_code="NO_TRADE_DATA_QUALITY",
+                            signal_score=None, trade_status="BLOCKED_DATA",
+                            blocked_reason="資料不足，無法計算有效訊號分數")
 
     long_conds = _direction_conditions("LONG", structures=structures,
                                        indicators_h1=indicators_h1, price=price,
@@ -411,30 +423,42 @@ def decide(*, quality: DataQualityReport, structures: dict[str, StructureReport]
         bull_pct, bear_pct = evidence_bias(long_conds, short_conds)
         return RuleDecision(
             action="WATCH", reason="暫無有效方案:偵測到自相矛盾的價位組合,已攔截,等待下一次重算。",
-            evidence_score=0, confidence_grade="X",
+            evidence_score=score, confidence_grade=get_confidence_grade(score),
             long_scenario=long_sc, short_scenario=short_sc, chase_flags=chase,
             evidence=long_conds + short_conds,
             bull_evidence=long_conds, bear_evidence=short_conds,
-            bull_pct=bull_pct, bear_pct=bear_pct)
+            bull_pct=bull_pct, bear_pct=bear_pct, signal_score=score,
+            trade_status="INVALIDATED", can_enter=False,
+            blocked_reason="偵測到自相矛盾的價位組合")
+
+    trade_status, can_enter, blocked_reason = "WAIT_CONFIRMATION", False, ""
 
     if dominant is None or max(n_long, n_short) < 2 or market_state in ("RANGE", "COMPRESSION"):
-        action, grade = "WATCH", "C"
+        action = "WATCH"
         reason = (f"現在是{state_zh(market_state)},做多做空的理由都不夠強"
                   f"(多方 {n_long} 個、空方 {n_short} 個),沒把握就先看著。")
+        blocked_reason = reason
     else:
         d_zh = dir_zh(dominant)
         sc = long_sc if dominant == "LONG" else short_sc
         chase_this = [f for f in chase if dominant in f]
         gate = None
         if sc.lifecycle_status == "EXPIRED":
-            action, grade = "WATCH", "C"
+            action, trade_status = "WATCH", "INVALIDATED"
             reason = "原進場機會已到達第一目標區，劇本已失效；先觀察，等待重新計算。"
-        elif sc.lifecycle_status == "MISSED_ENTRY_WAIT_RETEST":
-            action, grade = "WATCH", "C"
-            reason = "價格已離開理想進場區，不追價；等待重新回踩形成有效劇本。"
+            blocked_reason = reason
+        elif sc.lifecycle_status == "CONFIRMED_WAIT_RETEST":
+            action, trade_status = "WATCH", "WAIT_CONFIRMATION"
+            reason = "收盤確認已完成，但價格不在合理進場區；等待回踩，不追價。"
+            blocked_reason = reason
+        elif sc.lifecycle_status == "WAITING_FOR_CONFIRMATION":
+            action, trade_status = "WATCH", "WAIT_CONFIRMATION"
+            reason = "最新已收盤 15M 尚未完成方向確認。"
+            blocked_reason = reason
         elif sc.lifecycle_status == "WAITING_FOR_ENTRY":
-            action, grade = "WATCH", "C"
+            action = "WATCH"
             reason = "方向條件存在，但價格尚未進入理想進場區。"
+            blocked_reason = reason
         elif sc.status == "PREPARE" and rr_ok and not chase_this:
             from app.engines.entry_trigger import evaluate_entry_gate
             gate = evaluate_entry_gate(
@@ -444,13 +468,14 @@ def decide(*, quality: DataQualityReport, structures: dict[str, StructureReport]
                 opposing_zone_atr_mult=s.opposing_zone_hard_gate_atr_mult,
                 breakout_buffer_atr_mult=s.breakout_close_buffer_atr_mult,
             )
-        if sc.lifecycle_status in ("EXPIRED", "MISSED_ENTRY_WAIT_RETEST", "WAITING_FOR_ENTRY"):
+        if sc.lifecycle_status in ("EXPIRED", "CONFIRMED_WAIT_RETEST",
+                                   "WAITING_FOR_CONFIRMATION", "WAITING_FOR_ENTRY"):
             pass
         elif gate is not None and gate.blocked:
-            action, grade, reason = "WATCH", "C", gate.reason
+            action, reason, blocked_reason = "WATCH", gate.reason, gate.reason
         elif gate is not None and gate.triggered:
             action = dominant
-            grade = "A" if score >= 60 else "B"
+            trade_status, can_enter = "READY", True
             sc = sc.model_copy(update={"status": "TRIGGERED", "required_confirmations": []})
             if dominant == "LONG":
                 long_sc = sc
@@ -459,27 +484,34 @@ def decide(*, quality: DataQualityReport, structures: dict[str, StructureReport]
             reason = f"{d_zh}：{gate.reason}賺賠比最高 {max(rr)} 倍。"
         elif sc.status == "PREPARE" and rr_ok and not chase_this:
             action = f"PREPARE_{dominant}"
-            grade = "A" if score >= 60 else "B"
             reason = (f"{d_zh}的條件湊齊了(含關鍵的順勢突破),賺賠比最高 {max(rr)} 倍、划算;"
                       f"等最後一個進場訊號出現就可以動手。")
+            blocked_reason = "等待最後一個已收盤進場確認"
         elif rr and not rr_ok:
             # 方向對但賺賠比不划算(不論 setup 為 PREPARE 或已壓為 WATCH)
-            action, grade = "WATCH", "C"
+            action, trade_status = "WATCH", "BLOCKED_RR"
             worst = rr[0] if rr else 0
             reason = (f"{d_zh}方向對,但這裡進場賺賠比只有 {worst} 倍,"
                       f"賺的比賠的還少、不划算,等更好的位置再說。")
+            blocked_reason = reason
         elif chase_this:
-            action, grade = "WATCH", "C"
+            action, trade_status = "WATCH", "MISSED_ENTRY"
             desc = chase_this[0].split(":", 1)[1] if ":" in chase_this[0] else chase_this[0]
             reason = f"看得出想{d_zh},但現在追進去風險大:{desc}。"
+            blocked_reason = reason
         else:
-            action, grade = "WATCH", "B" if market_state.startswith("STRONG") else "C"
+            action = "WATCH"
             reason = f"{d_zh}方向,但還差關鍵的收線確認,再等一根 K 棒。"
+            blocked_reason = reason
 
     bull_pct, bear_pct = evidence_bias(long_conds, short_conds)
+    grade = get_confidence_grade(score)
     return RuleDecision(action=action, reason=reason, evidence_score=score,
                         confidence_grade=grade, long_scenario=long_sc,
                         short_scenario=short_sc, chase_flags=chase,
                         evidence=long_conds + short_conds,
                         bull_evidence=long_conds, bear_evidence=short_conds,
-                        bull_pct=bull_pct, bear_pct=bear_pct)
+                        bull_pct=bull_pct, bear_pct=bear_pct,
+                        signal_score=score, grading_version=GRADING_VERSION,
+                        trade_status=trade_status, can_enter=can_enter,
+                        blocked_reason=blocked_reason)

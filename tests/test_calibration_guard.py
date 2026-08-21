@@ -2,7 +2,7 @@ from app.schemas.analysis import AnalysisResult
 from app.services.calibration_guard import apply_calibration_guard
 
 
-def test_insufficient_samples_cap_high_confidence_without_changing_action():
+def test_insufficient_samples_do_not_regrade_technical_signal():
     result = AnalysisResult()
     result.decision.action = "PREPARE_LONG"
     result.decision.confidence_grade = "A"
@@ -11,7 +11,7 @@ def test_insufficient_samples_cap_high_confidence_without_changing_action():
     apply_calibration_guard(result, sample_size=6, minimum=30)
 
     assert result.decision.action == "PREPARE_LONG"
-    assert result.decision.confidence_grade == "B"
+    assert result.decision.confidence_grade == "A"
     assert result.calibration_status == "collecting"
     assert result.calibration_sample_size == 6
     assert "6/30" in result.calibration_message

@@ -53,11 +53,11 @@ def test_reported_case_is_expired_not_ready():
 def test_long_and_short_missed_entry_are_mirrored():
     assert lifecycle_status(
         "LONG", current_price=4378, entry=LONG_ENTRY, first_target=LONG_TARGETS[0],
-        structure_valid=True, confirmations_passed=True) == "MISSED_ENTRY_WAIT_RETEST"
+        structure_valid=True, confirmations_passed=True) == "CONFIRMED_WAIT_RETEST"
     assert lifecycle_status(
         "SHORT", current_price=4395, entry=PriceZone(4400, 4410),
         first_target=PriceZone(4380, 4390), structure_valid=True,
-        confirmations_passed=True) == "MISSED_ENTRY_WAIT_RETEST"
+        confirmations_passed=True) == "CONFIRMED_WAIT_RETEST"
 
 
 def test_conservative_entry_uses_worst_zone_edge():

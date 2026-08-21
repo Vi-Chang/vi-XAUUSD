@@ -5,6 +5,8 @@ import hashlib
 
 
 def alert_category(event: dict) -> str:
+    if event.get("tradePlanId"):
+        return str(event.get("event_type") or "POSITION_MANAGEMENT")
     state = str(event.get("currentState") or "WAIT")
     if state == "DATA_STALE":
         return "DATA_STATUS"
@@ -16,10 +18,18 @@ def alert_category(event: dict) -> str:
 
 
 def semantic_key(event: dict) -> str:
+    if event.get("tradePlanId"):
+        raw = "|".join((
+            str(event.get("tradePlanId")), str(event.get("event_type")),
+            str(event.get("targetIndex") or 0),
+        ))
+        return hashlib.sha256(raw.encode()).hexdigest()
     raw = "|".join((
         str(event.get("symbol") or "XAUUSD"),
         str(event.get("timeframe") or "15M"),
         str(event.get("decisionBasisCandleCloseTime") or event.get("candleCloseTime") or ""),
+        str(event.get("setupId") or ""),
+        str(event.get("direction") or "NONE"),
         str(event.get("currentState") or "WAIT"),
         str(event.get("alertCategory") or alert_category(event)),
         str(event.get("triggerLevel") or ""),

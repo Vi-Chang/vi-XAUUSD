@@ -31,10 +31,7 @@ def apply_calibration_guard(result, *, sample_size: int, minimum: int) -> None:
         f"歷史驗證樣本 {sample_size}/{minimum}，技術方向可參考，"
         "但進場信心仍在累積。"
     )
-    if result.decision.confidence_grade in ("S", "A"):
-        result.decision.confidence_grade = "B"
-        result.decision.reason = (
-            result.decision.reason.rstrip("。")
-            + "；歷史驗證樣本不足，高信心暫時降級。"
-        )
+    # Calibration maturity is not technical signal confidence.  Keep the score
+    # and its deterministic grade intact; entry permission remains owned by the
+    # trade/decision state machine.
     result.market_decision = result.decision.model_copy()

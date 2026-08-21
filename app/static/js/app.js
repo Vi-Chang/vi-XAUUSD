@@ -350,8 +350,9 @@ function applyAnalysis(a) {
     calibrationNote.hidden = !a.calibration_message;
   }
 
-  $("evidence-bar").style.width = `${a.decision.evidence_score}%`;
-  $("evidence-num").textContent = a.decision.evidence_score;
+  const signalScore = a.decision.signal_score;
+  $("evidence-bar").style.width = `${signalScore == null ? 0 : signalScore}%`;
+  $("evidence-num").textContent = signalScore == null ? "未取得" : signalScore;
   const reason = $("decision-reason");
   unskel(reason);
   reason.textContent = a.decision.reason;
@@ -472,13 +473,18 @@ function renderFinalDecision(finalState) {
     short_manage: event.shortManage,
     confirmation: event.confirmation,
     quote_time: event.calculatedAt,
+    latest_closed_price: event.latestClosedCandlePrice,
+    last_closed_candle_time: event.candleCloseTime,
+    presentation: event.presentation || finalState.presentation,
   };
   const labels = {
-    WAIT: "等待", LONG_WATCH: "多方觀察中", LONG_READY: "多方條件完成",
-    SHORT_WATCH: "空方觀察中", SHORT_READY: "空方條件完成",
+    WAIT: "等待", LONG_BIAS: "行情偏多，尚未到進場區", SHORT_BIAS: "行情偏空，尚未到進場區",
+    LONG_WATCH: "偏多等待確認，尚不可進場", LONG_READY: "多單進場條件成立",
+    SHORT_WATCH: "偏空等待確認，尚不可進場", SHORT_READY: "空單進場條件成立",
     LONG_MANAGE: "多方獲利管理", SHORT_MANAGE: "空方獲利管理",
     MISSED_ENTRY: "已錯過進場", INVALIDATED: "舊劇本已失效", DATA_STALE: "資料過期",
   };
+  const presentation = finalState.presentation || event.presentation || {};
   $("quick-final-state").textContent = labels[finalState.state] || "等待";
   $("quick-flat-action").textContent = finalState.flat_action || "等待下一個明確條件";
   $("quick-position-action").textContent = finalState.direction === "SHORT"
@@ -487,10 +493,12 @@ function renderFinalDecision(finalState) {
   $("quick-freshness").textContent = finalState.state === "DATA_STALE" ? "資料過期，禁止進場" : "資料正常";
   $("quick-live-price").textContent = finalState.source_price == null ? "–" : fmt(finalState.source_price);
   $("quick-live-time").textContent = fmtTs(finalState.quote_time);
-  $("quick-action-title").textContent = finalState.action || labels[finalState.state] || "等待";
+  $("quick-closed-price").textContent = finalState.latest_closed_price == null ? "–" : fmt(finalState.latest_closed_price);
+  $("quick-closed-time").textContent = fmtTs(finalState.last_closed_candle_time);
+  $("quick-action-title").textContent = presentation.title || finalState.action || labels[finalState.state] || "等待";
   $("quick-action-why").textContent = finalState.reason || "等待條件一致";
   $("quick-action-next").textContent = finalState.flat_action || "等待下一個明確條件";
-  $("quick-action-card").dataset.action = finalState.state === "DATA_STALE" ? "NO_TRADE" : finalState.state;
+  $("quick-action-card").dataset.action = presentation.tone || (finalState.state === "DATA_STALE" ? "danger" : "neutral");
 }
 
 async function refreshTelegramStatus() {
@@ -540,23 +548,38 @@ function renderMarketMonitors(a) {
       const longPlan = plans.LONG || {};
       const shortPlan = plans.SHORT || {};
       $("hypothetical-long-exit").textContent = longPlan.partial_exit && longPlan.full_exit
-        ? `分批 ${price(longPlan.partial_exit.low)}–${price(longPlan.partial_exit.high)}；全部 ${price(longPlan.full_exit.low)}–${price(longPlan.full_exit.high)}` : "–";
+        ? `若持有多單：進入 ${price(longPlan.partial_exit.low)}–${price(longPlan.partial_exit.high)} 建議先平倉30%；${price(longPlan.full_exit.low)}–${price(longPlan.full_exit.high)} 評估剩餘部位` : "止盈計畫尚未建立：缺少有效壓力區";
       $("hypothetical-long-defense").textContent = price(longPlan.defense_price);
       $("hypothetical-short-exit").textContent = shortPlan.partial_exit && shortPlan.full_exit
-        ? `分批 ${price(shortPlan.partial_exit.low)}–${price(shortPlan.partial_exit.high)}；全部 ${price(shortPlan.full_exit.low)}–${price(shortPlan.full_exit.high)}` : "–";
+        ? `若持有空單：進入 ${price(shortPlan.partial_exit.low)}–${price(shortPlan.partial_exit.high)} 建議先平倉30%；${price(shortPlan.full_exit.low)}–${price(shortPlan.full_exit.high)} 評估剩餘部位` : "止盈計畫尚未建立：缺少有效支撐區";
       $("hypothetical-short-defense").textContent = price(shortPlan.defense_price);
     }
   }
 
+  const manager = a.trade_plan_manager || {};
+  const activeTradePlan = (manager.activePlans || [])[0];
   const tracker = a.virtual_profit_tracker || {};
   const profitCard = $("virtual-profit-card");
   if (profitCard) {
-    profitCard.hidden = !tracker.setup_id;
+    profitCard.hidden = !activeTradePlan && !tracker.setup_id && !(manager.errors || []).length;
     if (!profitCard.hidden) {
-      const reached = (tracker.reached_levels || []).join("、") || "尚未到達 TP1";
-      $("virtual-profit-summary").textContent = `若你有在 ${price(tracker.entry_price)} 附近進場：${reached}`;
-      $("virtual-profit-targets").textContent = `${price(tracker.tp1)}／${price(tracker.tp2)}／${price(tracker.tp3)}`;
-      $("virtual-profit-protection").textContent = price(tracker.protection_price);
+      if (activeTradePlan) {
+        const side = activeTradePlan.direction === "LONG" ? "多單" : "空單";
+        const completed = activeTradePlan.completedEvents || [];
+        const next = !completed.includes("TAKE_PROFIT_1") ? "TP1" : !completed.includes("TAKE_PROFIT_2") ? "TP2" : "TP3／移動止盈";
+        $("virtual-profit-summary").textContent = `若你持有${side}｜目前 ${Number(activeTradePlan.currentR || 0).toFixed(2)}R｜下一目標 ${next}`;
+        $("virtual-profit-targets").textContent = `TP1 ${price(activeTradePlan.tp1Price)} 平30%／TP2 ${price(activeTradePlan.tp2Price)} 再平30%／TP3 ${price(activeTradePlan.tp3Price)} 剩餘40%移動止盈`;
+        $("virtual-profit-protection").textContent = `${price(activeTradePlan.trailingStopPrice)}；提前退出：${activeTradePlan.earlyExitCondition}`;
+      } else if ((manager.errors || []).length) {
+        $("virtual-profit-summary").textContent = `止盈計畫尚未建立：${manager.errors.join("；")}`;
+        $("virtual-profit-targets").textContent = "–";
+        $("virtual-profit-protection").textContent = "–";
+      } else {
+        const reached = (tracker.reached_levels || []).join("、") || "尚未到達 TP1";
+        $("virtual-profit-summary").textContent = `若你有在 ${price(tracker.entry_price)} 附近進場：${reached}`;
+        $("virtual-profit-targets").textContent = `${price(tracker.tp1)}／${price(tracker.tp2)}／${price(tracker.tp3)}`;
+        $("virtual-profit-protection").textContent = price(tracker.protection_price);
+      }
     }
   }
 }
@@ -593,6 +616,7 @@ function renderEntryPlan(plan) {
   $("entry-plan-cancel").textContent = plan.cancel_condition || "–";
   $("entry-plan-expiry").textContent = fmtTs(plan.expires_at);
   card.dataset.status = displayStatus;
+  card.dataset.direction = plan.direction || "NONE";
 }
 
 function renderQuickAction(a) {
@@ -1473,6 +1497,7 @@ async function loadHistory() {
     const groups = [];
     for (const row of rows) {
       const key = [row.setup_id || "", row.lifecycle_status || "NO_SETUP", row.action,
+        row.trade_status || "WAIT_CONFIRMATION", row.can_enter ? "CAN_ENTER" : "BLOCKED",
         ...(row.blocking_reasons || [])].join("|");
       const last = groups[groups.length - 1];
       if (last && last.key === key) last.rows.push(row);
@@ -1481,19 +1506,26 @@ async function loadHistory() {
     const histRows = joinSafe(groups.map((group) => {
       const r = group.rows[0];
       const repeated = group.rows.length > 1 ? `（持續 ${group.rows.length} 次）` : "";
+      const tradeStatusZh = {
+        READY: "條件成立", WAIT_CONFIRMATION: "等待確認", BLOCKED_RR: "賺賠比不足",
+        MISSED_ENTRY: "錯過進場", INVALIDATED: "劇本失效", BLOCKED_DATA: "資料阻擋",
+        BLOCKED_EVENT: "事件鎖定", MANAGE: "持倉管理",
+      };
       return h`<tr>
         <td class="num">${taipeiTime(r.run_time)}</td>
         <td>${stateZh(r.market_state)}</td>
         <td>${lifecycleZh(r.lifecycle_status || "NO_SETUP")} ${repeated}</td>
         <td><span class="act-pill ${decisionClass(r.action)}">${actionZh(r.action)}</span></td>
         <td><span class="grade-badge g-${r.grade}" title="${gradeZh(r.grade)}" style="width:auto;padding:0 8px;font-size:.75rem">${gradeZh(r.grade)}</span></td>
-        <td class="num">${r.evidence_score}</td>
+        <td class="num">${r.signal_score == null ? "未取得" : r.signal_score}</td>
+        <td>${tradeStatusZh[r.trade_status] || r.trade_status || "等待確認"}</td>
+        <td>${r.can_enter ? "可以考慮進場" : "尚不可進場"}</td>
         <td>${qualityZh(r.quality)}</td>
-        <td>${(r.blocking_reasons || []).map(blockReasonZh).join("、") || "無"}</td>
+        <td>${r.blocked_reason || (r.blocking_reasons || []).map(blockReasonZh).join("、") || r.missing_score_reason || "無"}</td>
         <td class="num" title="${r.setup_id || ""}">${r.closed_bars_since_breakout || 0} 根</td></tr>`;
     }));
     body.innerHTML = h`<table class="hist-table"><thead><tr>
-      <th>時間（台灣）</th><th>市場狀態</th><th>劇本階段</th><th>決策</th><th>信心</th><th>證據</th><th>品質</th><th>主要阻擋原因</th><th>已等待</th>
+      <th>時間（台灣）</th><th>市場狀態</th><th>劇本階段</th><th>決策</th><th>信心</th><th>分數</th><th>交易狀態</th><th>進場許可</th><th>品質</th><th>阻擋原因</th><th>已等待</th>
       </tr></thead><tbody>${histRows}</tbody></table>`;
   } catch (e) {
     body.innerHTML = '<div class="empty">歷史紀錄載入失敗。</div>';

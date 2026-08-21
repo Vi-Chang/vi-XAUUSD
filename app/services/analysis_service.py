@@ -134,14 +134,16 @@ def _apply_no_trade_gate(result: AnalysisResult, elig) -> None:
     new_entry = ("WATCH", "PREPARE_LONG", "PREPARE_SHORT", "LONG", "SHORT")
     if result.decision.action in new_entry:
         result.decision.action = "NO_TRADE"
-        result.decision.confidence_grade = "X"
-        result.decision.evidence_score = 0
+        result.decision.trade_status = "BLOCKED_DATA"
+        result.decision.can_enter = False
+        result.decision.blocked_reason = reason
         result.decision.reason = reason
     elif result.decision.action == "MANAGE":
         result.decision.reason = f"(資料提醒:{elig.reason})" + result.decision.reason
     result.market_decision.action = "NO_TRADE"
-    result.market_decision.confidence_grade = "X"
-    result.market_decision.evidence_score = 0
+    result.market_decision.trade_status = "BLOCKED_DATA"
+    result.market_decision.can_enter = False
+    result.market_decision.blocked_reason = reason
     result.market_decision.reason = reason
 
     def _neutralize(sc):
@@ -327,8 +329,13 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
             bull_evidence=decision.bull_evidence, bear_evidence=decision.bear_evidence,
             chase_flags=decision.chase_flags),
         decision=Decision(action=cast(DecisionAction, decision.action),
+                          signal_score=decision.signal_score,
                           confidence_grade=cast(ConfidenceGrade, decision.confidence_grade),
                           evidence_score=decision.evidence_score,
+                          grading_version=decision.grading_version,
+                          trade_status=decision.trade_status,
+                          can_enter=decision.can_enter,
+                          blocked_reason=decision.blocked_reason,
                           reason=decision.reason,
                           next_bullish_trigger="等 15 分K 收盤站上前高、而且不是追高的位置,才考慮做多",
                           next_bearish_trigger="等 15 分K 收盤跌破前低、而且不是追低的位置,才考慮做空",
@@ -480,7 +487,9 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
         logger.error("rule engine referenced unknown level ids: %s", unknown)
         result.decision.action = "NO_TRADE"
         result.decision.reason = f"NO_TRADE_AI_INVALID: unknown level ids {unknown}"
-        result.decision.confidence_grade = "X"
+        result.decision.trade_status = "INVALIDATED"
+        result.decision.can_enter = False
+        result.decision.blocked_reason = result.decision.reason
     # 反查 ID → 實際數字(呈現用)。Scenario 為 frozen(R1/TC-08):
     # 禁止逐欄修改,一律 model_copy 整組替換。
     def _stamped(sc):
@@ -555,12 +564,23 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
     result.hypothetical_exit_advisor = monitors["hypothetical_exit_advisor"]
     result.breakout_alert = monitors["breakout_alert"]
     result.virtual_profit_tracker = monitors["virtual_profit_tracker"]
+    result.trade_plan_manager = monitors["trade_plan_manager"]
     result.final_decision_state = monitors["final_decision_state"]
     final_state = result.final_decision_state.get("state", "WAIT")
     from app.engines.unified_decision_state import enforce_scenario_consistency
     result.long_scenario, result.short_scenario = enforce_scenario_consistency(
         final_state, result.long_scenario, result.short_scenario)
     result.decision_trace.finalDecision = final_state
+    from app.engines.confidence import permission_from_state
+    permission = permission_from_state(
+        final_state,
+        existing_status=result.decision.trade_status,
+        existing_reason=result.decision.blocked_reason,
+    )
+    result.decision.trade_status = permission.trade_status
+    result.decision.can_enter = permission.can_enter
+    result.decision.blocked_reason = permission.blocked_reason
+    result.market_decision = result.decision.model_copy()
 
     # ── 9d. V2 AI 分析層(4 Agent;任何失敗不影響上面的確定性輸出)──
     try:
@@ -617,6 +637,11 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
                 decision_action=result.decision.action,
                 confidence_grade=result.decision.confidence_grade,
                 evidence_score=result.decision.evidence_score,
+                signal_score=result.decision.signal_score,
+                grading_version=result.decision.grading_version,
+                trade_status=result.decision.trade_status,
+                can_enter=result.decision.can_enter,
+                blocked_reason=result.decision.blocked_reason,
                 data_quality_status=quality.status,
                 result_json={},
                 prompt_version=PROMPT_VERSION, strategy_version=STRATEGY_VERSION,

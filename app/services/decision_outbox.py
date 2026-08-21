@@ -4,18 +4,17 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
 
 from sqlalchemy import and_, or_, select
 
 from app.config import get_settings
-from app.db.models import DecisionEvent, TelegramNotification
+from app.db.models import DecisionEvent, MarketMonitorState, TelegramNotification
 from app.db.session import db_session
+from app.engines.decision_presentation import format_decision_message
 from app.engines.trigger_lifecycle import validate_notification
 from app.services.alert_aggregator import aggregate_signal_facts
 
 logger = logging.getLogger(__name__)
-TAIPEI = ZoneInfo("Asia/Taipei")
 
 
 def persist_decision_events(symbol: str, events: list[dict]) -> list[dict]:
@@ -124,50 +123,7 @@ def _zh_state(value: str) -> str:
 
 
 def format_telegram_event(event: dict) -> str:
-    state = str(event.get("currentState") or "WAIT")
-    ready = state in ("LONG_READY", "SHORT_READY")
-    icon = (
-        "🚨" if ready else "🟢" if state in ("BULLISH_RECOVERY", "LONG_WATCH") else "🟠"
-    )
-    price = float(event.get("currentPrice") or 0)
-    raw_time = str(event.get("calculatedAt") or event.get("candleCloseTime") or "")
-    try:
-        parsed = datetime.fromisoformat(raw_time.replace("Z", "+00:00"))
-        data_time = parsed.astimezone(TAIPEI).strftime("%Y-%m-%d %H:%M")
-    except ValueError:
-        data_time = raw_time or "未知"
-    zone = event.get("entryZone") or {}
-    targets = event.get("targets") or []
-    if ready:
-        direction = "多方" if state == "LONG_READY" else "空方"
-        return (
-            f"{icon}【{direction}條件成立】\n現價：{price:.2f}\n"
-            f"進場區：{zone.get('low', '—')}–{zone.get('high', '—')}\n"
-            f"停損：{event.get('stopLoss') or '—'}\n"
-            f"第一目標：{targets[0] if targets else '—'}\n"
-            f"成立原因：{event.get('triggerReason', '')}\n"
-            f"失效條件：{event.get('confirmation', '')}\n"
-            f"K 線確認時間：{event.get('candleCloseTime') or '—'}"
-        )
-    reasons = list(event.get("transitionReasons") or [])
-    change = ("\n" + "\n".join(f"• {reason}" for reason in reasons)
-              if reasons else str(event.get("transitionReason", "")))
-    completed = event.get("completedTriggers") or []
-    completed_text = ""
-    if completed:
-        item = completed[-1]
-        verb = "站上" if item.get("condition") == "closeAbove" else "跌破"
-        completed_text = f"已完成：15M 收盤{verb} {float(item['level']):.2f}\n"
-    return (
-        f"{icon}【{_zh_state(state)}】\n現價：{price:.2f}\n"
-        f"變化：{change}\n"
-        f"{completed_text}"
-        f"未持倉：{event.get('flatAction', '')}\n"
-        f"已持多單：{event.get('longManage', '')}\n"
-        f"已持空單：{event.get('shortManage', '')}\n"
-        f"下一觸發：{event.get('confirmation', '')}\n"
-        f"資料時間：{data_time}（UTC+8）"
-    )
+    return format_decision_message(event)
 
 
 async def deliver_pending_telegram(
@@ -236,6 +192,20 @@ async def deliver_pending_telegram(
                 ).scalar_one()
                 row.status, row.message_id, row.sent_at = "SENT", str(message_id), now
                 row.last_error, row.updated_at = "", now
+                lifecycle = payload.get("setupLifecycle") or {}
+                if lifecycle.get("state") == "ENTRY_READY" and payload.get("setupId"):
+                    monitor = db.execute(select(MarketMonitorState).where(
+                        MarketMonitorState.symbol == str(payload.get("symbol") or "XAUUSD"),
+                        MarketMonitorState.monitor_key == "final_decision",
+                    )).scalar_one_or_none()
+                    if monitor is not None:
+                        stored = dict(monitor.payload or {})
+                        current_lifecycle = dict(stored.get("setup_lifecycle") or {})
+                        if current_lifecycle.get("setupId") == payload.get("setupId"):
+                            current_lifecycle["entryNotificationSentAt"] = now.isoformat()
+                            current_lifecycle["wasEntryReady"] = True
+                            stored["setup_lifecycle"] = current_lifecycle
+                            monitor.payload, monitor.updated_at = stored, now
             sent += 1
         except Exception as exc:  # noqa: BLE001
             logger.warning(

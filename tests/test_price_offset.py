@@ -81,7 +81,9 @@ class TestFailSafe:
         assert sc["resolved_prices"] == {} and sc["entry_zone_id"] is None
         assert sc["target_ids"] == [] and sc["risk_reward"] == []
         assert out["decision"]["action"] == "WATCH"
-        assert out["decision"]["evidence_score"] == 0
+        assert out["decision"]["evidence_score"] == 60
+        assert out["decision"]["can_enter"] is False
+        assert out["decision"]["trade_status"] == "BLOCKED_DATA"
         assert "未校準" in out["decision"]["reason"]
 
     def test_stale_offset_blocks_signals(self, monkeypatch):

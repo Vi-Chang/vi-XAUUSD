@@ -44,7 +44,8 @@ const SC_STATUS_ZH = {
 const LIFECYCLE_ZH = {
   NO_SETUP: "暫無有效機會", BREAKOUT_PENDING: "突破待確認",
   WAITING_FOR_ENTRY: "等待進入進場區", READY: "符合進場條件",
-  MISSED_ENTRY_WAIT_RETEST: "已錯過進場，等待回踩",
+  CONFIRMED_WAIT_RETEST: "突破確認完成，等待回踩",
+  WAITING_FOR_CONFIRMATION: "等待 15 分鐘收盤確認",
   FAILED_BREAKOUT: "突破失敗", EXPIRED: "劇本已失效",
   INVALID: "劇本結構無效", POSITION_MANAGEMENT: "持倉管理中", WATCH: "觀察中",
 };
@@ -62,8 +63,8 @@ const BLOCK_REASON_ZH = {
 
 const QUALITY_ZH = { GOOD: "良好", EXCELLENT: "優秀", FAIR: "普通", POOR: "不佳",
   DEGRADED: "部分可用", STALE: "已過期", FAILED: "失效" };
-const GRADE_ZH = { A: "A級（高信心）", B: "B級（中等信心）", C: "C級（低信心）",
-  S: "S級（極高信心）", X: "無法評估" };
+const GRADE_ZH = { A: "A級（高信心）", B: "B級（中高信心）",
+  C: "C級（中低信心）", D: "D級（低信心）", U: "未評級" };
 
 function translated(map, code, kind) {
   if (map[code]) return map[code];
@@ -73,6 +74,6 @@ function translated(map, code, kind) {
 const stateZh = (c) => translated(MSG.state, c, "市場狀態");
 const actionZh = (c) => translated(MSG.action, c, "決策");
 const qualityZh = (c) => translated(QUALITY_ZH, c, "品質");
-const gradeZh = (c) => translated(GRADE_ZH, c, "信心等級");
+const gradeZh = (c) => c == null ? "未評級" : translated(GRADE_ZH, c, "信心等級");
 const lifecycleZh = (c) => translated(LIFECYCLE_ZH, c, "劇本階段");
 const blockReasonZh = (c) => translated(BLOCK_REASON_ZH, c, "阻擋原因");
