@@ -569,16 +569,18 @@ function renderEntryPlan(plan) {
     return;
   }
   card.hidden = false;
+  const contradictoryTriggered = plan.status === "ENTRY_TRIGGERED" && !!plan.missing_condition;
+  const displayStatus = contradictoryTriggered ? "ENTRY_READY" : plan.status;
   const status = {
     SETUP_WATCH: "機會準備中", ENTRY_READY: "已到觀察區，等待 K 線確認",
     ENTRY_TRIGGERED: "條件完成，可依計畫執行", INVALIDATED: "計畫已取消",
     EXITED: "計畫已結束",
   };
   const direction = plan.direction === "LONG" ? "做多" : plan.direction === "SHORT" ? "做空" : "–";
-  $("entry-plan-status").textContent = status[plan.status] || plan.status;
+  $("entry-plan-status").textContent = status[displayStatus] || displayStatus;
   $("entry-plan-direction").textContent = direction;
   $("entry-plan-direction").className = "chip " + (plan.direction === "LONG" ? "good" : plan.direction === "SHORT" ? "bad" : "info");
-  $("entry-plan-missing").textContent = plan.missing_condition || (plan.status === "ENTRY_TRIGGERED" ? "進場條件已完成" : "");
+  $("entry-plan-missing").textContent = plan.missing_condition || (displayStatus === "ENTRY_TRIGGERED" ? "進場條件已完成" : "");
   const price = (value) => value == null ? "–" : Number(value).toFixed(2);
   $("entry-plan-zone").textContent = plan.zone_low == null || plan.zone_high == null ? "–" : `${price(plan.zone_low)}–${price(plan.zone_high)}`;
   $("entry-plan-entry").textContent = price(plan.suggested_entry);
@@ -590,7 +592,7 @@ function renderEntryPlan(plan) {
   $("entry-plan-trigger").textContent = plan.trigger_condition ? `${plan.trigger_timeframe || "15M"} ${plan.trigger_condition}` : "等待已收盤反轉 K 線";
   $("entry-plan-cancel").textContent = plan.cancel_condition || "–";
   $("entry-plan-expiry").textContent = fmtTs(plan.expires_at);
-  card.dataset.status = plan.status;
+  card.dataset.status = displayStatus;
 }
 
 function renderQuickAction(a) {

@@ -6,6 +6,7 @@ import hashlib
 from dataclasses import asdict, dataclass
 
 from app.config import get_settings
+from app.engines.entry_engine import EntryPlan, validate_executable_plan
 from app.engines.trigger_lifecycle import resolve_next_trigger
 
 
@@ -70,6 +71,18 @@ def evaluate_unified_decision(
         str(entry.get("status") or "NO_SETUP"),
         str(entry.get("direction") or "NONE"),
     )
+    if status == "ENTRY_TRIGGERED":
+        try:
+            executable, entry_error = validate_executable_plan(EntryPlan(**entry))
+        except (TypeError, ValueError):
+            executable, entry_error = False, "進場計畫欄位格式錯誤"
+        if not executable:
+            status = "ENTRY_READY"
+            entry = {
+                **entry,
+                "status": status,
+                "missing_condition": f"一致性檢查未通過：{entry_error}",
+            }
     action = str(decision.get("action") or "WATCH")
     directional = data.get("directional_alert") or {}
     false_breakout = directional.get("event_type") == "FALSE_BREAKOUT"
@@ -169,6 +182,8 @@ def evaluate_unified_decision(
     )
     if tracker.get("active"):
         state = "LONG_MANAGE" if tracker.get("direction") == "LONG" else "SHORT_MANAGE"
+        action = "管理既有條件式部位"
+        flat_action = "未持倉：原進場時機已過，禁止追價；等待新的回踩或結構確認"
     if tp1_reached:
         action = "第一目標已到，管理獲利"
         flat_action = "未持倉：禁止追價，等待新的回踩確認區"
