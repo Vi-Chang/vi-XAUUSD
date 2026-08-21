@@ -69,6 +69,9 @@ def _local_time(raw: str) -> str:
 
 
 def format_decision_message(event: dict) -> str:
+    continuation_event = event.get("trendContinuationEvent") or {}
+    if continuation_event.get("setupId"):
+        return _format_trend_continuation_event(event, continuation_event)
     breakout_event = event.get("breakoutSetupEvent") or {}
     if breakout_event.get("setupId"):
         return _format_breakout_setup_event(event, breakout_event)
@@ -125,6 +128,26 @@ def format_decision_message(event: dict) -> str:
         ])
     lines.append(f"資料時間：{data_time}（UTC+8）")
     return "\n".join(lines)
+
+
+def _format_trend_continuation_event(event: dict, continuation_event: dict) -> str:
+    setup = continuation_event.get("setup") or {}
+    names = {"SHALLOW_PULLBACK_LONG": "淺回踩", "BREAKOUT_RETEST_LONG": "突破回踩",
+             "BULL_FLAG_CONTINUATION": "旗形突破", "MOMENTUM_CONTINUATION": "動能延續（風險較高）"}
+    return "\n".join([
+        "🟢【多單進場條件成立｜可以進場】",
+        f"劇本：{names.get(setup.get('type'), setup.get('type'))}",
+        f"建議進場區：{float(setup.get('entryZoneLow') or 0):.2f}–{float(setup.get('entryZoneHigh') or 0):.2f}",
+        f"現價：{float(event.get('currentPrice') or 0):.2f}",
+        f"防守價：{float(setup.get('stopPrice') or 0):.2f}",
+        f"TP1：{float(setup.get('tp1') or 0):.2f}",
+        f"TP2：{float(setup.get('tp2') or 0):.2f}",
+        f"TP3：{float(setup.get('tp3') or 0):.2f}",
+        f"預估賺賠比：{float(setup.get('riskReward') or 0):.2f}",
+        f"訊號信心：{int(setup.get('signalScore') or 0)}（不是勝率）",
+        f"條件失效：15M 收盤跌破 {float(setup.get('stopPrice') or 0):.2f}",
+        f"資料時間：{_local_time(str(event.get('calculatedAt') or ''))}（UTC+8）",
+    ])
 
 
 def _format_breakout_setup_event(event: dict, breakout_event: dict) -> str:

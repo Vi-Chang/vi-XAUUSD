@@ -24,6 +24,7 @@ from app.engines.hypothetical_exit_advisor import (
     evaluate_hypothetical_exits,
 )
 from app.engines.trade_plan import evaluate_trade_plans, migrate_legacy_virtual_profit
+from app.engines.trend_continuation_engine import evaluate_trend_continuation
 from app.engines.unified_decision_state import evaluate_unified_decision
 from app.engines.virtual_profit_tracker import evaluate_virtual_profit
 
@@ -62,7 +63,9 @@ def _last_close(frame: pd.DataFrame | None) -> float | None:
 
 
 def evaluate_market_monitors(
-    data: dict, *, h1_closed: pd.DataFrame | None = None, indicators: dict | None = None
+    data: dict, *, m15_closed: pd.DataFrame | None = None,
+    h1_closed: pd.DataFrame | None = None, h4_closed: pd.DataFrame | None = None,
+    indicators: dict | None = None
 ) -> dict:
     symbol = str(data.get("symbol") or "XAUUSD")
     normalized = data.get("normalized_analysis") or {}
@@ -134,6 +137,11 @@ def evaluate_market_monitors(
     breakout_setup_state, breakout_setup_events = evaluate_breakout_setups(
         {**data, "entry_engine": entry}, stored_breakout_setups)
     _save(symbol, "breakout_setups", breakout_setup_state)
+    continuation_state, continuation_events = evaluate_trend_continuation(
+        {**data, "breakout_setup_manager": breakout_setup_state},
+        m15=m15_closed, h1=h1_closed, h4=h4_closed,
+        previous=_load(symbol, "trend_continuation"))
+    _save(symbol, "trend_continuation", continuation_state)
     plans = {plan.side: asdict(plan) for plan in build_hypothetical_exit_plans(data)}
     monitor_result = {
         "hypothetical_exit_advisor": {"plans": plans, "events": exit_events},
@@ -142,6 +150,8 @@ def evaluate_market_monitors(
         "trade_plan_manager": {**trade_plan_state, "events": trade_plan_events},
         "breakout_setup_manager": {
             **breakout_setup_state, "events": breakout_setup_events},
+        "trend_continuation_engine": {
+            **continuation_state, "events": continuation_events},
     }
     final_input = {**data, **monitor_result}
     final_state, final_events = evaluate_unified_decision(

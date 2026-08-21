@@ -595,6 +595,7 @@ class AnalysisResult(BaseModel):
     virtual_profit_tracker: dict = Field(default_factory=dict)
     trade_plan_manager: dict = Field(default_factory=dict)
     breakout_setup_manager: dict = Field(default_factory=dict)
+    trend_continuation_engine: dict = Field(default_factory=dict)
     final_decision_state: dict = Field(default_factory=dict)
     decision_trace: DecisionTrace = Field(default_factory=DecisionTrace)
     risk_manager: RiskManagerView = RiskManagerView()

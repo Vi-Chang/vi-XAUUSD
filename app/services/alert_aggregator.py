@@ -18,6 +18,12 @@ def alert_category(event: dict) -> str:
 
 
 def semantic_key(event: dict) -> str:
+    if event.get("trendContinuationEvent"):
+        setup = event.get("trendContinuationEvent", {}).get("setup") or {}
+        raw = "|".join((str(event.get("symbol") or "XAUUSD"),
+                        str(event.get("setupId") or ""), str(event.get("currentState") or ""),
+                        str(setup.get("type") or ""), str(event.get("event_type") or "")))
+        return hashlib.sha256(raw.encode()).hexdigest()
     if event.get("breakoutSetupEvent"):
         zone = event.get("entryZone") or {}
         raw = "|".join((

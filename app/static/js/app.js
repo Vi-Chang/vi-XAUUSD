@@ -518,6 +518,7 @@ async function refreshTelegramStatus() {
 function renderMarketMonitors(a) {
   const price = (value) => value == null ? "–" : Number(value).toFixed(2);
   renderBreakoutSetupLedger(a.breakout_setup_manager || {});
+  renderTrendContinuation(a.trend_continuation_engine || {});
   const breakout = a.breakout_alert || {};
   const breakoutCard = $("breakout-alert-card");
   if (breakoutCard) {
@@ -583,6 +584,29 @@ function renderMarketMonitors(a) {
       }
     }
   }
+}
+
+function renderTrendContinuation(engine) {
+  const card = $("trend-continuation-card");
+  const list = $("trend-continuation-list");
+  if (!card || !list) return;
+  card.hidden = !engine.enabled;
+  if (card.hidden) return;
+  const names = { SHALLOW_PULLBACK_LONG: "淺回踩", BREAKOUT_RETEST_LONG: "突破回踩",
+    BULL_FLAG_CONTINUATION: "旗形整理突破", MOMENTUM_CONTINUATION: "動能延續" };
+  const market = { TREND_CONTINUATION_LONG: "強勢多頭", TREND_CONTINUATION_SHORT: "強勢空頭",
+    RANGE: "區間整理", REVERSAL: "反轉", UNDEFINED: "型態未定" }[engine.marketType] || "型態未定";
+  $("trend-shadow-badge").textContent = engine.shadowMode ? "觀察模式" : "正式提示";
+  $("trend-continuation-summary").textContent = `${market}｜趨勢評分 ${engine.trendScore || 0}｜15M ATR ${Number(engine.atrValue || 0).toFixed(2)}`;
+  list.replaceChildren(...(engine.candidates || []).map((c) => {
+    const box = document.createElement("div");
+    box.className = "scenario-item";
+    const ready = String(c.status || "").startsWith("ENTRY_READY_");
+    const zone = c.entryZoneLow == null ? "尚未建立" : `${Number(c.entryZoneLow).toFixed(2)}–${Number(c.entryZoneHigh).toFixed(2)}`;
+    const missing = (c.missingConditions || []).join("；") || "條件完整";
+    box.textContent = `${ready ? "可評估進場" : "尚未成立"}｜${names[c.type] || c.type}｜進場區 ${zone}｜RR ${c.riskReward || "–"}｜${missing}`;
+    return box;
+  }));
 }
 
 function renderBreakoutSetupLedger(manager) {

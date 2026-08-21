@@ -560,12 +560,15 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
     # entry invalidation, or trade-cycle state.
     from app.services.market_monitor_service import evaluate_market_monitors
     monitors = evaluate_market_monitors(
-        result.model_dump(), h1_closed=dfs_closed.get("1H"), indicators=ind)
+        result.model_dump(), m15_closed=dfs_closed.get("15M"),
+        h1_closed=dfs_closed.get("1H"), h4_closed=dfs_closed.get("4H"),
+        indicators=ind)
     result.hypothetical_exit_advisor = monitors["hypothetical_exit_advisor"]
     result.breakout_alert = monitors["breakout_alert"]
     result.virtual_profit_tracker = monitors["virtual_profit_tracker"]
     result.trade_plan_manager = monitors["trade_plan_manager"]
     result.breakout_setup_manager = monitors["breakout_setup_manager"]
+    result.trend_continuation_engine = monitors["trend_continuation_engine"]
     result.final_decision_state = monitors["final_decision_state"]
     final_state = result.final_decision_state.get("state", "WAIT")
     from app.engines.unified_decision_state import enforce_scenario_consistency
