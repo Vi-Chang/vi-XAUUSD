@@ -44,6 +44,7 @@ PUBLIC_ALLOWLIST: tuple[str, ...] = (
     "decision_trace", "entry_engine", "directional_alert",
     "hypothetical_exit_advisor", "breakout_alert", "virtual_profit_tracker",
     "trade_plan_manager",
+    "breakout_setup_manager",
     "final_decision_state",
 )
 

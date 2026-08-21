@@ -101,6 +101,11 @@
       <button class="btn btn-sm" id="telegram-test-btn" type="button">發送測試通知</button>
       <div class="quick-action-next"><span>下一步</span><b id="quick-action-next">等待分析完成</b></div>
     </section>
+    <section class="card" id="breakout-setup-ledger-card" hidden aria-live="polite">
+      <div class="card-title">突破與回踩機會</div>
+      <p class="reason" id="breakout-setup-summary">每個門檻分開追蹤，不會把舊突破與新突破混在一起。</p>
+      <div id="breakout-setup-list"></div>
+    </section>
     <button class="btn mobile-advanced-toggle" id="mobile-advanced-toggle" type="button" aria-expanded="false">顯示進階資訊</button>
     <section class="card entry-plan" id="entry-plan-card" hidden aria-live="polite">
       <div class="card-title">進場計畫</div>
@@ -341,6 +346,6 @@
 <script src="/static/vendor/lightweight-charts.standalone.production.js"></script>
 <script src="/static/js/escape.js"></script>
 <script src="/static/js/messages.js?v=scenario-safety-v2"></script>
-<script src="/static/js/app.js?v=short-entry-v1"></script>
+<script src="/static/js/app.js?v=breakout-ledger-v1"></script>
 </body>
 </html>

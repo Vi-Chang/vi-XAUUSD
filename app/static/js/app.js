@@ -517,6 +517,7 @@ async function refreshTelegramStatus() {
 
 function renderMarketMonitors(a) {
   const price = (value) => value == null ? "–" : Number(value).toFixed(2);
+  renderBreakoutSetupLedger(a.breakout_setup_manager || {});
   const breakout = a.breakout_alert || {};
   const breakoutCard = $("breakout-alert-card");
   if (breakoutCard) {
@@ -582,6 +583,33 @@ function renderMarketMonitors(a) {
       }
     }
   }
+}
+
+function renderBreakoutSetupLedger(manager) {
+  const card = $("breakout-setup-ledger-card");
+  const list = $("breakout-setup-list");
+  if (!card || !list) return;
+  const setups = manager.setups || [];
+  card.hidden = setups.length === 0;
+  if (card.hidden) return;
+  const stateZh = {
+    WAIT_BREAKOUT_CONFIRMATION: "尚未確認", BREAKOUT_CONFIRMED: "突破已確認",
+    WAIT_RETEST: "等待回踩", ENTRY_READY_BREAKOUT: "突破進場成立",
+    ENTRY_READY_RETEST: "回踩進場成立", MISSED_ENTRY: "已錯過",
+    INVALIDATED: "已失效", EXPIRED: "已到期",
+  };
+  const ready = setups.find((s) => String(s.status).startsWith("ENTRY_READY_"));
+  $("breakout-setup-summary").textContent = ready
+    ? `${ready.direction === "LONG" ? "多單" : "空單"}${ready.entryType === "RETEST" ? "回踩" : "突破"}條件已成立`
+    : "舊劇本與新延續劇本分開顯示；尚未成立時不會誤示可進場。";
+  list.replaceChildren(...setups.slice(-3).reverse().map((s) => {
+    const box = document.createElement("div");
+    box.className = "scenario-item";
+    const side = s.direction === "LONG" ? "多方" : "空方";
+    const confirmed = s.breakoutConfirmedAt ? "已完成" : "尚未完成";
+    box.textContent = `${side}劇本 ${s.setupId}｜${Number(s.breakoutTrigger).toFixed(2)} 突破確認：${confirmed}｜目前：${stateZh[s.status] || s.status}｜回踩區 ${Number(s.retestZoneLow).toFixed(2)}–${Number(s.retestZoneHigh).toFixed(2)}｜最大追價 ${Number(s.maxChasePrice).toFixed(2)}`;
+    return box;
+  }));
 }
 
 function renderEntryPlan(plan) {
