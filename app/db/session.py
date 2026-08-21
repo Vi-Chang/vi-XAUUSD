@@ -71,6 +71,10 @@ def init_db() -> None:
         },
         "telegram_notifications": {
             "semantic_dedup_key": "VARCHAR(64)",
+            "decision_id": "VARCHAR(64) DEFAULT ''",
+            "decision_version": "INTEGER DEFAULT 0",
+            "cancellation_reason": "TEXT DEFAULT ''",
+            "decision_snapshot": "JSON DEFAULT '{}'",
         },
         "analysis_runs": {
             "signal_score": "INTEGER",

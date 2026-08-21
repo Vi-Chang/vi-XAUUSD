@@ -349,6 +349,39 @@ class DecisionEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+class CurrentFinalDecision(Base):
+    """The single publishable decision row for one symbol."""
+    __tablename__ = "current_final_decisions"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(32), unique=True)
+    decision_id: Mapped[str] = mapped_column(String(64), unique=True)
+    decision_version: Mapped[int] = mapped_column(Integer)
+    decision_signature: Mapped[str] = mapped_column(String(64))
+    scenario_id: Mapped[str] = mapped_column(String(64), default="")
+    scenario_version: Mapped[int] = mapped_column(Integer, default=1)
+    lineage_id: Mapped[str] = mapped_column(String(64), default="")
+    action: Mapped[str] = mapped_column(String(32))
+    direction: Mapped[str] = mapped_column(String(8), default="NEUTRAL")
+    source_candle_close_time: Mapped[str] = mapped_column(String(64), default="")
+    source_data_version: Mapped[int] = mapped_column(Integer, default=0)
+    evaluated_at: Mapped[str] = mapped_column(String(64), default="")
+    supersedes_decision_id: Mapped[str] = mapped_column(String(64), default="")
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class DecisionConflictAudit(Base):
+    """Durable invariant violation used for production conflict metrics."""
+    __tablename__ = "decision_conflict_audits"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(32), default="XAUUSD")
+    conflict_type: Mapped[str] = mapped_column(String(64))
+    severity: Mapped[str] = mapped_column(String(8), default="P1")
+    decision_id: Mapped[str] = mapped_column(String(64), default="")
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class TelegramNotification(Base):
     """Transactional outbox row; one durable Telegram delivery per DecisionEvent."""
     __tablename__ = "telegram_notifications"
@@ -364,6 +397,10 @@ class TelegramNotification(Base):
     next_attempt_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True)
     last_error: Mapped[str] = mapped_column(Text, default="")
+    decision_id: Mapped[str] = mapped_column(String(64), default="")
+    decision_version: Mapped[int] = mapped_column(Integer, default=0)
+    cancellation_reason: Mapped[str] = mapped_column(Text, default="")
+    decision_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
