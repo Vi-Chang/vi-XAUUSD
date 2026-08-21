@@ -40,6 +40,12 @@ def persist_decision_events(symbol: str, events: list[dict]) -> list[dict]:
                 TelegramNotification.semantic_dedup_key == semantic_key
             )).scalar_one_or_none() if semantic_key else None
             if existing_notice is not None:
+                # The durable unique fingerprint is the authority. A scheduler
+                # rerun creates fresh eventIds/dataVersions, but no new market
+                # decision. Never turn a successfully sent fingerprint back
+                # into PENDING/EDIT_PENDING.
+                if existing_notice.status == "SENT":
+                    continue
                 canonical = db.execute(select(DecisionEvent).where(
                     DecisionEvent.event_id == existing_notice.event_id)).scalar_one()
                 old = dict(canonical.payload or {})
@@ -55,12 +61,9 @@ def persist_decision_events(symbol: str, events: list[dict]) -> list[dict]:
                 canonical.payload = merged
                 canonical.transition_reason = str(merged.get("transitionReason") or "")
                 canonical.current_price = float(merged.get("currentPrice") or canonical.current_price)
-                if existing_notice.status == "SENT" and existing_notice.message_id:
-                    existing_notice.status = "EDIT_PENDING"
-                elif existing_notice.status != "RETRYING":
-                    existing_notice.status = "PENDING"
-                existing_notice.next_attempt_at = now + timedelta(
-                    seconds=get_settings().alert_aggregation_window_seconds)
+                # Merge only while the original row has not been delivered.
+                # Keep the original retry state and due time, so polling cannot
+                # postpone delivery forever or create a second send operation.
                 existing_notice.updated_at = now
                 created.append(merged)
                 continue
@@ -217,9 +220,14 @@ async def deliver_pending_telegram(
                         TelegramNotification.event_id == claimed_event_id
                     )
                 ).scalar_one()
-                row.status = "FAILED"
+                # A timeout is ambiguous: Telegram may have accepted the
+                # message while its response was lost. Retrying sendMessage
+                # could duplicate it, so park it for operator reconciliation.
+                timeout_unknown = "timeout" in type(exc).__name__.lower()
+                row.status = "DELIVERY_UNKNOWN" if timeout_unknown else "FAILED"
                 row.last_error = type(exc).__name__
-                row.next_attempt_at = now + timedelta(seconds=min(300, 2**attempts))
+                row.next_attempt_at = (None if timeout_unknown else
+                                       now + timedelta(seconds=min(300, 2**attempts)))
                 row.updated_at = now
     return sent
 
