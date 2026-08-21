@@ -573,15 +573,16 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
     result.decision.trade_status = permission.trade_status
     result.decision.can_enter = permission.can_enter
     result.decision.blocked_reason = permission.blocked_reason
-    assistant = result.decision_assistant
-    result.decision.can_enter = bool(assistant.get("canEnter"))
-    result.decision.trade_status = str(assistant.get("tradeState") or permission.trade_status)
-    result.decision.blocked_reason = "；".join(assistant.get("noTradeReasons") or []) or permission.blocked_reason
-    result.decision.reason = str(assistant.get("actionSummary") or result.decision.reason)
+    final_action = str(result.final_decision_state.get("finalAction") or "WAIT")
+    result.decision.can_enter = bool(result.final_decision_state.get("canEnter"))
+    result.decision.trade_status = final_action
+    result.decision.blocked_reason = str(
+        result.final_decision_state.get("humanSummary") or permission.blocked_reason)
+    result.decision.reason = result.decision.blocked_reason
     if result.decision.can_enter:
-        result.decision.action = "LONG" if assistant.get("direction") == "LONG" else "SHORT"
+        result.decision.action = "LONG" if final_action == "ENTER_LONG" else "SHORT"
     elif result.decision.action in {"LONG", "SHORT", "PREPARE_LONG", "PREPARE_SHORT"}:
-        result.decision.action = "WATCH" if assistant.get("tradeState") != "NO_TRADE" else "NO_TRADE"
+        result.decision.action = "WATCH" if final_action == "WAIT" else "NO_TRADE"
     result.market_decision = result.decision.model_copy()
     # Canonical snapshot must be built after every deterministic monitor.  The
     # previous ordering captured a half-built decision before breakout/retest.

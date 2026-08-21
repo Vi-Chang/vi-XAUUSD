@@ -27,10 +27,12 @@ def build_decision_snapshot(data: dict, *, risk_mode: str = "STANDARD") -> dict:
     decision = data.get("decision") or {}
     score = decision.get("signal_score", decision.get("evidence_score"))
     grade = get_confidence_grade(score)
-    state = str(assistant.get("tradeState") or final.get("state") or setup.get("status") or "WAIT")
-    can_enter = bool(assistant.get("canEnter")) and health["healthy"]
+    state = str(final.get("state") or assistant.get("tradeState") or setup.get("status") or "WAIT")
+    can_enter = bool(final.get("canEnter")) and health["healthy"]
     if not health["healthy"]:
         state, can_enter, action = "DATA_STALE", False, "DATA_UNAVAILABLE"
+    elif final.get("finalAction"):
+        action = str(final["finalAction"])
     elif can_enter:
         action = "ENTER_LONG" if (setup.get("direction") or final.get("direction")) == "LONG" else "ENTER_SHORT"
     elif "RETEST" in state:
@@ -45,7 +47,8 @@ def build_decision_snapshot(data: dict, *, risk_mode: str = "STANDARD") -> dict:
     decision_id = hashlib.sha256(raw.encode()).hexdigest()[:24]
     event = data.get("event_risk") or {}
     return {
-        "schemaVersion": "decision-snapshot-v3", "decisionId": decision_id,
+        "schemaVersion": "decision-snapshot-v3", "decisionId": final.get("decisionId") or decision_id,
+        "decisionVersion": final.get("decisionVersion", 0),
         "symbol": data.get("symbol") or "XAUUSD", "setupId": setup_id,
         "setupVersion": setup.get("setupVersion") or "", "direction": setup.get("direction") or final.get("direction") or "NEUTRAL",
         "marketType": assistant.get("regime") or (data.get("trend_continuation_engine") or {}).get("marketType") or "UNDEFINED",
@@ -57,11 +60,11 @@ def build_decision_snapshot(data: dict, *, risk_mode: str = "STANDARD") -> dict:
         "entryQualityGrade": assistant.get("entryQualityGrade"),
         "tradeStatus": decision.get("trade_status") or state,
         "blockedReason": ("；".join(health["reasons"]) if not health["healthy"] else
-                          decision.get("blocked_reason") or final.get("reason") or ""),
+                          final.get("humanSummary") or decision.get("blocked_reason") or final.get("reason") or ""),
         "entryZone": {"low": setup.get("entryZoneLow"), "high": setup.get("entryZoneHigh")},
         "stopLoss": setup.get("stopPrice"), "targets": [setup.get("tp1"), setup.get("tp2"), setup.get("tp3")],
         "riskReward": assistant.get("rewardRiskRatio", setup.get("riskReward")),
-        "actionSummary": assistant.get("actionSummary") or action,
+        "actionSummary": final.get("humanSummary") or assistant.get("actionSummary") or action,
         "nextTrigger": assistant.get("nextTrigger") or final.get("next_trigger") or final.get("confirmation") or "等待新結構形成",
         "currentPrice": health["currentPrice"], "marketDataTimestamp": health["marketDataTimestamp"],
         "quoteTime": health["quoteTime"], "calculatedAt": data.get("timestamp_utc") or health["evaluatedAt"],
@@ -74,4 +77,11 @@ def build_decision_snapshot(data: dict, *, risk_mode: str = "STANDARD") -> dict:
         "reasons": assistant.get("regimeReasons") or setup.get("passedReasons") or [],
         "missingConditions": assistant.get("noTradeReasons") or setup.get("missingConditions") or [],
         "decisionAssistant": assistant,
+        "finalDecision": {
+            "action": final.get("finalAction") or action,
+            "primaryReason": final.get("primaryReason"),
+            "secondaryReasons": final.get("secondaryReasons") or [],
+            "humanSummary": final.get("humanSummary"),
+            "riskGate": final.get("riskGate"),
+        },
     }

@@ -397,6 +397,22 @@ class DecisionEventOutcome(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+class DecisionReplay(Base):
+    """Immutable inputs and arbitration output for one semantic decision version."""
+    __tablename__ = "decision_replays"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    decision_id: Mapped[str] = mapped_column(String(64), unique=True)
+    symbol: Mapped[str] = mapped_column(String(32), default="XAUUSD")
+    decision_version: Mapped[int] = mapped_column(Integer)
+    final_action: Mapped[str] = mapped_column(String(32))
+    scenario_type: Mapped[str] = mapped_column(String(40), default="OTHER")
+    raw_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    calibrated_probability: Mapped[float | None] = mapped_column(Float, nullable=True)
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    outcome: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class ProviderHealth(Base):
     """16. provider_health — 各資料源健康與配額"""
     __tablename__ = "provider_health"

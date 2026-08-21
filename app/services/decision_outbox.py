@@ -163,6 +163,10 @@ def _zh_state(value: str) -> str:
         "INVALIDATED": "原劇本失效",
         "DATA_STALE": "行情資料異常",
         "SHORT_TERM_WEAK_HTF_BULLISH": "短線轉弱，高週期仍偏多",
+        "SHORT_TERM_RECOVERING": "短線正在恢復，還差最後確認",
+        "SHORT_TERM_BULLISH_RESTORED": "短線重新轉強",
+        "BULLISH_RESTORED": "短線重新轉強",
+        "BEARISH_CONFIRMED": "短線已正式轉空",
     }.get(value, "市場決策更新")
 
 

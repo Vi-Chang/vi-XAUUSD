@@ -64,6 +64,9 @@ def build_decision_presentation(event: dict) -> dict:
         "MISSED_ENTRY": "🟡【原進場區已錯過｜禁止追價】",
         "CONFIRMED_WAIT_RETEST": "🟡【突破確認完成｜等待回踩】",
         "SHORT_TERM_WEAK_HTF_BULLISH": "⚠️【短線轉弱，先觀望】",
+        "SHORT_TERM_RECOVERING": "⚪【短線正在恢復，還差最後確認】",
+        "SHORT_TERM_BULLISH_RESTORED": "🟢【短線重新轉強】",
+        "BEARISH_CONFIRMED": "🔴【短線已正式轉空】",
     }
     if state.endswith("BIAS"):
         action = "等待，尚未到進場區，請勿追價。"
@@ -129,6 +132,19 @@ def format_decision_message(event: dict) -> str:
     closed_time = _local_time(str(event.get("candleCloseTime") or ""))
     data_time = _local_time(str(event.get("calculatedAt") or ""))
     state = str(event.get("currentState") or "WAIT")
+    if state in {"BULLISH_RESTORED", "SHORT_TERM_BULLISH_RESTORED"}:
+        level = event.get("triggerLevel")
+        return "\n".join([
+            "🟢【短線重新轉強】",
+            (f"15分鐘已收盤站回 {float(level):.2f} 上方。"
+             if isinstance(level, (int, float)) else "15分鐘已收盤站回重新轉強位置。"),
+            "原本的短線轉弱判斷已取消。",
+            "目前重新評估突破進場與回踩進場。",
+        ])
+    if state == "BEARISH_CONFIRMED":
+        return ("🔴【短線已正式轉空】\n"
+                "15分鐘與1小時已收盤結構同步轉空。\n"
+                "目前重新評估空方進場位置、失效價與賺賠比。")
     if state == "SHORT_TERM_WEAK_HTF_BULLISH":
         regain = event.get("triggerLevel")
         short_level = event.get("longDefensePrice") or event.get("stopLoss")
@@ -186,6 +202,29 @@ def format_decision_message(event: dict) -> str:
 
 
 def _format_decision_assistant(event: dict, assistant: dict) -> str:
+    regime = str(assistant.get("regime") or "")
+    regime_state = assistant.get("regimeState") or {}
+    reclaim = regime_state.get("reclaimLevel")
+    if regime == "SHORT_TERM_RECOVERING":
+        return "\n".join([
+            "⚪【短線正在恢復，還差最後確認】",
+            "大方向仍偏多，15分鐘動能已改善。",
+            (f"最後確認：15分鐘K棒收盤站上 {float(reclaim):.2f}"
+             if isinstance(reclaim, (int, float)) else "最後確認：等待15分鐘收盤站回最新壓力"),
+            "現在先不要追價；確認後會重新計算突破與回踩進場。",
+        ])
+    if regime == "SHORT_TERM_BULLISH_RESTORED":
+        return "\n".join([
+            "🟢【短線重新轉強】",
+            (f"15分鐘已收盤站回 {float(reclaim):.2f} 上方。"
+             if isinstance(reclaim, (int, float)) else "15分鐘已收盤站回重新轉強位置。"),
+            "原本的短線轉弱判斷已取消。",
+            "目前正在重新評估突破進場、回踩進場、追價上限與賺賠比。",
+        ])
+    if regime == "BEARISH_CONFIRMED":
+        return ("🔴【短線已正式轉空】\n"
+                "15分鐘與1小時已收盤結構同步轉空。\n"
+                "這不是單一指標轉弱；系統已重新評估空方進場與風控。")
     action = str(assistant.get("actionSummary") or "現在先等")
     icons = {"現在可以進": "🟢", "現在先等": "🟡", "不要追價": "🔴",
              "短線轉弱": "⚠️", "沒有好機會": "⚪", "等回踩": "🟡",
