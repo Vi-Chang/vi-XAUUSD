@@ -6,6 +6,7 @@ import hashlib
 from dataclasses import asdict, dataclass
 
 from app.config import get_settings
+from app.engines.decision_presentation import build_decision_presentation
 from app.engines.entry_engine import EntryPlan, validate_executable_plan
 from app.engines.trigger_lifecycle import resolve_next_trigger
 
@@ -91,8 +92,10 @@ def evaluate_unified_decision(
         state = "DATA_STALE"
     elif status == "ENTRY_TRIGGERED":
         state = "LONG_READY" if direction == "LONG" else "SHORT_READY"
-    elif status in ("ENTRY_READY", "SETUP_WATCH"):
+    elif status == "ENTRY_READY":
         state = "LONG_WATCH" if direction == "LONG" else "SHORT_WATCH"
+    elif status == "SETUP_WATCH":
+        state = "LONG_BIAS" if direction == "LONG" else "SHORT_BIAS"
     elif status in ("INVALIDATED", "EXITED"):
         state = "INVALIDATED"
     elif any(
@@ -102,11 +105,11 @@ def evaluate_unified_decision(
     ):
         state = "MISSED_ENTRY"
     elif action in ("PREPARE_LONG", "LONG"):
-        state, direction = "LONG_WATCH", "LONG"
+        state, direction = "LONG_BIAS", "LONG"
     elif action in ("PREPARE_SHORT", "SHORT"):
-        state, direction = "SHORT_WATCH", "SHORT"
+        state, direction = "SHORT_BIAS", "SHORT"
     recovery_continues = (
-        previous.get("state") == "BULLISH_RECOVERY"
+        previous.get("state") == "LONG_BIAS"
         and (
             support is None
             or float(normalized.get("lastClosedCandlePrice") or price) >= support
@@ -114,7 +117,7 @@ def evaluate_unified_decision(
         and state in ("WAIT", "INVALIDATED")
     )
     if false_breakout or recovery_continues:
-        state, direction = "BULLISH_RECOVERY", "LONG"
+        state, direction = "LONG_BIAS", "LONG"
 
     # Executable decisions must survive realistic friction, not only chart-mid RR.
     settings = get_settings()
@@ -151,6 +154,17 @@ def evaluate_unified_decision(
     latest_closed_raw = normalized.get("lastClosedCandlePrice")
     latest_closed = (float(latest_closed_raw)
                      if isinstance(latest_closed_raw, (int, float)) else None)
+    trigger_result = resolve_next_trigger(
+        resistance=resistance, support=support, latest_closed=latest_closed,
+        direction=direction, state=state)
+    pending_trigger = trigger_result["next"]
+    # A displayed closed-candle condition is part of executability, not decoration.
+    if state.endswith("READY") and pending_trigger is not None:
+        state = "LONG_WATCH" if direction == "LONG" else "SHORT_WATCH"
+        entry = {
+            **entry,
+            "missing_condition": trigger_result["label"],
+        }
     reason = str(
         entry.get("missing_condition") or decision.get("reason") or "等待條件一致"
     )
@@ -164,15 +178,19 @@ def evaluate_unified_decision(
     elif state == "INVALIDATED":
         action = "舊劇本已失效"
         flat_action = "舊劇本已取消，依最新結構等待新劇本"
-    elif state == "BULLISH_RECOVERY":
-        action = "行情轉強，等待多方確認"
+    elif state == "LONG_BIAS" and false_breakout:
+        action = "行情偏多，但尚未到進場區"
         reason = "空方劇本已失效，價格重新站回關鍵位"
         flat_action = "暫不追價，等待回踩新支撐或 15M 收盤確認"
+    elif state.endswith("BIAS"):
+        action = "行情偏多，但尚未到進場區" if direction == "LONG" else "行情偏空，但尚未到進場區"
+        flat_action = "等待，尚未到進場區，請勿追價。"
     elif state.endswith("READY"):
         action = "可依完整風控計畫評估"
         flat_action = f"{entry.get('trigger_timeframe') or '15M'} 收盤條件已完成"
     elif state.endswith("WATCH"):
-        action = "觀察中"
+        action = "等待確認，尚不可進場"
+        flat_action = "等待，尚不可進場，請勿追價。"
     else:
         direction, action = "NONE", "等待"
 
@@ -206,10 +224,6 @@ def evaluate_unified_decision(
             and price < float(long_plan["defense_price"])):
         long_manage = (f"若持有多單：{long_plan['defense_price']:.2f} "
                        "防守條件已觸發，依風控規則處理")
-    trigger_result = resolve_next_trigger(
-        resistance=resistance, support=support, latest_closed=latest_closed,
-        direction=direction, state=state)
-    pending_trigger = trigger_result["next"]
     current = UnifiedDecision(
         state=state,
         direction=direction,
@@ -249,11 +263,11 @@ def evaluate_unified_decision(
     event_types.extend(item["code"] for item in completed_events
                        if item["code"] not in previous_completed)
     transition_chain: list[tuple[str, str, str]] = []
-    if false_breakout and old_state not in ("FALSE_BREAKOUT", "BULLISH_RECOVERY"):
+    if false_breakout and old_state not in ("FALSE_BREAKOUT", "LONG_BIAS"):
         transition_chain = [
             (old_state, "SHORT_INVALIDATED", "SHORT_INVALIDATED"),
             ("SHORT_INVALIDATED", "FALSE_BREAKOUT", "FALSE_BREAKOUT"),
-            ("FALSE_BREAKOUT", "BULLISH_RECOVERY", "BULLISH_RECOVERY"),
+            ("FALSE_BREAKOUT", "LONG_BIAS", "BULLISH_RECOVERY"),
         ]
         event_types = []
     if state == "DATA_STALE" and old_state != state:
@@ -334,9 +348,14 @@ def evaluate_unified_decision(
         "SHORT_INVALIDATED": "空方劇本失效，停止沿用原空方進場區",
         "FALSE_BREAKOUT": "15M 收盤重新站回失守位，確認為假跌破",
         "BULLISH_RECOVERY": "價格收復關鍵位，行情由偏空轉為多方恢復",
+        "TRIGGER_CHANGED": "下一個有效確認條件已更新",
         "LONG_DEFENSE_TRIGGERED": "多單防守條件已觸發",
         "SHORT_DEFENSE_TRIGGERED": "空單防守條件已觸發",
     }
+    old_trigger = previous.get("next_trigger")
+    new_trigger = pending_trigger.get("level") if pending_trigger else None
+    if old_state == state and old_trigger != new_trigger:
+        event_types.append("TRIGGER_CHANGED")
     ordinary = [(old_state, state, kind) for kind in dict.fromkeys(event_types)]
     for previous_state, current_state, event_type in transition_chain or ordinary:
         entry_zone = (
@@ -360,12 +379,12 @@ def evaluate_unified_decision(
             f"{pending_trigger.get('level') if pending_trigger else ''}"
         )
         event_id = hashlib.sha256(seed.encode()).hexdigest()[:32]
-        events.append(
-            {
+        payload = {
                 "eventId": event_id,
                 "event_type": event_type,
                 "previousState": previous_state,
                 "currentState": current_state,
+                "direction": direction,
                 "transitionReason": event_reasons[event_type],
                 "marketState": current.market_state,
                 "finalDecision": current_state,
@@ -383,6 +402,8 @@ def evaluate_unified_decision(
                 "confirmation": current.confirmation,
                 "decisionBasisCandleCloseTime": candle_time,
                 "latestClosedCandlePrice": latest_closed,
+                "missingCondition": entry.get("missing_condition"),
+                "cancelCondition": entry.get("cancel_condition"),
                 "nextTriggerCondition": pending_trigger,
                 "completedTriggers": trigger_result["completed"],
                 "triggerLevel": (pending_trigger.get("level") if pending_trigger else
@@ -404,8 +425,19 @@ def evaluate_unified_decision(
                     f"【已持倉】{long_manage}；{short_manage}\n【資料時間】{quote_time}"
                 ),
             }
-        )
+        payload["presentation"] = build_decision_presentation(payload)
+        events.append(payload)
     out = asdict(current)
+    out["latest_closed_price"] = latest_closed
+    out["presentation"] = build_decision_presentation({
+        "state": state,
+        "direction": direction,
+        "flatAction": flat_action,
+        "missingCondition": entry.get("missing_condition"),
+        "confirmation": current.confirmation,
+        "cancelCondition": entry.get("cancel_condition"),
+        "stopLoss": entry.get("stop_loss"),
+    })
     out["triggers"] = trigger_result["triggers"]
     out["completed_triggers"] = trigger_result["completed"]
     out["next_trigger_condition"] = pending_trigger

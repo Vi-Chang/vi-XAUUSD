@@ -472,13 +472,18 @@ function renderFinalDecision(finalState) {
     short_manage: event.shortManage,
     confirmation: event.confirmation,
     quote_time: event.calculatedAt,
+    latest_closed_price: event.latestClosedCandlePrice,
+    last_closed_candle_time: event.candleCloseTime,
+    presentation: event.presentation || finalState.presentation,
   };
   const labels = {
-    WAIT: "等待", LONG_WATCH: "多方觀察中", LONG_READY: "多方條件完成",
-    SHORT_WATCH: "空方觀察中", SHORT_READY: "空方條件完成",
+    WAIT: "等待", LONG_BIAS: "行情偏多，尚未到進場區", SHORT_BIAS: "行情偏空，尚未到進場區",
+    LONG_WATCH: "偏多等待確認，尚不可進場", LONG_READY: "多單進場條件成立",
+    SHORT_WATCH: "偏空等待確認，尚不可進場", SHORT_READY: "空單進場條件成立",
     LONG_MANAGE: "多方獲利管理", SHORT_MANAGE: "空方獲利管理",
     MISSED_ENTRY: "已錯過進場", INVALIDATED: "舊劇本已失效", DATA_STALE: "資料過期",
   };
+  const presentation = finalState.presentation || event.presentation || {};
   $("quick-final-state").textContent = labels[finalState.state] || "等待";
   $("quick-flat-action").textContent = finalState.flat_action || "等待下一個明確條件";
   $("quick-position-action").textContent = finalState.direction === "SHORT"
@@ -487,10 +492,12 @@ function renderFinalDecision(finalState) {
   $("quick-freshness").textContent = finalState.state === "DATA_STALE" ? "資料過期，禁止進場" : "資料正常";
   $("quick-live-price").textContent = finalState.source_price == null ? "–" : fmt(finalState.source_price);
   $("quick-live-time").textContent = fmtTs(finalState.quote_time);
-  $("quick-action-title").textContent = finalState.action || labels[finalState.state] || "等待";
+  $("quick-closed-price").textContent = finalState.latest_closed_price == null ? "–" : fmt(finalState.latest_closed_price);
+  $("quick-closed-time").textContent = fmtTs(finalState.last_closed_candle_time);
+  $("quick-action-title").textContent = presentation.title || finalState.action || labels[finalState.state] || "等待";
   $("quick-action-why").textContent = finalState.reason || "等待條件一致";
   $("quick-action-next").textContent = finalState.flat_action || "等待下一個明確條件";
-  $("quick-action-card").dataset.action = finalState.state === "DATA_STALE" ? "NO_TRADE" : finalState.state;
+  $("quick-action-card").dataset.action = presentation.tone || (finalState.state === "DATA_STALE" ? "danger" : "neutral");
 }
 
 async function refreshTelegramStatus() {
@@ -593,6 +600,7 @@ function renderEntryPlan(plan) {
   $("entry-plan-cancel").textContent = plan.cancel_condition || "–";
   $("entry-plan-expiry").textContent = fmtTs(plan.expires_at);
   card.dataset.status = displayStatus;
+  card.dataset.direction = plan.direction || "NONE";
 }
 
 function renderQuickAction(a) {

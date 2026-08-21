@@ -94,7 +94,7 @@ def test_failed_event_data_caps_confidence_without_erasing_direction():
     data["entry_engine"].update({"direction": "LONG", "confidence_score": 90})
     data["normalized_analysis"]["eventDataStatus"] = "FAILED"
     state, _ = evaluate_unified_decision(data)
-    assert state["state"] == "LONG_WATCH"
+    assert state["state"] == "LONG_BIAS"
     assert state["confidence"] == 55
 
 
@@ -149,4 +149,87 @@ def test_triggered_with_missing_confirmation_is_downgraded_to_watch():
     })
     state, _ = evaluate_unified_decision(data)
     assert state["state"] == "SHORT_WATCH"
-    assert "一致性檢查未通過" in state["flat_action"]
+    assert state["flat_action"] == "等待，尚不可進場，請勿追價。"
+
+
+def closed_breakout_case(*, current_price=4529.96, closed_price=4530.0):
+    data = payload(current_price, status="ENTRY_TRIGGERED")
+    data["entry_engine"].update({
+        "direction": "LONG", "suggested_entry": 4528, "stop_loss": 4520,
+        "take_profit_1": 4548, "take_profit_2": 4560,
+        "risk_reward": 2.5, "missing_condition": "",
+        "zone_low": 4527, "zone_high": 4529,
+        "cancel_condition": "15M 收盤跌破 4520.00",
+    })
+    data["normalized_analysis"].update({
+        "lastClosedCandlePrice": closed_price,
+        "confirmationLevels": [
+            {"kind": "support", "timeframe": "15M", "price": 4520},
+            {"kind": "resistance", "timeframe": "15M", "price": 4532.51},
+        ],
+    })
+    return data
+
+
+def test_intrabar_above_trigger_remains_yellow_watch_until_15m_close():
+    state, events = evaluate_unified_decision(
+        closed_breakout_case(current_price=4534, closed_price=4530)
+    )
+    assert state["state"] == "LONG_WATCH"
+    assert state["presentation"]["tone"] == "warning"
+    assert state["presentation"]["title"] == "🟡【偏多等待確認｜尚不可進場】"
+    assert state["flat_action"] == "等待，尚不可進場，請勿追價。"
+    assert state["next_trigger"] == 4532.51
+    assert events[-1]["latestClosedCandlePrice"] == 4530
+
+
+def test_closed_15m_above_trigger_with_risk_controls_becomes_long_ready():
+    state, events = evaluate_unified_decision(
+        closed_breakout_case(current_price=4534, closed_price=4533)
+    )
+    assert state["state"] == "LONG_READY"
+    assert state["presentation"]["tone"] == "long_ready"
+    assert state["presentation"]["title"] == "🟢【多單進場條件成立】"
+    assert state["next_trigger"] is None
+    assert "等待新結構" in state["confirmation"]
+    assert events[-1]["entryZone"] == {"low": 4527, "high": 4529}
+
+
+def test_bias_means_direction_exists_but_price_has_not_reached_entry_zone():
+    data = payload(4529.96, status="SETUP_WATCH")
+    data["entry_engine"].update({
+        "direction": "LONG", "missing_condition": "價格尚未進入觀察區",
+    })
+    state, _ = evaluate_unified_decision(data)
+    assert state["state"] == "LONG_BIAS"
+    assert state["presentation"]["title"] == "🟡【行情偏多｜尚未到進場區】"
+
+
+def test_entry_zone_transition_is_bias_to_watch_not_directly_ready():
+    outside = payload(4529, status="SETUP_WATCH")
+    outside["entry_engine"].update({"direction": "LONG"})
+    bias, _ = evaluate_unified_decision(outside)
+    inside = payload(4530, status="ENTRY_READY")
+    inside["entry_engine"].update({
+        "direction": "LONG", "missing_condition": "尚缺已收盤反轉 K 線",
+    })
+    watch, events = evaluate_unified_decision(inside, bias)
+    assert bias["state"] == "LONG_BIAS"
+    assert watch["state"] == "LONG_WATCH"
+    assert any(event["previousState"] == "LONG_BIAS"
+               and event["currentState"] == "LONG_WATCH" for event in events)
+
+
+def test_previously_completed_close_trigger_is_removed_immediately():
+    previous = {
+        "state": "LONG_WATCH", "direction": "LONG", "source_price": 4531,
+        "next_trigger": 4532.51,
+        "last_closed_candle_time": "2026-08-20T13:30:00+00:00",
+    }
+    state, events = evaluate_unified_decision(
+        closed_breakout_case(current_price=4534, closed_price=4533), previous
+    )
+    assert state["state"] == "LONG_READY"
+    assert state["next_trigger"] is None
+    assert all((event.get("nextTriggerCondition") or {}).get("level") != 4532.51
+               for event in events)
