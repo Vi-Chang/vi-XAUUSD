@@ -138,7 +138,8 @@ def _setup_id(kind: str, candle_time: str, anchor: float) -> str:
 def _plan(kind: str, status: str, *, candle_time: str, zone_low: float,
           zone_high: float, stop: float, current: float, atr: float,
           score: int, reasons: list[str], missing: list[str], settings,
-          risk_weight: float = 1.0, execution_cost: float = 0.0) -> dict:
+          risk_weight: float = 1.0, execution_cost: float = 0.0,
+          expiry_bars: int | None = None, max_chase_mult: float | None = None) -> dict:
     entry = min(max(current, zone_low), zone_high)
     risk = entry - stop
     # Targets compensate for round-trip spread/slippage, so the displayed R is
@@ -151,8 +152,11 @@ def _plan(kind: str, status: str, *, candle_time: str, zone_low: float,
     if risk <= 0 and status.startswith("ENTRY_READY_"):
         status = "WAIT_RISK_PLAN"
         missing = [*missing, f"防守價 {stop:.2f} 未低於多單進場價 {entry:.2f}"]
+    expiry_bars = expiry_bars or settings.trend_setup_expiry_bars
+    max_chase_mult = (settings.trend_max_chase_atr_mult
+                      if max_chase_mult is None else max_chase_mult)
     expires = (datetime.fromisoformat(candle_time.replace("Z", "+00:00"))
-               + timedelta(minutes=15 * settings.trend_setup_expiry_bars)).isoformat()
+               + timedelta(minutes=15 * expiry_bars)).isoformat()
     return {"setupId": _setup_id(kind, candle_time, zone_high), "setupVersion": ENGINE_VERSION,
             "type": kind, "direction": "LONG", "status": status,
             "createdFromCandleTime": candle_time, "entryZoneLow": round(zone_low, 2),
@@ -161,7 +165,7 @@ def _plan(kind: str, status: str, *, candle_time: str, zone_low: float,
             "tp2": round(tp2, 2), "tp3": round(tp3, 2),
             "riskReward": round(rr, 2), "grossRiskReward": 1.5,
             "executionCost": round(execution_cost, 4),
-            "maxChaseDistance": round(atr * settings.trend_max_chase_atr_mult, 2),
+            "maxChaseDistance": round(atr * max_chase_mult, 2),
             "signalScore": score, "riskWeight": risk_weight, "passedReasons": reasons,
             "missingConditions": missing, "expiresAt": expires,
             "atrValue": round(atr, 4), "atrTimeframe": "15M",
@@ -173,7 +177,8 @@ def _plan(kind: str, status: str, *, candle_time: str, zone_low: float,
 def evaluate_trend_continuation(data: dict, *, m15: pd.DataFrame | None,
                                 h1: pd.DataFrame | None, h4: pd.DataFrame | None,
                                 previous: dict | None = None,
-                                _mirrored: bool = False) -> tuple[dict, list[dict]]:
+                                _mirrored: bool = False,
+                                _profile: str = "LONG") -> tuple[dict, list[dict]]:
     from app.config import get_settings
 
     settings = get_settings()
@@ -190,8 +195,21 @@ def evaluate_trend_continuation(data: dict, *, m15: pd.DataFrame | None,
     if market_type == "TREND_CONTINUATION_SHORT" and not _mirrored:
         mirrored, _ = evaluate_trend_continuation(
             data, m15=_mirror_frame(frame), h1=_mirror_frame(h1), h4=_mirror_frame(h4),
-            previous=None, _mirrored=True)
+            previous=None, _mirrored=True, _profile="SHORT")
         return _unmirror_short(mirrored, settings)
+    is_short_profile = _profile == "SHORT"
+    shallow_zone_mult = (settings.trend_short_shallow_zone_atr_mult if is_short_profile
+                         else settings.trend_shallow_zone_atr_mult)
+    max_chase_mult = (settings.trend_short_max_chase_atr_mult if is_short_profile
+                      else settings.trend_max_chase_atr_mult)
+    momentum_chase_mult = (settings.trend_short_momentum_max_chase_atr_mult
+                           if is_short_profile else settings.trend_momentum_max_chase_atr_mult)
+    flag_range_mult = (settings.trend_short_flag_max_range_atr_mult if is_short_profile
+                       else settings.trend_flag_max_range_atr_mult)
+    flag_impulse_mult = (settings.trend_short_flag_min_impulse_atr_mult if is_short_profile
+                         else settings.trend_flag_min_impulse_atr_mult)
+    expiry_bars = (settings.trend_short_setup_expiry_bars if is_short_profile
+                   else settings.trend_setup_expiry_bars)
     atr = max(_atr(frame), 0.01)
     last, prior = frame.iloc[-1], frame.iloc[-2]
     current, closed = float(last["close"]), float(last["close"])
@@ -204,7 +222,7 @@ def evaluate_trend_continuation(data: dict, *, m15: pd.DataFrame | None,
     recent_low = float(frame["low"].tail(8).min())
     ema20 = float(_ema(frame["close"], 20).iloc[-1])
     support = max(recent_low, ema20)
-    half = atr * settings.trend_shallow_zone_atr_mult
+    half = atr * shallow_zone_mult
     shallow_low, shallow_high = support - half, support + half
     bullish_close = closed > float(last["open"])
     higher_low = float(last["low"]) > float(prior["low"])
@@ -214,27 +232,42 @@ def evaluate_trend_continuation(data: dict, *, m15: pd.DataFrame | None,
     execution_cost = max(0.0, spread) + settings.estimated_slippage_abs
     from app.engines.execution_context import market_session
     session = market_session(candle_time)
+    event = data.get("event_risk") or {}
+    event_impact = str(event.get("event_impact") or "UNKNOWN").upper()
+    time_risk = str(event.get("time_risk") or event.get("level") or "UNKNOWN").upper()
+    event_source = str(event.get("source") or "none").lower()
+    event_lockout = bool(event.get("event_lockout") or event.get("post_event_wait"))
+    event_unknown = event_source == "none" or event_impact == "UNKNOWN" or time_risk == "UNKNOWN"
+    event_high_risk = event_lockout or (event_impact == "HIGH" and time_risk == "HIGH")
+    event_penalty = (settings.trend_event_high_risk_score_penalty if event_high_risk
+                     else settings.trend_event_unknown_score_penalty if event_unknown else 0)
+    if event_high_risk:
+        expiry_bars = min(expiry_bars, settings.trend_event_high_risk_expiry_bars)
     score_threshold = (settings.trend_continuation_min_score
-                       + settings.session_score_adjustments.get(session["name"], 0))
+                       + settings.session_score_adjustments.get(session["name"], 0)
+                       + event_penalty)
     spread_limit = max(settings.gate_spread_max_abs,
                        atr * settings.gate_spread_max_atr15_mult)
     execution_good = spread <= spread_limit
     common = (market_type == "TREND_CONTINUATION_LONG"
               and score >= score_threshold
-              and data_good and execution_good)
+              and data_good and execution_good and not event_lockout)
     candidates: list[dict] = []
 
     shallow_in_zone = shallow_low <= current <= shallow_high
     shallow_confirmed = shallow_in_zone and bullish_close and (higher_low or broke_prior_high)
     shallow_missing = []
     if not common: shallow_missing.append(f"趨勢評分 {score}，{session['name']} 時段門檻 {score_threshold}")
+    if event_lockout: shallow_missing.append("重大事件凍結中，暫停建立新倉")
+    elif event_unknown: shallow_missing.append(f"事件資料未知，訊號門檻提高 {event_penalty} 分")
     if not shallow_in_zone: shallow_missing.append(f"距回踩區 {min(abs(current-shallow_low), abs(current-shallow_high)):.2f}，需進入 {shallow_low:.2f}–{shallow_high:.2f}")
     if shallow_in_zone and not shallow_confirmed: shallow_missing.append("尚缺15M止跌、HL或突破前K高點確認")
     candidates.append(_plan("SHALLOW_PULLBACK_LONG", "ENTRY_READY_SHALLOW_PULLBACK" if common and shallow_confirmed else "WAIT_SHALLOW_PULLBACK",
                             candle_time=candle_time, zone_low=shallow_low, zone_high=shallow_high,
                             stop=recent_low - atr * .15, current=current, atr=atr, score=score,
                             reasons=["4H／1H趨勢同向", "15M結構未破壞"] + (["超買僅降低權重"] if overbought else []),
-                            missing=shallow_missing, settings=settings, execution_cost=execution_cost))
+                            missing=shallow_missing, settings=settings, execution_cost=execution_cost,
+                            expiry_bars=expiry_bars, max_chase_mult=max_chase_mult))
 
     ledger = data.get("breakout_setup_manager") or {}
     fixed = next((s for s in reversed(ledger.get("setups") or [])
@@ -248,7 +281,8 @@ def evaluate_trend_continuation(data: dict, *, m15: pd.DataFrame | None,
                                 candle_time=str(fixed.get("createdFromCandleTime") or candle_time), zone_low=zlow, zone_high=zhigh,
                                 stop=float(fixed["stopPrice"]), current=current, atr=atr, score=score,
                                 reasons=[f"固定突破 {float(fixed['breakoutTrigger']):.2f} 已確認"], missing=missing,
-                                settings=settings, execution_cost=execution_cost))
+                                settings=settings, execution_cost=execution_cost,
+                                expiry_bars=expiry_bars, max_chase_mult=max_chase_mult))
     else:
         candidates.append({"type": "BREAKOUT_RETEST_LONG", "status": "NO_SETUP",
                            "missingConditions": ["目前沒有已確認且可回踩的固定突破劇本"]})
@@ -260,37 +294,42 @@ def evaluate_trend_continuation(data: dict, *, m15: pd.DataFrame | None,
     first_half_range = float(consolidation.iloc[:2]["high"].max() - consolidation.iloc[:2]["low"].min())
     last_half_range = float(consolidation.iloc[2:]["high"].max() - consolidation.iloc[2:]["low"].min())
     contracting = last_half_range <= first_half_range
-    flag_ok = (common and impulse >= atr * settings.trend_flag_min_impulse_atr_mult
-               and flag_range <= atr * settings.trend_flag_max_range_atr_mult
+    flag_ok = (common and impulse >= atr * flag_impulse_mult
+               and flag_range <= atr * flag_range_mult
                and contracting
-               and closed > flag_high and current <= flag_high + atr * settings.trend_max_chase_atr_mult)
+               and closed > flag_high and current <= flag_high + atr * max_chase_mult)
     flag_missing = []
-    if impulse < atr * settings.trend_flag_min_impulse_atr_mult: flag_missing.append(f"前段漲幅 {impulse:.2f}，門檻 {atr * settings.trend_flag_min_impulse_atr_mult:.2f}")
-    if flag_range > atr * settings.trend_flag_max_range_atr_mult: flag_missing.append(f"整理寬度 {flag_range:.2f}，上限 {atr * settings.trend_flag_max_range_atr_mult:.2f}")
+    if impulse < atr * flag_impulse_mult: flag_missing.append(f"前段漲幅 {impulse:.2f}，門檻 {atr * flag_impulse_mult:.2f}")
+    if flag_range > atr * flag_range_mult: flag_missing.append(f"整理寬度 {flag_range:.2f}，上限 {atr * flag_range_mult:.2f}")
     if not contracting: flag_missing.append(f"整理波動未收斂：後半 {last_half_range:.2f}，前半 {first_half_range:.2f}")
     if closed <= flag_high: flag_missing.append(f"15M收盤 {closed:.2f} 尚未突破旗形高點 {flag_high:.2f}")
-    if current > flag_high + atr * settings.trend_max_chase_atr_mult: flag_missing.append(f"旗形突破延伸 {current - flag_high:.2f}，最大允許 {atr * settings.trend_max_chase_atr_mult:.2f}")
+    if current > flag_high + atr * max_chase_mult: flag_missing.append(f"旗形突破延伸 {current - flag_high:.2f}，最大允許 {atr * max_chase_mult:.2f}")
     candidates.append(_plan("BULL_FLAG_CONTINUATION", "ENTRY_READY_BULL_FLAG" if flag_ok else "WAIT_BULL_FLAG",
                             candle_time=candle_time, zone_low=flag_high, zone_high=flag_high + atr * .15,
                             stop=flag_low - atr * .10, current=current, atr=atr, score=score,
                             reasons=["窄幅整理維持多方結構"], missing=flag_missing, settings=settings,
-                            execution_cost=execution_cost))
+                            execution_cost=execution_cost, expiry_bars=expiry_bars,
+                            max_chase_mult=max_chase_mult))
 
     breakout = float(frame["high"].iloc[-6:-1].max())
     chase = current - breakout
     momentum_ok = (market_type == "TREND_CONTINUATION_LONG" and trend_score >= settings.trend_continuation_strong_score
-                   and closed > breakout and chase <= atr * settings.trend_momentum_max_chase_atr_mult
-                   and bullish_close and data_good)
+                   and closed > breakout and chase <= atr * momentum_chase_mult
+                   and bullish_close and data_good and execution_good
+                   and not event_lockout and not event_unknown)
     momentum_missing = []
     if trend_score < settings.trend_continuation_strong_score: momentum_missing.append(f"趨勢評分 {trend_score}，動能門檻 {settings.trend_continuation_strong_score}")
     if closed <= breakout: momentum_missing.append(f"15M收盤 {closed:.2f} 尚未突破固定高點 {breakout:.2f}")
-    if chase > atr * settings.trend_momentum_max_chase_atr_mult: momentum_missing.append(f"突破延伸 {chase:.2f}，最大允許 {atr * settings.trend_momentum_max_chase_atr_mult:.2f}")
+    if chase > atr * momentum_chase_mult: momentum_missing.append(f"突破延伸 {chase:.2f}，最大允許 {atr * momentum_chase_mult:.2f}")
+    if event_lockout: momentum_missing.append("重大事件凍結中，動能進場停用")
+    elif event_unknown: momentum_missing.append("事件資料未知，較積極的動能進場停用")
     candidates.append(_plan("MOMENTUM_CONTINUATION", "ENTRY_READY_MOMENTUM_CONTINUATION" if momentum_ok else "WAIT_MOMENTUM",
-                            candle_time=candle_time, zone_low=breakout, zone_high=breakout + atr * settings.trend_momentum_max_chase_atr_mult,
+                            candle_time=candle_time, zone_low=breakout, zone_high=breakout + atr * momentum_chase_mult,
                             stop=float(frame["low"].tail(3).min()) - atr * .10, current=current, atr=atr,
                             score=score, reasons=["4H／1H高度一致", "動能型風險較高"],
                             missing=momentum_missing, settings=settings, risk_weight=.5,
-                            execution_cost=execution_cost))
+                            execution_cost=execution_cost, expiry_bars=expiry_bars,
+                            max_chase_mult=momentum_chase_mult))
 
     # A waiting setup owns immutable prices. Quote/candle refresh may satisfy it,
     # but may not move its zone, stop, targets or chase boundary.
@@ -325,7 +364,8 @@ def evaluate_trend_continuation(data: dict, *, m15: pd.DataFrame | None,
             confirmed_now = common and closed > low and current <= high + float(candidate["maxChaseDistance"])
         elif kind == "MOMENTUM_CONTINUATION":
             confirmed_now = (trend_score >= settings.trend_continuation_strong_score
-                             and closed > low and current <= high and bullish_close and data_good)
+                             and closed > low and current <= high and bullish_close and data_good
+                             and execution_good and not event_lockout and not event_unknown)
         if confirmed_now:
             candidate["status"] = ready_for_type[kind]
             candidate["missingConditions"] = []
@@ -356,7 +396,12 @@ def evaluate_trend_continuation(data: dict, *, m15: pd.DataFrame | None,
               "version": ENGINE_VERSION, "evaluatedCandleTime": candle_time,
               "atrValue": round(atr, 4), "atrTimeframe": "15M",
               "marketSession": session, "requiredSignalScore": score_threshold,
-              "executionCost": round(execution_cost, 4)}
+              "executionCost": round(execution_cost, 4),
+              "parameterProfile": _profile,
+              "eventGate": {"impact": event_impact, "timeRisk": time_risk,
+                            "source": event_source, "unknown": event_unknown,
+                            "lockout": event_lockout, "scorePenalty": event_penalty,
+                            "effectiveExpiryBars": expiry_bars}}
     result["execution"] = {"spread": spread, "spreadLimit": round(spread_limit, 4),
                            "passed": execution_good}
     return result, events
