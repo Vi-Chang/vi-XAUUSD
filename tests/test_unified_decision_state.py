@@ -92,10 +92,12 @@ def test_ready_is_downgraded_when_cost_adjusted_rr_is_too_low():
 def test_failed_event_data_caps_confidence_without_erasing_direction():
     data = payload(100, status="SETUP_WATCH")
     data["entry_engine"].update({"direction": "LONG", "confidence_score": 90})
+    data["market_decision"].update({"signal_score": 90, "evidence_score": 90})
     data["normalized_analysis"]["eventDataStatus"] = "FAILED"
     state, _ = evaluate_unified_decision(data)
     assert state["state"] == "LONG_BIAS"
-    assert state["confidence"] == 55
+    assert state["signal_score"] == 90
+    assert state["confidence_grade"] == "A"
 
 
 def test_completed_breakout_is_not_reused_and_short_defense_is_triggered():

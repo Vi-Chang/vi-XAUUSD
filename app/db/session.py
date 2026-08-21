@@ -72,6 +72,13 @@ def init_db() -> None:
         "telegram_notifications": {
             "semantic_dedup_key": "VARCHAR(64)",
         },
+        "analysis_runs": {
+            "signal_score": "INTEGER",
+            "grading_version": "VARCHAR(32) DEFAULT ''",
+            "trade_status": "VARCHAR(32) DEFAULT 'WAIT_CONFIRMATION'",
+            "can_enter": "BOOLEAN DEFAULT FALSE",
+            "blocked_reason": "TEXT DEFAULT ''",
+        },
         "mentor_signals": {   # IMPORT-MENTOR-HISTORY 歷史紀錄擴充
             "status": "VARCHAR(8) DEFAULT 'OPEN'",
             "open_time": "TIMESTAMPTZ", "close_time": "TIMESTAMPTZ",
@@ -96,6 +103,9 @@ def init_db() -> None:
         conn.execute(text(
             "CREATE UNIQUE INDEX IF NOT EXISTS uq_telegram_semantic_dedup "
             "ON telegram_notifications (semantic_dedup_key)"))
+
+    from app.services.confidence_history import backfill_confidence_history
+    backfill_confidence_history()
 
     # 預設帳戶種子(帳戶A 老師帶單 / 帳戶B 自己交易)
     from datetime import datetime, timezone

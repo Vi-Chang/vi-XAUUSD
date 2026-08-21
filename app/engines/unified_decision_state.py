@@ -6,6 +6,11 @@ import hashlib
 from dataclasses import asdict, dataclass
 
 from app.config import get_settings
+from app.engines.confidence import (
+    GRADING_VERSION,
+    get_confidence_grade,
+    normalize_signal_score,
+)
 from app.engines.decision_presentation import build_decision_presentation
 from app.engines.entry_engine import EntryPlan, validate_executable_plan
 from app.engines.trigger_lifecycle import resolve_next_trigger
@@ -16,7 +21,13 @@ class UnifiedDecision:
     state: str = "WAIT"
     direction: str = "NONE"
     action: str = "等待"
-    confidence: int = 0
+    confidence: int | None = None
+    signal_score: int | None = None
+    confidence_grade: str = "U"
+    grading_version: str = GRADING_VERSION
+    trade_status: str = "WAIT_CONFIRMATION"
+    can_enter: bool = False
+    blocked_reason: str = ""
     reason: str = "等待新的市場資料"
     flat_action: str = "等待明確價位與已收盤 K 線確認"
     long_manage: str = "若持有多單：依最新防守價管理風險"
@@ -142,15 +153,11 @@ def evaluate_unified_decision(
                 entry = {**entry, "missing_condition":
                          f"扣除點差與滑價後賺賠比僅 {net_rr:.2f}，等待更好的價格"}
 
-    confidence = int(
-        entry.get("confidence_score") or decision.get("evidence_score") or 0
+    signal_score = normalize_signal_score(
+        decision.get("signal_score", decision.get("evidence_score"))
     )
-    event_status = str(normalized.get("eventDataStatus") or "FAILED")
-    market_mode = str(normalized.get("marketRegime") or "range")
-    if event_status != "GOOD":
-        confidence = min(confidence, 55)
-    if market_mode == "range" and state.endswith("READY"):
-        confidence = min(confidence, 65)
+    confidence = signal_score
+    confidence_grade = get_confidence_grade(signal_score)
     latest_closed_raw = normalized.get("lastClosedCandlePrice")
     latest_closed = (float(latest_closed_raw)
                      if isinstance(latest_closed_raw, (int, float)) else None)
@@ -170,7 +177,7 @@ def evaluate_unified_decision(
     )
     flat_action = reason
     if state == "DATA_STALE":
-        direction, action, confidence = "NONE", "暫停交易", 0
+        direction, action = "NONE", "暫停交易"
         reason = flat_action = "行情或 K 線資料已過期，等待資料恢復"
     elif state == "MISSED_ENTRY":
         action = "禁止追價"
@@ -224,11 +231,23 @@ def evaluate_unified_decision(
             and price < float(long_plan["defense_price"])):
         long_manage = (f"若持有多單：{long_plan['defense_price']:.2f} "
                        "防守條件已觸發，依風控規則處理")
+    from app.engines.confidence import permission_from_state
+    permission = permission_from_state(
+        state,
+        existing_status=str(decision.get("trade_status") or ""),
+        existing_reason=str(decision.get("blocked_reason") or ""),
+    )
     current = UnifiedDecision(
         state=state,
         direction=direction,
         action=action,
         confidence=confidence,
+        signal_score=signal_score,
+        confidence_grade=confidence_grade,
+        grading_version=GRADING_VERSION,
+        trade_status=permission.trade_status,
+        can_enter=permission.can_enter,
+        blocked_reason=permission.blocked_reason,
         reason=reason,
         flat_action=flat_action,
         long_manage=long_manage,
@@ -389,6 +408,12 @@ def evaluate_unified_decision(
                 "marketState": current.market_state,
                 "finalDecision": current_state,
                 "currentPrice": price,
+                "signalScore": signal_score,
+                "confidenceGrade": confidence_grade,
+                "gradingVersion": GRADING_VERSION,
+                "tradeStatus": permission.trade_status,
+                "canEnter": permission.can_enter,
+                "blockedReason": permission.blocked_reason,
                 "entryZone": entry_zone,
                 "stopLoss": entry.get("stop_loss"),
                 "targets": targets,

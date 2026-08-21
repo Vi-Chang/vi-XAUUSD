@@ -10,14 +10,14 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.schemas.ai import AiStrategy
 
 DataQualityStatus = Literal["GOOD", "DEGRADED", "STALE", "FAILED"]
 EventImpact = Literal["LOW", "MEDIUM", "HIGH", "UNKNOWN"]
 EventSource = Literal["official", "finnhub", "fmp", "manual", "none"]
-ConfidenceGrade = Literal["S", "A", "B", "C", "X"]
+ConfidenceGrade = Literal["A", "B", "C", "D", "U"]
 
 
 class CurrentPrice(BaseModel):
@@ -220,12 +220,31 @@ DecisionAction = Literal[
 
 class Decision(BaseModel):
     action: DecisionAction = "NO_TRADE"
-    confidence_grade: Literal["S", "A", "B", "C", "X"] = "X"
+    signal_score: int | None = None
+    confidence_grade: ConfidenceGrade = "U"
     evidence_score: int = 0
+    grading_version: str = "signal-score-v1"
+    trade_status: str = "WAIT_CONFIRMATION"
+    can_enter: bool = False
+    blocked_reason: str = ""
     reason: str = ""
     next_bullish_trigger: str = ""
     next_bearish_trigger: str = ""
     next_recheck_time: str = ""
+
+    @model_validator(mode="after")
+    def canonical_confidence(self) -> Decision:
+        from app.engines.confidence import (
+            GRADING_VERSION,
+            get_confidence_grade,
+            normalize_signal_score,
+        )
+
+        if self.signal_score is None and "evidence_score" in self.model_fields_set:
+            self.signal_score = normalize_signal_score(self.evidence_score)
+        self.confidence_grade = get_confidence_grade(self.signal_score)
+        self.grading_version = GRADING_VERSION
+        return self
 
 
 class BiasAnalysis(BaseModel):

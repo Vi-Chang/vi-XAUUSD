@@ -54,8 +54,9 @@ def _downgrade_decision(result: dict, reason: str) -> None:
         if not isinstance(d, dict):
             continue
         d["action"] = "WATCH"
-        d["confidence_grade"] = "X"
-        d["evidence_score"] = 0      # 證據分數不得沿用舊值
+        d["trade_status"] = "BLOCKED_DATA"
+        d["can_enter"] = False
+        d["blocked_reason"] = reason
         d["reason"] = reason
         result[key] = d
     result["decision_downgraded"] = True

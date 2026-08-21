@@ -213,6 +213,8 @@ body {
 .g-A { background: rgba(88,166,255,.2);   color: var(--info); }
 .g-B { background: rgba(240,160,32,.18);  color: var(--warn); }
 .g-C { background: rgba(139,148,158,.18); color: var(--text-dim); }
+.g-D { background: rgba(248,81,73,.16); color: var(--danger); }
+.g-U { background: rgba(139,148,158,.12); color: var(--text-dim); }
 .g-X { background: rgba(248,81,73,.2);    color: var(--danger); }
 .evidence-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
 .evidence-row .lbl { font-size: .72rem; color: var(--text-dim); white-space: nowrap; }

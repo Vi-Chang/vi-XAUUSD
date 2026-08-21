@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from app.engines.confidence import confidence_label, normalize_signal_score
+
 TAIPEI = ZoneInfo("Asia/Taipei")
 
 
@@ -73,12 +75,19 @@ def format_decision_message(event: dict) -> str:
     closed_time = _local_time(str(event.get("candleCloseTime") or ""))
     data_time = _local_time(str(event.get("calculatedAt") or ""))
     state = str(event.get("currentState") or "WAIT")
+    score = normalize_signal_score(event.get("signalScore"))
+    score_text = str(score) if score is not None else "無有效分數"
     lines = [
         view["title"],
         f"目前動作：{view['currentAction']}",
         f"現價：{price:.2f}",
+        f"訊號信心：{confidence_label(score)}（{score_text}）",
+        f"交易狀態：{event.get('tradeStatus') or 'WAIT_CONFIRMATION'}",
+        f"進場許可：{'可以考慮進場' if event.get('canEnter') else '尚不可進場'}",
         f"最新已收盤 15M：{closed_price}（{closed_time}，UTC+8）",
     ]
+    if event.get("blockedReason"):
+        lines.append(f"阻擋原因：{event['blockedReason']}")
     reasons = list(event.get("transitionReasons") or [])
     if not reasons and event.get("transitionReason"):
         reasons = [str(event["transitionReason"])]

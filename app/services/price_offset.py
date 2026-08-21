@@ -213,8 +213,9 @@ def _strip_all_scenario_prices(out: dict, warning: str) -> None:
     d = out.get("decision") or {}
     if d.get("action") not in ("NO_TRADE",):
         d["action"] = "WATCH"
-        d["confidence_grade"] = "X"
-        d["evidence_score"] = 0
+        d["trade_status"] = "BLOCKED_DATA"
+        d["can_enter"] = False
+        d["blocked_reason"] = warning
         d["reason"] = warning
         out["decision"] = d
     # V2 AI 策略同樣受 fail-safe 管制:未校準不得輸出任何可執行價位

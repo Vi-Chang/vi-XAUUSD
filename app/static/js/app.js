@@ -350,8 +350,9 @@ function applyAnalysis(a) {
     calibrationNote.hidden = !a.calibration_message;
   }
 
-  $("evidence-bar").style.width = `${a.decision.evidence_score}%`;
-  $("evidence-num").textContent = a.decision.evidence_score;
+  const signalScore = a.decision.signal_score;
+  $("evidence-bar").style.width = `${signalScore == null ? 0 : signalScore}%`;
+  $("evidence-num").textContent = signalScore == null ? "未取得" : signalScore;
   const reason = $("decision-reason");
   unskel(reason);
   reason.textContent = a.decision.reason;
@@ -1481,6 +1482,7 @@ async function loadHistory() {
     const groups = [];
     for (const row of rows) {
       const key = [row.setup_id || "", row.lifecycle_status || "NO_SETUP", row.action,
+        row.trade_status || "WAIT_CONFIRMATION", row.can_enter ? "CAN_ENTER" : "BLOCKED",
         ...(row.blocking_reasons || [])].join("|");
       const last = groups[groups.length - 1];
       if (last && last.key === key) last.rows.push(row);
@@ -1489,19 +1491,26 @@ async function loadHistory() {
     const histRows = joinSafe(groups.map((group) => {
       const r = group.rows[0];
       const repeated = group.rows.length > 1 ? `（持續 ${group.rows.length} 次）` : "";
+      const tradeStatusZh = {
+        READY: "條件成立", WAIT_CONFIRMATION: "等待確認", BLOCKED_RR: "賺賠比不足",
+        MISSED_ENTRY: "錯過進場", INVALIDATED: "劇本失效", BLOCKED_DATA: "資料阻擋",
+        BLOCKED_EVENT: "事件鎖定", MANAGE: "持倉管理",
+      };
       return h`<tr>
         <td class="num">${taipeiTime(r.run_time)}</td>
         <td>${stateZh(r.market_state)}</td>
         <td>${lifecycleZh(r.lifecycle_status || "NO_SETUP")} ${repeated}</td>
         <td><span class="act-pill ${decisionClass(r.action)}">${actionZh(r.action)}</span></td>
         <td><span class="grade-badge g-${r.grade}" title="${gradeZh(r.grade)}" style="width:auto;padding:0 8px;font-size:.75rem">${gradeZh(r.grade)}</span></td>
-        <td class="num">${r.evidence_score}</td>
+        <td class="num">${r.signal_score == null ? "未取得" : r.signal_score}</td>
+        <td>${tradeStatusZh[r.trade_status] || r.trade_status || "等待確認"}</td>
+        <td>${r.can_enter ? "可以考慮進場" : "尚不可進場"}</td>
         <td>${qualityZh(r.quality)}</td>
-        <td>${(r.blocking_reasons || []).map(blockReasonZh).join("、") || "無"}</td>
+        <td>${r.blocked_reason || (r.blocking_reasons || []).map(blockReasonZh).join("、") || r.missing_score_reason || "無"}</td>
         <td class="num" title="${r.setup_id || ""}">${r.closed_bars_since_breakout || 0} 根</td></tr>`;
     }));
     body.innerHTML = h`<table class="hist-table"><thead><tr>
-      <th>時間（台灣）</th><th>市場狀態</th><th>劇本階段</th><th>決策</th><th>信心</th><th>證據</th><th>品質</th><th>主要阻擋原因</th><th>已等待</th>
+      <th>時間（台灣）</th><th>市場狀態</th><th>劇本階段</th><th>決策</th><th>信心</th><th>分數</th><th>交易狀態</th><th>進場許可</th><th>品質</th><th>阻擋原因</th><th>已等待</th>
       </tr></thead><tbody>${histRows}</tbody></table>`;
   } catch (e) {
     body.innerHTML = '<div class="empty">歷史紀錄載入失敗。</div>';

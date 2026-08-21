@@ -26,7 +26,9 @@ def test_bad_data_quality_forces_no_trade():
                price=4000.0, atr15=3.0, levels=[], event_lockout=False)
     assert d.action == "NO_TRADE"
     assert d.no_trade_code == "NO_TRADE_DATA_QUALITY"
-    assert d.confidence_grade == "X"
+    assert d.confidence_grade == "U"
+    assert d.signal_score is None
+    assert d.trade_status == "BLOCKED_DATA"
 
 
 def test_market_closed_forces_no_trade():

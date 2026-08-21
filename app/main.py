@@ -404,17 +404,26 @@ async def analysis_history(limit: int = 20) -> list[dict]:
                           .order_by(AnalysisRun.run_time.desc())
                           .limit(limit)).scalars().all()
     out = []
+    from app.engines.confidence import get_confidence_grade
     for r in rows:
         payload = r.result_json or {}
         normalized = payload.get("normalized_analysis") or {}
         price = payload.get("current_price") or {}
         decision = payload.get("market_decision") or payload.get("decision") or {}
         trace = payload.get("decision_trace") or {}
+        signal_score = r.signal_score
+        grade = get_confidence_grade(signal_score)
         out.append({
             "run_time": ensure_utc(r.run_time).isoformat(),
             "trigger": r.trigger, "market_state": r.market_state,
-            "action": r.decision_action, "grade": r.confidence_grade,
-            "evidence_score": r.evidence_score, "quality": r.data_quality_status,
+            "action": r.decision_action, "grade": grade,
+            "signal_score": signal_score, "evidence_score": r.evidence_score,
+            "grading_version": r.grading_version,
+            "trade_status": r.trade_status,
+            "can_enter": r.can_enter,
+            "blocked_reason": r.blocked_reason,
+            "missing_score_reason": decision.get("missing_score_reason", ""),
+            "quality": r.data_quality_status,
             "current_price": price.get("mid"),
             "market_data_timestamp": normalized.get("marketDataTimestamp"),
             "trend_bias": normalized.get("trendBias"),
