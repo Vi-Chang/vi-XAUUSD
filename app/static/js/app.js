@@ -518,7 +518,8 @@ async function refreshTelegramStatus() {
     $("telegram-connection").textContent = status.connected ? "已連線" : "未設定／異常";
     $("telegram-last-event").textContent = status.lastEvent || "尚無事件";
     $("telegram-last-sent").textContent = status.lastSentAt ? fmtTs(status.lastSentAt) : "尚無成功通知";
-    const labels = { PENDING: "通知傳送中", RETRYING: "通知重試中", FAILED: "Telegram 發送失敗", SENT: "已送達", IDLE: "尚無通知" };
+    const labels = { PENDING: "通知傳送中", RETRYING: "通知重試中", FAILED: "Telegram 發送失敗",
+      DELIVERY_UNKNOWN: "Telegram 回應逾時，為避免重複已暫停重送", SENT: "已送達", IDLE: "尚無通知" };
     $("telegram-delivery").textContent = labels[status.status] || status.status;
   } catch (e) {
     $("telegram-connection").textContent = "異常";

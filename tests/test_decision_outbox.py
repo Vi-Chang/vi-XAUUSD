@@ -6,7 +6,11 @@ from sqlalchemy import func, select
 from app.db.models import DecisionEvent, TelegramNotification
 from app.db.session import db_session, init_db
 from app.engines.unified_decision_state import evaluate_unified_decision
-from app.services.alert_aggregator import semantic_key
+from app.services.alert_aggregator import (
+    notification_fingerprint,
+    notification_fingerprint_parts,
+    semantic_key,
+)
 from app.services.decision_outbox import (
     deliver_pending_telegram,
     format_telegram_event,
@@ -319,7 +323,7 @@ async def test_two_workers_claim_same_semantic_notification_once():
 
 
 @pytest.mark.asyncio
-async def test_late_fact_edits_sent_message_instead_of_sending_again():
+async def test_late_reason_does_not_reopen_sent_decision():
     base = {
         "eventId": "late-fact-a", "event_type": "EXIT_ZONE_REACHED",
         "previousState": "WAIT", "currentState": "MISSED_ENTRY",
@@ -346,10 +350,134 @@ async def test_late_fact_edits_sent_message_instead_of_sending_again():
     late = {**base, "eventId": "late-fact-b", "event_type": "EXIT_NOW",
             "transitionReason": "反向收盤突破防守價"}
     updated = persist_decision_events("XAUUSD-LATE-FACT", [late])
-    assert len(updated) == 1 and len(updated[0]["signalFacts"]) == 2
+    assert updated == []
     assert await deliver_pending_telegram(sender=sender, editor=editor,
-                                          event_id=first["eventId"]) == 1
-    assert sends == 1 and edits == 1
+                                          event_id=first["eventId"]) == 0
+    assert sends == 1 and edits == 0
+
+
+def _breakout_dedup_event(*, event_id: str, status="WAIT_BREAKOUT_CONFIRMATION",
+                          trigger=4606.18, chase=4609.88,
+                          calculated="2026-08-21T13:56:00+00:00"):
+    setup = {"setupId": "BO-dedup-4606", "direction": "LONG", "status": status,
+             "breakoutTrigger": trigger, "maxChasePrice": chase,
+             "stopPrice": 4590.0, "createdFromCandleTime": "2026-08-21T13:45:00+00:00",
+             "entryZoneLow": trigger, "entryZoneHigh": chase}
+    return {"eventId": event_id, "symbol": "XAUUSD-DEDUP-T1-T6",
+            "setupId": setup["setupId"], "direction": "LONG",
+            "currentState": status, "event_type": status,
+            "currentPrice": 4584.31, "triggerLevel": trigger,
+            "stopLoss": 4590.0, "entryZone": {"low": trigger, "high": chase},
+            "candleCloseTime": "2026-08-21T13:45:00+00:00",
+            "decisionBasisCandleCloseTime": "2026-08-21T13:45:00+00:00",
+            "calculatedAt": calculated, "dataVersion": 1,
+            "breakoutSetupEvent": {"setupId": setup["setupId"],
+                                   "currentState": status, "setup": setup}}
+
+
+@pytest.mark.asyncio
+async def test_t1_to_t6_stable_breakout_fingerprint_and_retry():
+    t1 = _breakout_dedup_event(event_id="dedup-t1")
+    parts = notification_fingerprint_parts(t1)
+    assert parts == {"symbol": "XAUUSD-DEDUP-T1-T6", "scenarioId": "BO-dedup-4606",
+                     "direction": "LONG", "status": "WAIT_BREAKOUT_CONFIRMATION",
+                     "triggerPrice": "4606.18", "chaseLimit": "4609.88",
+                     "invalidationPrice": "4590.00",
+                     "sourceCandleTime": "2026-08-21T13:45:00+00:00"}
+    first = persist_decision_events("XAUUSD-DEDUP-T1-T6", [t1])
+    assert len(first) == 1
+    deliveries = []
+
+    async def sender(message):
+        deliveries.append(message)
+        return "dedup-first-message"
+
+    assert await deliver_pending_telegram(sender=sender, event_id=first[0]["eventId"]) == 1
+
+    # T2/T3: scheduler time, quote and event identity change; decision does not.
+    for index, minute in enumerate((58, 59), start=2):
+        repeated = {**_breakout_dedup_event(
+            event_id=f"dedup-t{index}", calculated=f"2026-08-21T13:{minute}:00+00:00"),
+                    "currentPrice": 4585 + index, "dataVersion": index}
+        assert notification_fingerprint(repeated) == notification_fingerprint(t1)
+        assert persist_decision_events("XAUUSD-DEDUP-T1-T6", [repeated]) == []
+    assert len(deliveries) == 1
+
+    # T4: a material trigger/chase update is a new decision.
+    changed = _breakout_dedup_event(event_id="dedup-t4", trigger=4608.20, chase=4611.90)
+    assert notification_fingerprint(changed) != notification_fingerprint(t1)
+    assert len(persist_decision_events("XAUUSD-DEDUP-T1-T6", [changed])) == 1
+
+    # T5: ENTRY_READY transition must notify immediately.
+    ready = _breakout_dedup_event(event_id="dedup-t5", status="ENTRY_READY_BREAKOUT")
+    ready_created = persist_decision_events("XAUUSD-DEDUP-T1-T6", [ready])
+    assert len(ready_created) == 1
+
+    # T6: worker failures before acceptance may retry, but successful delivery is once.
+    accepted = []
+    attempts = 0
+
+    async def flaky(message):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise RuntimeError("temporary failure before Telegram accepted")
+        accepted.append(message)
+        return "dedup-ready-message"
+
+    for _ in range(3):
+        await deliver_pending_telegram(sender=flaky, event_id=ready_created[0]["eventId"])
+    assert attempts == 3 and len(accepted) == 1
+    assert await deliver_pending_telegram(sender=flaky,
+                                          event_id=ready_created[0]["eventId"]) == 0
+
+
+@pytest.mark.asyncio
+async def test_telegram_timeout_is_not_automatically_resent():
+    event = _breakout_dedup_event(event_id="dedup-timeout", trigger=4612.0, chase=4615.0)
+    created = persist_decision_events("XAUUSD-DEDUP-T1-T6", [event])
+    calls = 0
+
+    async def ambiguous_timeout(_message):
+        nonlocal calls
+        calls += 1
+        raise TimeoutError("response lost after possible acceptance")
+
+    assert await deliver_pending_telegram(
+        sender=ambiguous_timeout, event_id=created[0]["eventId"]) == 0
+    assert await deliver_pending_telegram(
+        sender=ambiguous_timeout, event_id=created[0]["eventId"]) == 0
+    assert calls == 1
+    with db_session() as db:
+        notice = db.execute(select(TelegramNotification).where(
+            TelegramNotification.event_id == created[0]["eventId"])).scalar_one()
+        assert notice.status == "DELIVERY_UNKNOWN"
+
+
+@pytest.mark.asyncio
+async def test_expired_and_new_wait_share_new_setup_fingerprint():
+    old = _breakout_dedup_event(event_id="combined-old", status="EXPIRED",
+                                trigger=4601.09, chase=4604.30)
+    new = _breakout_dedup_event(event_id="combined-new", trigger=4606.18, chase=4609.88)
+    new_setup = new["breakoutSetupEvent"]["setup"]
+    new_setup["setupId"] = "BO-new-4606"
+    new["setupId"] = "BO-new-4606"
+    for item in (old, new):
+        item["evaluationCycleId"] = "expired-plus-new-cycle"
+    old["breakoutSetups"] = [old["breakoutSetupEvent"]["setup"], new_setup]
+    created = persist_decision_events("XAUUSD-COMBINED-UPDATE", [old, new])
+    assert len(created) == 1 and created[0]["factCount"] == 2
+    assert created[0]["semanticDedupKey"] == notification_fingerprint({
+        **new, "symbol": "XAUUSD-COMBINED-UPDATE"})
+
+    async def sender(_message):
+        return "combined-update-message"
+
+    assert await deliver_pending_telegram(sender=sender,
+                                          event_id=created[0]["eventId"]) == 1
+    repeated_wait = {**new, "eventId": "combined-new-repeat",
+                     "calculatedAt": "2026-08-21T14:00:00+00:00", "dataVersion": 2}
+    assert persist_decision_events("XAUUSD-COMBINED-UPDATE", [repeated_wait]) == []
 
 
 def test_live_prices_share_dedup_key_for_same_basis_candle_state_and_trigger():
