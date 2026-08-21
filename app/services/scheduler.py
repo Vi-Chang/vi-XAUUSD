@@ -144,6 +144,8 @@ def _analysis_closed_15m() -> datetime | None:
     raw = ((state.latest_result or {}).get("normalized_analysis") or {}).get(
         "lastClosedCandleTimestamp"
     )
+    if not isinstance(raw, str):
+        return None
     try:
         parsed = datetime.fromisoformat(raw)
         return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
@@ -239,6 +241,21 @@ async def job_quote_l1() -> None:
                 quote_time=tick.quote_time.isoformat(),
             )
             state.latest_result["final_decision_state"] = final_state
+            latest_price = dict(state.latest_result.get("current_price") or {})
+            latest_price.update({
+                "bid": tick.bid, "ask": tick.ask, "mid": tick.mid,
+                "spread": tick.spread, "last_update": tick.quote_time.isoformat(),
+            })
+            state.latest_result["current_price"] = latest_price
+            latest_normalized = dict(state.latest_result.get("normalized_analysis") or {})
+            latest_normalized.update({
+                "currentPrice": tick.mid,
+                "marketDataTimestamp": tick.quote_time.isoformat(),
+            })
+            state.latest_result["normalized_analysis"] = latest_normalized
+            from app.engines.decision_snapshot import build_decision_snapshot
+            state.latest_result["decision_snapshot"] = build_decision_snapshot(
+                state.latest_result)
             await broadcast_all({"type": "decision_state", "data": final_state})
             for event in events:
                 await broadcast_all({"type": "decision_event", "data": event})
@@ -268,6 +285,10 @@ async def job_quote_l1() -> None:
                     stale_result, price=last.mid if last else 0,
                     quote_time=datetime.now(timezone.utc).isoformat())
                 state.latest_result["final_decision_state"] = final_state
+                state.latest_result["normalized_analysis"] = stale_normalized
+                from app.engines.decision_snapshot import build_decision_snapshot
+                state.latest_result["decision_snapshot"] = build_decision_snapshot(
+                    state.latest_result)
                 await broadcast_all({"type": "decision_state", "data": final_state})
                 for event in events:
                     await broadcast_all({"type": "decision_event", "data": event})
