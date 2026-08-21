@@ -102,6 +102,7 @@ def test_telegram_keeps_b_grade_when_rr_blocks_entry():
         "confirmation": "等待更好的進場位置",
     })
     assert "訊號信心：B級（中高信心）（70）" in message
-    assert "交易狀態：BLOCKED_RR" in message
-    assert "進場許可：尚不可進場" in message
-    assert "阻擋原因：賺賠比未達門檻" in message
+    assert "原因：賺賠比未達門檻" in message
+    assert "BLOCKED_RR" not in message
+    assert "現在先不要進場" in message
+    assert "條件成立後：系統會重新檢查進場區" in message

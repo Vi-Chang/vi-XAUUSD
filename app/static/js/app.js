@@ -454,7 +454,7 @@ function renderDirectionalAlert(alert) {
     SHORT_ENTRY_READY: "可依計畫評估",
   };
   $("bearish-monitor-event").textContent = events[alert.event_type] || "空方持續監控";
-  $("bearish-monitor-status").textContent = statuses[alert.status] || alert.status;
+  $("bearish-monitor-status").textContent = statuses[alert.status] || "正在重新判斷短線方向";
   $("bearish-monitor-level").textContent = alert.level == null ? "–" : Number(alert.level).toFixed(2);
   $("bearish-monitor-time").textContent = fmtTs(alert.candle_close_time);
   $("bearish-monitor-message").textContent = alert.message || "持續等待下一個 15M 結構事件。";
@@ -544,7 +544,7 @@ function renderMarketMonitors(a) {
         wait_confirmation: "等待確認", wait_pullback: "等待回踩",
         avoid_chasing: "禁止追價", breakout_failed: "突破失敗",
       };
-      $("breakout-alert-status").textContent = statusZh[breakout.status] || breakout.status;
+      $("breakout-alert-status").textContent = statusZh[breakout.status] || "正在重新計算突破條件";
       $("breakout-alert-action").textContent = actionZhMap[breakout.action] || breakout.action || "–";
       $("breakout-alert-level").textContent = price(breakout.zone_high);
       $("breakout-alert-closes").textContent = `${breakout.consecutive_closes || 0} 根已收盤 K`;
@@ -603,8 +603,10 @@ function renderTrendContinuation(engine) {
   if (!card || !list) return;
   card.hidden = !engine.enabled;
   if (card.hidden) return;
-  const names = { SHALLOW_PULLBACK_LONG: "淺回踩", BREAKOUT_RETEST_LONG: "突破回踩",
-    BULL_FLAG_CONTINUATION: "旗形整理突破", MOMENTUM_CONTINUATION: "動能延續" };
+  const names = { SHALLOW_PULLBACK_LONG: "淺回踩續漲", BREAKOUT_RETEST_LONG: "突破回踩做多",
+    BULL_FLAG_CONTINUATION: "旗形突破做多", MOMENTUM_CONTINUATION: "多方動能延續",
+    SHALLOW_PULLBACK_SHORT: "淺反彈續跌", BREAKOUT_RETEST_SHORT: "跌破回測做空",
+    BEAR_FLAG_CONTINUATION: "空方旗形跌破", MOMENTUM_CONTINUATION_SHORT: "空方動能延續" };
   const market = { TREND_CONTINUATION_LONG: "強勢多頭", TREND_CONTINUATION_SHORT: "強勢空頭",
     RANGE: "區間整理", REVERSAL: "反轉", UNDEFINED: "型態未定" }[engine.marketType] || "型態未定";
   $("trend-shadow-badge").textContent = engine.shadowMode ? "觀察模式" : "正式提示";
@@ -615,7 +617,7 @@ function renderTrendContinuation(engine) {
     const ready = String(c.status || "").startsWith("ENTRY_READY_");
     const zone = c.entryZoneLow == null ? "尚未建立" : `${Number(c.entryZoneLow).toFixed(2)}–${Number(c.entryZoneHigh).toFixed(2)}`;
     const missing = (c.missingConditions || []).join("；") || "條件完整";
-    box.textContent = `${ready ? "可評估進場" : "尚未成立"}｜${names[c.type] || c.type}｜進場區 ${zone}｜RR ${c.riskReward || "–"}｜${missing}`;
+    box.textContent = `${ready ? "🟢 現在可以進場" : "🟡 現在先不要進場"}｜${names[c.type] || "順勢進場機會"}｜進場區 ${zone}｜賺賠比 ${c.riskReward || "–"}｜${missing}`;
     return box;
   }));
 }
@@ -641,8 +643,9 @@ function renderBreakoutSetupLedger(manager) {
     const box = document.createElement("div");
     box.className = "scenario-item";
     const side = s.direction === "LONG" ? "多方" : "空方";
-    const confirmed = s.breakoutConfirmedAt ? "已完成" : "尚未完成";
-    box.textContent = `${side}劇本 ${s.setupId}｜${Number(s.breakoutTrigger).toFixed(2)} 突破確認：${confirmed}｜目前：${stateZh[s.status] || s.status}｜回踩區 ${Number(s.retestZoneLow).toFixed(2)}–${Number(s.retestZoneHigh).toFixed(2)}｜最大追價 ${Number(s.maxChasePrice).toFixed(2)}`;
+    const confirmed = s.breakoutConfirmedAt ? "收盤確認已完成" : "正在等 15 分鐘收盤確認";
+    const plainState = stateZh[s.status] || "正在重新計算市場條件";
+    box.textContent = `${side}劇本｜關鍵價 ${Number(s.breakoutTrigger).toFixed(2)}：${confirmed}｜現在：${plainState}｜回踩觀察區 ${Number(s.retestZoneLow).toFixed(2)}–${Number(s.retestZoneHigh).toFixed(2)}｜超過 ${Number(s.maxChasePrice).toFixed(2)} 不追價`;
     return box;
   }));
 }
@@ -660,10 +663,13 @@ function renderEntryPlan(plan) {
   const status = {
     SETUP_WATCH: "機會準備中", ENTRY_READY: "已到觀察區，等待 K 線確認",
     ENTRY_TRIGGERED: "條件完成，可依計畫執行", INVALIDATED: "計畫已取消",
-    EXITED: "計畫已結束",
+    EXITED: "計畫已結束", WAIT_CONFIRMATION: "還不能進場，正在等收盤確認",
+    WAIT_BREAKOUT_CONFIRMATION: "等 15 分鐘收盤突破後才能進場",
+    MISSED_ENTRY: "這個進場點已錯過，現在不要追", MISS_ENTRY: "這個進場點已錯過，現在不要追",
+    EXPIRED: "原本條件已失效，正在重新計算", NO_ENTRY: "目前沒有適合的進場機會",
   };
   const direction = plan.direction === "LONG" ? "做多" : plan.direction === "SHORT" ? "做空" : "–";
-  $("entry-plan-status").textContent = status[displayStatus] || displayStatus;
+  $("entry-plan-status").textContent = status[displayStatus] || "正在等待新的市場條件";
   $("entry-plan-direction").textContent = direction;
   $("entry-plan-direction").className = "chip " + (plan.direction === "LONG" ? "good" : plan.direction === "SHORT" ? "bad" : "info");
   const qualityText = plan.entry_quality_score != null
@@ -1467,6 +1473,8 @@ async function loadHistory() {
         READY: "條件成立", WAIT_CONFIRMATION: "等待確認", BLOCKED_RR: "賺賠比不足",
         MISSED_ENTRY: "錯過進場", INVALIDATED: "劇本失效", BLOCKED_DATA: "資料阻擋",
         BLOCKED_EVENT: "事件鎖定", MANAGE: "持倉管理",
+        WAIT_BREAKOUT_CONFIRMATION: "等待 15 分鐘收盤突破", ENTRY_READY: "可以進場",
+        MISS_ENTRY: "進場點已錯過", EXPIRED: "原條件已失效", NO_ENTRY: "目前沒有機會",
       };
       return h`<tr>
         <td class="num">${taipeiTime(r.run_time)}</td>
@@ -1475,7 +1483,7 @@ async function loadHistory() {
         <td><span class="act-pill ${decisionClass(r.action)}">${actionZh(r.action)}</span></td>
         <td><span class="grade-badge g-${r.grade}" title="${gradeZh(r.grade)}" style="width:auto;padding:0 8px;font-size:.75rem">${gradeZh(r.grade)}</span></td>
         <td class="num">${r.signal_score == null ? "未取得" : r.signal_score}</td>
-        <td>${tradeStatusZh[r.trade_status] || r.trade_status || "等待確認"}</td>
+        <td>${tradeStatusZh[r.trade_status] || "等待新的市場條件"}</td>
         <td>${r.can_enter ? "可以考慮進場" : "尚不可進場"}</td>
         <td>${qualityZh(r.quality)}</td>
         <td>${r.blocked_reason || (r.blocking_reasons || []).map(blockReasonZh).join("、") || r.missing_score_reason || "無"}</td>
