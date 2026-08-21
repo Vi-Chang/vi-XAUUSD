@@ -10,7 +10,7 @@ def alert_category(event: dict) -> str:
     state = str(event.get("currentState") or "WAIT")
     if state == "DATA_STALE":
         return "DATA_STATUS"
-    if state.endswith("READY"):
+    if state.endswith("READY") or state.startswith("ENTRY_READY_"):
         return "ENTRY_READY"
     if state.endswith("MANAGE"):
         return "POSITION_MANAGEMENT"
@@ -18,6 +18,22 @@ def alert_category(event: dict) -> str:
 
 
 def semantic_key(event: dict) -> str:
+    if event.get("trendContinuationEvent"):
+        setup = event.get("trendContinuationEvent", {}).get("setup") or {}
+        raw = "|".join((str(event.get("symbol") or "XAUUSD"),
+                        str(event.get("setupId") or ""), str(event.get("currentState") or ""),
+                        str(setup.get("type") or ""), str(event.get("event_type") or "")))
+        return hashlib.sha256(raw.encode()).hexdigest()
+    if event.get("breakoutSetupEvent"):
+        zone = event.get("entryZone") or {}
+        raw = "|".join((
+            str(event.get("symbol") or "XAUUSD"), str(event.get("setupId") or ""),
+            str(event.get("direction") or "NONE"), str(event.get("currentState") or ""),
+            str(event.get("triggerLevel") or ""),
+            f"{zone.get('low', '')}:{zone.get('high', '')}",
+            str(event.get("blockedReason") or ""), str(event.get("event_type") or ""),
+        ))
+        return hashlib.sha256(raw.encode()).hexdigest()
     if event.get("tradePlanId"):
         raw = "|".join((
             str(event.get("tradePlanId")), str(event.get("event_type")),

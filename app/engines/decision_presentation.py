@@ -69,6 +69,12 @@ def _local_time(raw: str) -> str:
 
 
 def format_decision_message(event: dict) -> str:
+    continuation_event = event.get("trendContinuationEvent") or {}
+    if continuation_event.get("setupId"):
+        return _format_trend_continuation_event(event, continuation_event)
+    breakout_event = event.get("breakoutSetupEvent") or {}
+    if breakout_event.get("setupId"):
+        return _format_breakout_setup_event(event, breakout_event)
     position_event = event.get("positionEvent") or {}
     if position_event.get("tradePlanId"):
         return _format_position_event(event, position_event)
@@ -121,6 +127,76 @@ def format_decision_message(event: dict) -> str:
             f"條件失效價：{view['invalidation']}",
         ])
     lines.append(f"資料時間：{data_time}（UTC+8）")
+    return "\n".join(lines)
+
+
+def _format_trend_continuation_event(event: dict, continuation_event: dict) -> str:
+    setup = continuation_event.get("setup") or {}
+    names = {"SHALLOW_PULLBACK_LONG": "淺回踩", "BREAKOUT_RETEST_LONG": "突破回踩",
+             "BULL_FLAG_CONTINUATION": "旗形突破", "MOMENTUM_CONTINUATION": "動能延續（風險較高）"}
+    return "\n".join([
+        "🟢【多單進場條件成立｜可以進場】",
+        f"劇本：{names.get(setup.get('type'), setup.get('type'))}",
+        f"建議進場區：{float(setup.get('entryZoneLow') or 0):.2f}–{float(setup.get('entryZoneHigh') or 0):.2f}",
+        f"現價：{float(event.get('currentPrice') or 0):.2f}",
+        f"防守價：{float(setup.get('stopPrice') or 0):.2f}",
+        f"TP1：{float(setup.get('tp1') or 0):.2f}",
+        f"TP2：{float(setup.get('tp2') or 0):.2f}",
+        f"TP3：{float(setup.get('tp3') or 0):.2f}",
+        f"預估賺賠比：{float(setup.get('riskReward') or 0):.2f}",
+        f"訊號信心：{int(setup.get('signalScore') or 0)}（不是勝率）",
+        f"條件失效：15M 收盤跌破 {float(setup.get('stopPrice') or 0):.2f}",
+        f"資料時間：{_local_time(str(event.get('calculatedAt') or ''))}（UTC+8）",
+    ])
+
+
+def _format_breakout_setup_event(event: dict, breakout_event: dict) -> str:
+    setup = breakout_event.get("setup") or {}
+    state = str(breakout_event.get("currentState") or "")
+    direction = str(setup.get("direction") or "LONG")
+    side = "多單" if direction == "LONG" else "空單"
+    trigger = float(setup.get("breakoutTrigger") or 0)
+    zone = f"{float(setup.get('entryZoneLow') or 0):.2f}–{float(setup.get('entryZoneHigh') or 0):.2f}"
+    retest = f"{float(setup.get('retestZoneLow') or 0):.2f}–{float(setup.get('retestZoneHigh') or 0):.2f}"
+    if state in {"ENTRY_READY_BREAKOUT", "ENTRY_READY_RETEST"}:
+        entry_type = "突破進場" if state == "ENTRY_READY_BREAKOUT" else "回踩進場"
+        risk = abs(float(setup.get("entryZoneHigh") or trigger) -
+                   float(setup.get("stopPrice") or trigger))
+        reward = abs(float(setup.get("tp1") or trigger) -
+                     float(setup.get("entryZoneHigh") or trigger))
+        rr = reward / risk if risk else 0
+        return "\n".join([
+            f"🟢【{side}進場條件成立｜可以進場】",
+            f"劇本：{setup.get('setupId')}",
+            f"進場類型：{entry_type}",
+            f"建議進場區：{zone}",
+            f"現價：{float(event.get('currentPrice') or 0):.2f}",
+            f"防守價：{float(setup.get('stopPrice') or 0):.2f}",
+            f"TP1：{float(setup.get('tp1') or 0):.2f}",
+            f"TP2：{float(setup.get('tp2') or 0):.2f}",
+            f"TP3：{float(setup.get('tp3') or 0):.2f}",
+            f"賺賠比：{rr:.2f}",
+            f"條件失效：15M 收盤反向越過 {float(setup.get('stopPrice') or 0):.2f}",
+            f"資料時間：{_local_time(str(event.get('calculatedAt') or ''))}（UTC+8）",
+        ])
+    titles = {
+        "WAIT_BREAKOUT_CONFIRMATION": f"🟡【{side}延續劇本建立｜等待收盤確認】",
+        "BREAKOUT_CONFIRMED": f"🟡【{side}突破已確認｜評估進場位置】",
+        "WAIT_RETEST": f"🟡【{side}延續｜等待合理進場】",
+        "EXPIRED": "🟠【交易劇本已到期】",
+        "INVALIDATED": "🟠【交易劇本已失效】",
+    }
+    lines = [
+        titles.get(state, "🟡【交易劇本更新】"),
+        f"劇本：{setup.get('setupId')}",
+        f"突破門檻：15M 收盤{'站上' if direction == 'LONG' else '跌破'} {trigger:.2f}",
+        f"目前狀態：{state}",
+    ]
+    if state == "WAIT_RETEST":
+        lines.extend([f"回踩進場區：{retest}", "目前動作：等待回踩確認，尚不可進場。"])
+    else:
+        lines.append(f"最大追價界線：{float(setup.get('maxChasePrice') or 0):.2f}")
+    lines.append(f"資料時間：{_local_time(str(event.get('calculatedAt') or ''))}（UTC+8）")
     return "\n".join(lines)
 
 

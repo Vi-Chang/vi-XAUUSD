@@ -175,6 +175,28 @@ class Settings(BaseSettings):
     tactical_short_chase_atr_mult: float = 1.5
     tactical_setup_expiry_bars: int = 4
     tactical_min_rr: float = 1.5
+    short_entry_min_quality_score: int = 70
+    short_entry_max_chase_atr_mult: float = 0.35
+    short_entry_expiry_min_bars: int = 2
+    short_entry_expiry_max_bars: int = 4
+    short_entry_quality_weights: dict[str, float] = {
+        "structure": 0.25, "location": 0.25, "momentum": 0.20,
+        "risk_reward": 0.15, "execution": 0.10, "freshness": 0.05,
+    }
+    # 強勢趨勢進場先以 shadow mode 蒐集成效；通過樣本門檻後才可開啟正式通知。
+    trend_continuation_enabled: bool = True
+    trend_continuation_shadow_mode: bool = True
+    risk_mode: str = "standard"  # conservative | standard | aggressive
+    trend_continuation_min_score: int = 70
+    trend_continuation_strong_score: int = 80
+    trend_shallow_zone_atr_mult: float = 0.30
+    trend_max_chase_atr_mult: float = 0.35
+    trend_momentum_max_chase_atr_mult: float = 0.25
+    trend_flag_max_range_atr_mult: float = 1.20
+    trend_flag_min_impulse_atr_mult: float = 1.50
+    trend_setup_expiry_bars: int = 4
+    trend_min_rr: float = 1.5
+    trend_overbought_penalty: int = 10
     no_chase_near_level_atr_mult: float = 0.75  # 0.5~1.0 之間,預設 0.75
     opposing_zone_hard_gate_atr_mult: float = 0.75
     breakout_close_buffer_atr_mult: float = 0.10

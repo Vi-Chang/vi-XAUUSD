@@ -200,6 +200,18 @@ class AnalysisRun(Base):
     error_tags: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
 
+class DecisionSnapshotRecord(Base):
+    """Immutable canonical snapshot rendered by both web and Telegram."""
+    __tablename__ = "decision_snapshots"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    decision_id: Mapped[str] = mapped_column(String(64), unique=True)
+    analysis_run_id: Mapped[int] = mapped_column(ForeignKey("analysis_runs.id"))
+    setup_id: Mapped[str] = mapped_column(String(64), default="")
+    state: Mapped[str] = mapped_column(String(32))
+    payload: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class TradeScenario(Base):
     """11. trade_scenarios — 多/空劇本(價位欄位一律為候選 ID)"""
     __tablename__ = "trade_scenarios"

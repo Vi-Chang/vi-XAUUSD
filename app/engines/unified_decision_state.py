@@ -171,11 +171,17 @@ def evaluate_unified_decision(
     setup_id = str(entry.get("setup_id") or "")
     if setup_id and direction in ("LONG", "SHORT") and not stale:
         zone_low, zone_high = entry.get("zone_low"), entry.get("zone_high")
+        fixed_confirmation = (
+            setup_lifecycle.get("confirmationPrice")
+            if setup_lifecycle.get("setupId") == setup_id
+            and isinstance(setup_lifecycle.get("confirmationPrice"), (int, float))
+            else resistance if direction == "LONG" else support
+        )
         setup_lifecycle = evaluate_setup_lifecycle(
             previous=setup_lifecycle,
             setup_id=setup_id,
             direction=direction,
-            confirmation_price=resistance if direction == "LONG" else support,
+            confirmation_price=fixed_confirmation,
             latest_closed_price=latest_closed,
             closed_candle_time=candle_time,
             current_price=price,
@@ -243,6 +249,37 @@ def evaluate_unified_decision(
     exit_plans = (data.get("hypothetical_exit_advisor") or {}).get("plans") or {}
     trade_manager = data.get("trade_plan_manager") or {}
     active_trade_plans = list(trade_manager.get("activePlans") or [])
+    breakout_manager = data.get("breakout_setup_manager") or {}
+    breakout_setups = list(breakout_manager.get("setups") or [])
+    breakout_events = list(breakout_manager.get("events") or [])
+    ready_breakout = next((item for item in reversed(breakout_setups)
+                           if item.get("status") in (
+                               "ENTRY_READY_BREAKOUT", "ENTRY_READY_RETEST")), None)
+    waiting_retest = next((item for item in reversed(breakout_setups)
+                           if item.get("status") == "WAIT_RETEST"), None)
+    pending_breakout = next((item for item in reversed(breakout_setups)
+                             if item.get("status") == "WAIT_BREAKOUT_CONFIRMATION"), None)
+    continuation = data.get("trend_continuation_engine") or {}
+    continuation_selected = continuation.get("selected") or {}
+    continuation_live = bool(continuation_selected and not continuation.get("shadowMode", True))
+    continuation_events = [item for item in continuation.get("events") or []
+                           if item.get("notificationEligible")]
+    if continuation_live and not stale:
+        direction, state = "LONG", "LONG_READY"
+        action = "強勢趨勢順勢進場條件成立"
+        flat_action = f"{continuation_selected.get('type')} 已完成完整風控，可依計畫評估進場"
+    elif ready_breakout and not stale:
+        direction = str(ready_breakout["direction"])
+        state = "LONG_READY" if direction == "LONG" else "SHORT_READY"
+        action = "回踩進場條件成立" if ready_breakout.get("entryType") == "RETEST" else "突破進場條件成立"
+        flat_action = "可以依固定劇本與完整風控評估進場"
+    elif waiting_retest and pending_breakout and not stale:
+        direction = str(pending_breakout["direction"])
+        state = "LONG_WATCH" if direction == "LONG" else "SHORT_WATCH"
+        flat_action = (
+            f"舊劇本 {waiting_retest['breakoutTrigger']:.2f} 已確認，等待回踩 "
+            f"{waiting_retest['retestZoneLow']:.2f}–{waiting_retest['retestZoneHigh']:.2f}；"
+            f"新劇本等待15M收盤突破 {pending_breakout['breakoutTrigger']:.2f}")
     long_plan, short_plan = exit_plans.get("LONG") or {}, exit_plans.get("SHORT") or {}
     long_manage = (
         f"若持有多單：防守 {long_plan.get('defense_price'):.2f}，依序分批止盈"
@@ -419,7 +456,6 @@ def evaluate_unified_decision(
         "BEARISH_CONTINUATION": "空方結構延續並形成新的低點",
         "SHORT_ENTRY_READY": "空方進場條件與風險報酬比已達標",
         "PENDING_BREAKOUT": "價格突破候選壓力，等待收盤確認",
-        "BREAKOUT_CONFIRMED": "15M 收盤確認突破壓力",
         "BULLISH_CONTINUATION": "連續收盤站穩突破位，多方延續",
         "BREAKOUT_RETEST": "價格回踩突破區，尚未破壞多方結構",
         "BREAKOUT_FAILED": "價格收盤跌回突破區且結構轉弱",
@@ -436,6 +472,16 @@ def evaluate_unified_decision(
         "TRAILING_STOP_UPDATE": "最新 15M 結構已提高移動防守價",
         "STOP_TRIGGERED": "防守／停損價已觸發",
         "STRUCTURE_INVALIDATED": "持倉依據的市場結構已正式失效",
+        "NEW_SETUP_CREATED": "新15M市場結構成立，已建立獨立突破劇本",
+        "BREAKOUT_CONFIRMED": "固定突破門檻已由15M收盤確認",
+        "WAIT_RETEST": "突破已確認但價格離合理進場區較遠，等待回踩",
+        "ENTRY_READY_BREAKOUT": "突破確認且仍在最大追價界線內，可以評估突破進場",
+        "ENTRY_READY_RETEST": "價格回到固定回踩區且15M確認守住，可以評估回踩進場",
+        "SETUP_EXPIRED": "突破劇本已到期",
+        "ENTRY_READY_SHALLOW_PULLBACK": "強勢趨勢淺回踩已由15M確認",
+        "ENTRY_READY_BREAKOUT_RETEST": "固定突破位回踩守住，風控已通過",
+        "ENTRY_READY_BULL_FLAG": "強漲後窄幅整理已收盤突破",
+        "ENTRY_READY_MOMENTUM_CONTINUATION": "多週期高度一致，動能延續突破成立",
     }
     old_trigger = previous.get("next_trigger")
     new_trigger = pending_trigger.get("level") if pending_trigger else None
@@ -446,6 +492,15 @@ def evaluate_unified_decision(
         (old_state, state, trade_event_map[item["event_type"]], item)
         for item in trade_events if item.get("event_type") in trade_event_map
     )
+    ordinary.extend(
+        (str(item.get("previousState") or old_state),
+         str(item.get("currentState") or state), str(item["event_type"]), item)
+        for item in breakout_events if item.get("event_type") in event_reasons
+    )
+    ordinary.extend(
+        (old_state, "LONG_READY", str(item["event_type"]), item)
+        for item in continuation_events if item.get("event_type") in event_reasons
+    )
     transitions = ([(old, new, kind, {}) for old, new, kind in transition_chain]
                    if transition_chain else ordinary)
     if transition_chain:
@@ -453,8 +508,29 @@ def evaluate_unified_decision(
             (old_state, state, trade_event_map[item["event_type"]], item)
             for item in trade_events if item.get("event_type") in trade_event_map
         )
-    for previous_state, current_state, event_type, trade_event in transitions:
+        transitions.extend(
+            (str(item.get("previousState") or old_state),
+             str(item.get("currentState") or state), str(item["event_type"]), item)
+            for item in breakout_events if item.get("event_type") in event_reasons
+        )
+        transitions.extend(
+            (old_state, "LONG_READY", str(item["event_type"]), item)
+            for item in continuation_events if item.get("event_type") in event_reasons
+        )
+    for previous_state, current_state, event_type, source_event in transitions:
+        trade_event = source_event if source_event.get("tradePlanId") else {}
+        continuation_event_item = (
+            source_event if str(source_event.get("event_type") or "").startswith(
+                "ENTRY_READY_") and source_event.get("setup", {}).get("calculationVersion")
+            == "trend-continuation-v1" else {})
+        breakout_event_item = (
+            source_event if source_event.get("setup") and not continuation_event_item else {})
         entry_zone = (
+            continuation_event_item.get("entryZone")
+            if continuation_event_item
+            else breakout_event_item.get("entryZone")
+            if breakout_event_item
+            else
             {"low": entry.get("zone_low"), "high": entry.get("zone_high")}
             if isinstance(entry.get("zone_low"), (int, float))
             and isinstance(entry.get("zone_high"), (int, float))
@@ -469,20 +545,33 @@ def evaluate_unified_decision(
             )
             if isinstance(value, (int, float))
         ]
+        if breakout_event_item:
+            breakout_setup = breakout_event_item["setup"]
+            targets = [breakout_setup["tp1"], breakout_setup["tp2"],
+                       breakout_setup["tp3"]]
+        if continuation_event_item:
+            continuation_setup = continuation_event_item["setup"]
+            targets = [continuation_setup["tp1"], continuation_setup["tp2"],
+                       continuation_setup["tp3"]]
         seed = (
             f"{data.get('symbol', 'XAUUSD')}|{previous_state}|{current_state}|"
             f"{event_type}|{candle_time}|"
             f"{pending_trigger.get('level') if pending_trigger else ''}|"
             f"{trade_event.get('tradePlanId', '')}|{trade_event.get('targetIndex', '')}"
+            f"|{breakout_event_item.get('setupId', '')}"
         )
         event_id = hashlib.sha256(seed.encode()).hexdigest()[:32]
         payload = {
                 "eventId": event_id,
-                "setupId": setup_id,
+                "setupId": (continuation_event_item.get("setupId")
+                            or breakout_event_item.get("setupId") or setup_id),
                 "tradePlanId": trade_event.get("tradePlanId"),
                 "targetIndex": trade_event.get("targetIndex"),
                 "positionEvent": trade_event,
                 "activeTradePlans": active_trade_plans,
+                "breakoutSetupEvent": breakout_event_item,
+                "trendContinuationEvent": continuation_event_item,
+                "breakoutSetups": breakout_setups,
                 "event_type": event_type,
                 "previousState": previous_state,
                 "currentState": current_state,
@@ -496,9 +585,13 @@ def evaluate_unified_decision(
                 "gradingVersion": GRADING_VERSION,
                 "tradeStatus": permission.trade_status,
                 "canEnter": permission.can_enter,
-                "blockedReason": permission.blocked_reason,
+                "blockedReason": (breakout_event_item.get("blockedReason")
+                                  if breakout_event_item else permission.blocked_reason),
                 "entryZone": entry_zone,
-                "stopLoss": entry.get("stop_loss"),
+                "stopLoss": ((continuation_event_item.get("setup") or {}).get("stopPrice")
+                             if continuation_event_item else
+                             (breakout_event_item.get("setup") or {}).get("stopPrice")
+                             if breakout_event_item else entry.get("stop_loss")),
                 "targets": targets,
                 "triggerReason": event_reasons[event_type],
                 "candleCloseTime": candle_time,
@@ -514,7 +607,9 @@ def evaluate_unified_decision(
                 "cancelCondition": entry.get("cancel_condition"),
                 "nextTriggerCondition": pending_trigger,
                 "completedTriggers": trigger_result["completed"],
-                "triggerLevel": (pending_trigger.get("level") if pending_trigger else
+                "triggerLevel": (breakout_event_item.get("triggerPrice")
+                                 if breakout_event_item else
+                                 pending_trigger.get("level") if pending_trigger else
                                  (trigger_result["completed"][-1]["level"]
                                   if trigger_result["completed"] else None)),
                 "setupLifecycle": setup_lifecycle,
@@ -552,6 +647,7 @@ def evaluate_unified_decision(
     out["next_trigger_condition"] = pending_trigger
     out["completed_events"] = completed_events
     out["setup_lifecycle"] = setup_lifecycle
+    out["trend_continuation"] = continuation
     out["last_event"] = (
         events[-1]["event_type"] if events else previous.get("last_event", "")
     )

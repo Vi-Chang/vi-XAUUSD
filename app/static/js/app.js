@@ -360,7 +360,7 @@ function applyAnalysis(a) {
   renderEntryPlan(a.entry_engine);
   renderDirectionalAlert(a.directional_alert);
   renderMarketMonitors(a);
-  renderFinalDecision(a.final_decision_state);
+  renderFinalDecision(a.final_decision_state, a.decision_snapshot);
 
   // 資料不足 → 醒目「暫不交易」橫幅(資料過期/異常/休市/證據不足時系統一律 NO_TRADE)
   const ntBanner = $("no-trade-banner");
@@ -460,8 +460,19 @@ function renderDirectionalAlert(alert) {
   $("bearish-monitor-message").textContent = alert.message || "持續等待下一個 15M 結構事件。";
 }
 
-function renderFinalDecision(finalState) {
+function renderFinalDecision(finalState, snapshot) {
   if (!finalState) return;
+  if (snapshot && snapshot.schemaVersion === "decision-snapshot-v2") {
+    finalState = {
+      ...finalState, state: snapshot.state, direction: snapshot.direction,
+      source_price: snapshot.currentPrice, quote_time: snapshot.quoteTime,
+      last_closed_candle_time: snapshot.marketDataTimestamp,
+      flat_action: snapshot.action === "ENTER_LONG" || snapshot.action === "ENTER_SHORT"
+        ? "進場條件已成立，依完整風控計畫評估" : "等待，尚不可進場，請勿追價",
+      confirmation: snapshot.nextTrigger,
+      reason: snapshot.blockedReason || (snapshot.missingConditions || []).join("；"),
+    };
+  }
   const event = finalState.latest_event || {};
   if (event.eventId) finalState = {
     ...finalState,
@@ -517,6 +528,8 @@ async function refreshTelegramStatus() {
 
 function renderMarketMonitors(a) {
   const price = (value) => value == null ? "–" : Number(value).toFixed(2);
+  renderBreakoutSetupLedger(a.breakout_setup_manager || {});
+  renderTrendContinuation(a.trend_continuation_engine || {});
   const breakout = a.breakout_alert || {};
   const breakoutCard = $("breakout-alert-card");
   if (breakoutCard) {
@@ -584,6 +597,56 @@ function renderMarketMonitors(a) {
   }
 }
 
+function renderTrendContinuation(engine) {
+  const card = $("trend-continuation-card");
+  const list = $("trend-continuation-list");
+  if (!card || !list) return;
+  card.hidden = !engine.enabled;
+  if (card.hidden) return;
+  const names = { SHALLOW_PULLBACK_LONG: "淺回踩", BREAKOUT_RETEST_LONG: "突破回踩",
+    BULL_FLAG_CONTINUATION: "旗形整理突破", MOMENTUM_CONTINUATION: "動能延續" };
+  const market = { TREND_CONTINUATION_LONG: "強勢多頭", TREND_CONTINUATION_SHORT: "強勢空頭",
+    RANGE: "區間整理", REVERSAL: "反轉", UNDEFINED: "型態未定" }[engine.marketType] || "型態未定";
+  $("trend-shadow-badge").textContent = engine.shadowMode ? "觀察模式" : "正式提示";
+  $("trend-continuation-summary").textContent = `${market}｜趨勢評分 ${engine.trendScore || 0}｜15M ATR ${Number(engine.atrValue || 0).toFixed(2)}`;
+  list.replaceChildren(...(engine.candidates || []).map((c) => {
+    const box = document.createElement("div");
+    box.className = "scenario-item";
+    const ready = String(c.status || "").startsWith("ENTRY_READY_");
+    const zone = c.entryZoneLow == null ? "尚未建立" : `${Number(c.entryZoneLow).toFixed(2)}–${Number(c.entryZoneHigh).toFixed(2)}`;
+    const missing = (c.missingConditions || []).join("；") || "條件完整";
+    box.textContent = `${ready ? "可評估進場" : "尚未成立"}｜${names[c.type] || c.type}｜進場區 ${zone}｜RR ${c.riskReward || "–"}｜${missing}`;
+    return box;
+  }));
+}
+
+function renderBreakoutSetupLedger(manager) {
+  const card = $("breakout-setup-ledger-card");
+  const list = $("breakout-setup-list");
+  if (!card || !list) return;
+  const setups = manager.setups || [];
+  card.hidden = setups.length === 0;
+  if (card.hidden) return;
+  const stateZh = {
+    WAIT_BREAKOUT_CONFIRMATION: "尚未確認", BREAKOUT_CONFIRMED: "突破已確認",
+    WAIT_RETEST: "等待回踩", ENTRY_READY_BREAKOUT: "突破進場成立",
+    ENTRY_READY_RETEST: "回踩進場成立", MISSED_ENTRY: "已錯過",
+    INVALIDATED: "已失效", EXPIRED: "已到期",
+  };
+  const ready = setups.find((s) => String(s.status).startsWith("ENTRY_READY_"));
+  $("breakout-setup-summary").textContent = ready
+    ? `${ready.direction === "LONG" ? "多單" : "空單"}${ready.entryType === "RETEST" ? "回踩" : "突破"}條件已成立`
+    : "舊劇本與新延續劇本分開顯示；尚未成立時不會誤示可進場。";
+  list.replaceChildren(...setups.slice(-3).reverse().map((s) => {
+    const box = document.createElement("div");
+    box.className = "scenario-item";
+    const side = s.direction === "LONG" ? "多方" : "空方";
+    const confirmed = s.breakoutConfirmedAt ? "已完成" : "尚未完成";
+    box.textContent = `${side}劇本 ${s.setupId}｜${Number(s.breakoutTrigger).toFixed(2)} 突破確認：${confirmed}｜目前：${stateZh[s.status] || s.status}｜回踩區 ${Number(s.retestZoneLow).toFixed(2)}–${Number(s.retestZoneHigh).toFixed(2)}｜最大追價 ${Number(s.maxChasePrice).toFixed(2)}`;
+    return box;
+  }));
+}
+
 function renderEntryPlan(plan) {
   const card = $("entry-plan-card");
   if (!card) return;
@@ -603,7 +666,12 @@ function renderEntryPlan(plan) {
   $("entry-plan-status").textContent = status[displayStatus] || displayStatus;
   $("entry-plan-direction").textContent = direction;
   $("entry-plan-direction").className = "chip " + (plan.direction === "LONG" ? "good" : plan.direction === "SHORT" ? "bad" : "info");
-  $("entry-plan-missing").textContent = plan.missing_condition || (displayStatus === "ENTRY_TRIGGERED" ? "進場條件已完成" : "");
+  const qualityText = plan.entry_quality_score != null
+    ? `短線進場品質 ${Number(plan.entry_quality_score).toFixed(0)}/100（不是勝率）` : "";
+  $("entry-plan-missing").textContent = [
+    plan.missing_condition || (displayStatus === "ENTRY_TRIGGERED" ? "進場條件已完成" : ""),
+    qualityText,
+  ].filter(Boolean).join("；");
   const price = (value) => value == null ? "–" : Number(value).toFixed(2);
   $("entry-plan-zone").textContent = plan.zone_low == null || plan.zone_high == null ? "–" : `${price(plan.zone_low)}–${price(plan.zone_high)}`;
   $("entry-plan-entry").textContent = price(plan.suggested_entry);

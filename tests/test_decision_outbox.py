@@ -358,6 +358,21 @@ def test_setup_id_is_part_of_state_transition_dedup_identity():
     })
 
 
+def test_breakout_setup_dedup_ignores_quote_and_confidence_only_changes():
+    base = {
+        "symbol": "XAUUSD", "setupId": "BO-4567", "direction": "LONG",
+        "currentState": "WAIT_RETEST", "triggerLevel": 4567.88,
+        "entryZone": {"low": 4566.88, "high": 4568.88},
+        "blockedReason": "等待回踩固定區間", "event_type": "WAIT_RETEST",
+        "breakoutSetupEvent": {"setupId": "BO-4567"},
+    }
+    assert semantic_key({**base, "currentPrice": 4580, "signalScore": 100}) == semantic_key({
+        **base, "currentPrice": 4590, "signalScore": 90,
+        "calculatedAt": "2026-08-21T11:00:00+00:00",
+    })
+    assert semantic_key(base) != semantic_key({**base, "triggerLevel": 4601.09})
+
+
 def test_notification_validator_rejects_completed_next_trigger():
     bad = {
         "eventId": "bad-completed-next", "currentState": "LONG_WATCH",

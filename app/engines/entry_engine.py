@@ -36,6 +36,11 @@ class EntryPlan:
     take_profit_3: float | None = None
     risk_reward: float | None = None
     confidence_score: int = 0
+    entry_quality_score: int = 0
+    entry_quality_breakdown: dict[str, int] | None = None
+    entry_quality_version: str = "short-entry-v1"
+    max_chase_distance: float | None = None
+    expiry_bars: int = 0
     created_at: str = ""
     expires_at: str = ""
     cancel_condition: str = ""
@@ -148,13 +153,58 @@ def validate_executable_plan(plan: EntryPlan) -> tuple[bool, str]:
 def _closed_frame(
     m5: pd.DataFrame | None, m15: pd.DataFrame | None
 ) -> tuple[str, pd.DataFrame | None]:
-    for timeframe, frame in (("5M", m5), ("15M", m15)):
-        if frame is not None and len(frame) >= 2:
-            if "is_closed" in frame.columns:
-                frame = frame[frame["is_closed"]]
-            if len(frame) >= 2:
-                return timeframe, frame
+    # 15M determines direction; executable timing requires a completed 5M bar.
+    # Never silently promote a slower 15M candle into a precision entry trigger.
+    frame = m5
+    if frame is not None and len(frame) >= 2:
+        if "is_closed" in frame.columns:
+            frame = frame[frame["is_closed"]]
+        if len(frame) >= 2:
+            return "5M", frame
     return "", None
+
+
+def calculate_short_entry_quality(
+    data: dict, plan: EntryPlan, *, trigger_price: float,
+    evidence: str, risk_reward: float,
+) -> tuple[int, dict[str, int], str]:
+    """Score independent entry-quality dimensions; this is not win probability."""
+    from app.config import get_settings
+
+    settings = get_settings()
+    normalized = data.get("normalized_analysis") or {}
+    atr = max(float(normalized.get("atr15") or 0), 1e-9)
+    zone_low = float(plan.zone_low or trigger_price)
+    zone_high = float(plan.zone_high or trigger_price)
+    distance = 0.0 if zone_low <= trigger_price <= zone_high else min(
+        abs(trigger_price - zone_low), abs(trigger_price - zone_high))
+    location = max(0, round(100 * (1 - distance /
+                   max(atr * settings.short_entry_max_chase_atr_mult, 1e-9))))
+    momentum = 100 if "明確反轉" in evidence else 95 if "假突破" in evidence or "假跌破" in evidence else 90 if "形成更" in evidence else 80
+    rr_score = max(0, min(100, round(risk_reward / 3 * 100)))
+    quote = data.get("current_price") or {}
+    spread = max(0.0, float(quote.get("spread") or 0))
+    risk = abs(trigger_price - float(plan.stop_loss or trigger_price))
+    cost_ratio = ((spread + settings.execution_slippage_usd
+                   + settings.execution_fees_usd) / risk) if risk > 0 else 1.0
+    execution = max(0, min(100, round(
+        100 * (1 - cost_ratio / max(settings.execution_max_cost_risk_ratio, 1e-9)))))
+    breakdown = {
+        "structure": 100,
+        "location": location,
+        "momentum": momentum,
+        "risk_reward": rr_score,
+        "execution": execution,
+        "freshness": 100 if normalized.get("marketDataStatus") == "GOOD" else 0,
+    }
+    weights = settings.short_entry_quality_weights
+    score = round(sum(breakdown[key] * float(weights.get(key, 0))
+                      for key in breakdown))
+    weakest = min(breakdown, key=breakdown.get)
+    labels = {"structure": "15M結構", "location": "進場位置", "momentum": "5M動能",
+              "risk_reward": "淨賺賠比", "execution": "點差與滑價",
+              "freshness": "資料新鮮度"}
+    return max(0, min(100, score)), breakdown, labels[weakest]
 
 
 def reversal_evidence(
@@ -269,10 +319,12 @@ def _build_candidate(data: dict, direction: str, *, now: datetime) -> EntryPlan:
             missing_condition=f"預估風險報酬比僅 {rr:.2f}，低於最低 {min_rr:.2f}",
         )
     closed_at = str(normalized.get("lastClosedCandleTimestamp") or now.isoformat())
-    expires = (
-        datetime.fromisoformat(closed_at)
-        + timedelta(minutes=15 * (max(1, settings.tactical_setup_expiry_bars) + 1))
-    ).isoformat()
+    expiry_bars = min(
+        settings.short_entry_expiry_max_bars,
+        max(settings.short_entry_expiry_min_bars, settings.tactical_setup_expiry_bars),
+    )
+    expires = (datetime.fromisoformat(closed_at)
+               + timedelta(minutes=15 * expiry_bars)).isoformat()
     setup_id = _stable_id(direction, level, closed_at)
     return EntryPlan(
         status="SETUP_WATCH",
@@ -288,6 +340,16 @@ def _build_candidate(data: dict, direction: str, *, now: datetime) -> EntryPlan:
         confidence_score=max(
             0, min(100, int(normalized.get("entryQualityScore") or 50))
         ),
+        entry_quality_score=max(
+            0, min(100, int(normalized.get("entryQualityScore") or 50))
+        ),
+        entry_quality_breakdown={
+            "structure": 100, "location": 0, "momentum": 0,
+            "risk_reward": max(0, min(100, round(rr / 3 * 100))),
+            "execution": 50, "freshness": 100,
+        },
+        max_chase_distance=round(atr * settings.short_entry_max_chase_atr_mult, 3),
+        expiry_bars=expiry_bars,
         created_at=now.isoformat(),
         expires_at=expires,
         cancel_condition=(
@@ -336,6 +398,7 @@ def format_entry_message(plan: EntryPlan) -> str:
             f"【建議進場】{plan.suggested_entry:.2f}\n【停損】{plan.stop_loss:.2f}\n"
             f"【TP1（1R）】{tp1:.2f}\n【TP2（2R）】{tp2:.2f}\n【TP3（3R）】{tp3:.2f}\n"
             f"【風險報酬比】{plan.risk_reward:.2f}\n"
+            f"【短線進場品質】{plan.entry_quality_score}/100（不是勝率）\n"
             f"【信心分數】{plan.confidence_score}%\n【有效期限】{plan.expires_at}\n"
             f"【取消條件】{plan.cancel_condition}"
         )
@@ -460,7 +523,49 @@ def evaluate_entry_engine(
             rr = round(reward / risk, 2) if risk > 0 else 0
             from app.config import get_settings
 
-            if rr >= max(1.5, float(get_settings().setup_min_rr1)):
+            settings = get_settings()
+            chase_distance = 0.0 if (
+                previous.zone_low <= trigger_price <= previous.zone_high
+            ) else min(abs(trigger_price - previous.zone_low),
+                       abs(trigger_price - previous.zone_high))
+            max_chase = float(previous.max_chase_distance or
+                              float(normalized.get("atr15") or 0)
+                              * settings.short_entry_max_chase_atr_mult)
+            quality, breakdown, weakest = calculate_short_entry_quality(
+                data, previous, trigger_price=trigger_price,
+                evidence=evidence, risk_reward=rr)
+            if chase_distance > max_chase:
+                plan = replace(
+                    previous, status="ENTRY_READY", trigger_timeframe="5M",
+                    trigger_condition=evidence, entry_quality_score=quality,
+                    entry_quality_breakdown=breakdown,
+                    missing_condition=(
+                        f"5M 反轉已確認，但收盤距進場區 {chase_distance:.2f}，"
+                        f"超過最大追價距離 {max_chase:.2f}；等待回踩"),
+                )
+                return EntryEvaluation(plan, False, "")
+            if quality < settings.short_entry_min_quality_score:
+                plan = replace(
+                    previous, status="ENTRY_READY", trigger_timeframe="5M",
+                    trigger_condition=evidence, entry_quality_score=quality,
+                    entry_quality_breakdown=breakdown,
+                    missing_condition=(
+                        f"短線進場品質 {quality}/100，低於門檻 "
+                        f"{settings.short_entry_min_quality_score}；最弱項目：{weakest}"),
+                )
+                return EntryEvaluation(plan, False, "")
+            min_rr = max(1.5, float(settings.setup_min_rr1))
+            if rr < min_rr:
+                plan = replace(
+                    previous, status="ENTRY_READY", trigger_timeframe="5M",
+                    trigger_condition=evidence, entry_quality_score=quality,
+                    entry_quality_breakdown=breakdown,
+                    missing_condition=(
+                        f"5M 觸發已確認，但即時賺賠比 {rr:.2f} 低於 {min_rr:.2f}；"
+                        "等待更好的回踩價格"),
+                )
+                return EntryEvaluation(plan, False, "")
+            if rr >= min_rr:
                 r3 = trigger_price + (
                     1 if previous.direction == "LONG" else -1
                 ) * risk * 3
@@ -478,7 +583,8 @@ def evaluate_entry_engine(
                     trigger_condition=evidence,
                     suggested_entry=round(trigger_price, 2),
                     risk_reward=rr,
-                    confidence_score=min(100, previous.confidence_score + 15),
+                    entry_quality_score=quality,
+                    entry_quality_breakdown=breakdown,
                     take_profit_1=tp1,
                     take_profit_2=tp2,
                     take_profit_3=tp3,

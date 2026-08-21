@@ -7,6 +7,8 @@ __pycache__/
 venv/
 .pytest_cache/
 .pytest-temp/
+.pytest-final-tmp/
+.test-tmp-*/
 .mypy_cache/
 dist/
 build/
