@@ -187,6 +187,7 @@ class Settings(BaseSettings):
     trend_continuation_enabled: bool = True
     trend_continuation_shadow_mode: bool = True
     risk_mode: str = "standard"  # conservative | standard | aggressive
+    estimated_slippage_abs: float = 0.15
     trend_continuation_min_score: int = 70
     trend_continuation_strong_score: int = 80
     trend_shallow_zone_atr_mult: float = 0.30

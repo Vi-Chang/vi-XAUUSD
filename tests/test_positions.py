@@ -30,26 +30,24 @@ def test_r_multiple_and_pnl():
     assert ps.r_multiple(short, 3980.0) == 2.0
 
 
-def test_stop_widening_flagged():
+def test_stop_modification_history_is_preserved():
     pos = ps.create_position(side="LONG", entry_price=4000.0, stop_loss=3990.0, lot_size=0.1)
     # 往獲利方向移動:不觸發
     _, flag = ps.modify_stop(pos.id, 3995.0)
     assert flag is None
-    # 往虧損方向移動:STOP_WIDENING
+    # 往虧損方向移動只保存客觀歷史，不建立教練標籤。
     updated, flag = ps.modify_stop(pos.id, 3985.0)
-    assert flag == "STOP_WIDENING"
+    assert flag is None
     assert updated.stop_modification_history[-1]["widening"] is True
-    flags = ps.recent_behavior_flags()
-    assert any(f["flag"] == "STOP_WIDENING" for f in flags)
     # R 分母使用「初始停損」3990,不因移動而漂移
     assert ps.r_multiple(updated, 4020.0) == 2.0
 
 
-def test_early_exit_flagged_and_full_close():
+def test_partial_exit_and_full_close():
     pos = ps.create_position(side="LONG", entry_price=4000.0, stop_loss=3990.0, lot_size=0.1)
     # 未達 1R(R=0.5)平掉 80% → EARLY_EXIT
     updated, flag = ps.partial_exit(pos.id, 80, 4005.0)
-    assert flag == "EARLY_EXIT"
+    assert flag is None
     assert updated.is_open
     assert ps.remaining_fraction(updated) == pytest.approx(0.2)
     # 平掉剩餘 → 自動關倉
@@ -89,7 +87,7 @@ def test_positions_api_flow():
             "lot_size": 0.1}).status_code == 400
 
         r = c.post(f"/api/positions/{pid}/stop", json={"stop_loss": 3985.0})
-        assert r.json()["behavior_flag"] == "STOP_WIDENING"
+        assert "behavior_flag" not in r.json()
 
         r = c.post(f"/api/positions/{pid}/context", json={
             "position_timeframe": "4H", "original_thesis": "4H trend continuation",
@@ -108,8 +106,7 @@ def test_positions_api_flow():
         r = c.post(f"/api/positions/{pid}/close", json={"price": 4020.0})
         assert not r.json()["is_open"]
 
-        flags = c.get("/api/behavior/flags").json()
-        assert any(f["flag"] == "STOP_WIDENING" for f in flags)
+        assert c.get("/api/behavior/flags").status_code == 404
 
         rows = c.get("/api/positions").json()
         assert any(p["id"] == pid for p in rows)

@@ -52,13 +52,13 @@ PUBLIC_ALLOWLIST: tuple[str, ...] = (
 
 # 明確禁止出現在公開 payload 的欄位名(含巢狀;供測試遞迴斷言)。
 PRIVATE_KEY_DENYLIST: frozenset[str] = frozenset({
-    "position_management", "mentor_comparison", "trading_coach", "risk_manager",
+    "position_management", "risk_manager",
     "account", "account_id", "account_name", "accounts",
     "lot_size", "pnl", "pnl_usd", "net_usd", "swap_usd", "unrealized_pnl",
-    "drawdown", "max_drawdown_r", "behavior_flags", "corrective_action",
+    "drawdown", "max_drawdown_r", "corrective_action",
     "stop_modification_history", "partial_exit_history", "planned_targets",
     "offset_info",   # 個人券商價格校正(揭露券商與掛單價差)→ 不公開
-    "note",          # 老師私人備註
+    "note",
 })
 
 

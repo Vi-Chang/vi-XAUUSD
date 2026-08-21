@@ -1,9 +1,6 @@
 """手動持倉管理(spec 十三 C 之手動輸入途徑、十七之持倉管理規則)。
 
 - 持倉、停損修改歷史、分批平倉歷史全部入庫,供記錄與復盤。
-- 行為偵測(spec 十九,確定性規則):
-  * STOP_WIDENING:停損往虧損方向移動 → 立即記 behavior_flags。
-  * EARLY_EXIT:未達 1R 即平掉超過 50% 部位 → 記 behavior_flags。
 - 持倉管理建議依 spec 十七的 R 階段規則產生,不使用情緒字眼。
 """
 from __future__ import annotations
@@ -14,7 +11,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 
 from app.config import get_settings
-from app.db.models import BehaviorFlag, Position
+from app.db.models import Position
 from app.db.session import db_session
 from app.utils.timeutils import ensure_utc
 
@@ -147,13 +144,8 @@ def recommended_action(pos: Position, current_price: float) -> tuple[str, list[s
             "賠錢出場價跟著結構往上移;分批出,不是全跑、也不是全賭。"), prohibited)
 
 
-def _flag(db, flag: str, evidence: dict, action: str) -> None:
-    db.add(BehaviorFlag(flag=flag, detected_at=_now(), evidence=evidence,
-                        corrective_action=action))
-
-
 def modify_stop(position_id: int, new_stop: float) -> tuple[Position, str | None]:
-    """修改停損;往虧損方向移動 → 記 STOP_WIDENING(spec 十九)。"""
+    """修改停損並保留客觀修改歷史。"""
     with db_session() as db:
         pos = db.get(Position, position_id)
         if pos is None or not pos.is_open:
@@ -167,17 +159,9 @@ def modify_stop(position_id: int, new_stop: float) -> tuple[Position, str | None
                      "widening": bool(widening)})
         pos.stop_modification_history = hist
         pos.stop_loss = new_stop
-        flag = None
-        if widening:
-            flag = "STOP_WIDENING"
-            _flag(db, flag,
-                  {"position_id": pos.id, "side": pos.side, "entry": pos.entry_price,
-                   "old_stop": old, "new_stop": new_stop, "time": _now().isoformat()},
-                  "停損只能往獲利方向移動;請立即恢復原結構失效點停損,"
-                  "並檢視是否在期待價格回來(老問題 16)")
         db.flush()
         db.refresh(pos)
-        return pos, flag
+        return pos, None
 
 
 def update_position_context(
@@ -207,7 +191,7 @@ def update_position_context(
 
 
 def partial_exit(position_id: int, percent: float, price: float) -> tuple[Position, str | None]:
-    """分批平倉;未達 1R 即平掉 >50% → 記 EARLY_EXIT(spec 十九)。"""
+    """分批平倉並保留客觀成交紀錄。"""
     if not 0 < percent <= 100:
         raise ValueError("percent 必須在 (0, 100]")
     with db_session() as db:
@@ -219,21 +203,12 @@ def partial_exit(position_id: int, percent: float, price: float) -> tuple[Positi
         hist.append({"time": _now().isoformat(), "percent": percent, "price": price,
                      "r_at_exit": r_at_exit})
         pos.partial_exit_history = hist
-        flag = None
-        if r_at_exit is not None and r_at_exit < 1.0 and percent > 50:
-            flag = "EARLY_EXIT"
-            _flag(db, flag,
-                  {"position_id": pos.id, "side": pos.side, "entry": pos.entry_price,
-                   "exit_price": price, "percent": percent, "r_at_exit": r_at_exit,
-                   "time": _now().isoformat()},
-                  f"於 R={r_at_exit}(未達第一目標)平掉 {percent}% 部位;"
-                  "若交易邏輯未失效,請依計畫分批而非恐懼出場(老問題 14)")
         if sum(float(x["percent"]) for x in hist) >= 100:
             pos.is_open = False
             pos.close_time = _now()
         db.flush()
         db.refresh(pos)
-        return pos, flag
+        return pos, None
 
 
 def close_position(position_id: int, price: float) -> tuple[Position, str | None]:
@@ -277,11 +252,3 @@ def position_view(pos: Position, current_price: float | None) -> dict:
     return view
 
 
-def recent_behavior_flags(limit: int = 20) -> list[dict]:
-    with db_session() as db:
-        rows = db.execute(select(BehaviorFlag)
-                          .order_by(BehaviorFlag.detected_at.desc())
-                          .limit(limit)).scalars().all()
-    return [{"flag": r.flag, "detected_at": ensure_utc(r.detected_at).isoformat(),
-             "evidence": r.evidence, "corrective_action": r.corrective_action}
-            for r in rows]

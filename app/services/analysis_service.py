@@ -45,7 +45,6 @@ from app.schemas.analysis import (
     PositionManagement,
     Timeframes,
     TimeframeView,
-    TradingCoachView,
     validate_candidate_refs,
 )
 from app.services.candle_service import candles_to_df, refresh_candles
@@ -414,13 +413,10 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
     result.privacy_boundary_version = PRIVACY_BOUNDARY_VERSION
 
     # ── 9b. 我的持倉整合(持倉管理優先於尋找新交易)──
-    # 注意:這裡只看「我實際下單的持倉」(positions 表)。老師帶單(mentor_signals)
-    # 是獨立資料表,絕不進入此判斷 —— 只有老師帶單、我空手時仍正常找新交易。
     try:
         from app.services.position_service import (
             list_positions,
             position_view,
-            recent_behavior_flags,
         )
         open_positions = list_positions(include_closed=False, limit=5)
         if open_positions:
@@ -473,15 +469,6 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
                 result.decision.action = "MANAGE"
                 result.decision.reason = ("你手上已經有單了,先顧好這張單、別急著找新的。"
                                           + result.decision.reason)
-        flags = recent_behavior_flags(limit=5)
-        if flags:
-            result.trading_coach = TradingCoachView(
-                behavior_flags=[f["flag"] for f in flags],
-                stop_loss_discipline=("提醒:你最近有把賠錢出場價往虧損方向挪(凹單)的紀錄"
-                                       if any(f["flag"] == "STOP_WIDENING" for f in flags) else ""),
-                early_exit_risk=("提醒:你最近有太早出場、沒抱到目標的紀錄"
-                                  if any(f["flag"] == "EARLY_EXIT" for f in flags) else ""),
-                message=flags[0]["corrective_action"])
     except Exception as exc:  # noqa: BLE001
         logger.warning("position integration failed: %s", exc)
 

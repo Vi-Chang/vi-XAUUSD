@@ -27,7 +27,7 @@ const S = {
 };
 
 // 私人面板(登入後才載入;登出/過期時清空 DOM)
-const PRIVATE_PANELS = ["position-list", "coach-body"];
+const PRIVATE_PANELS = ["position-list"];
 
 const $ = (id) => document.getElementById(id);
 const unskel = (el) => el && el.classList.remove("skel");
@@ -1148,7 +1148,7 @@ function setupOffsetEditor() {
   });
 }
 
-/* ═══ 帳戶層(老師帶單 vs 自己交易)═══ */
+/* ═══ 實際交易帳戶統計 ═══ */
 S.accounts = [];
 const accountName = (id) => {
   const a = S.accounts.find((x) => x.id === id);
@@ -1187,7 +1187,6 @@ async function loadComparison() {
       ["獲利因子", (s) => f(s.profit_factor)],
       ["最大回撤(R)", (s) => f(s.max_drawdown_r)],
       ["總損益(USD)", (s) => pnlCell(s.total_pnl_usd)],
-      ["行為標籤數(紀律)", (s) => f(s.behavior_flags)],
     ];
     const heads = joinSafe(accs.map((a) =>
       h`<th>${a.name}<div class="cmp-src">${a.strategy_source}</div></th>`));
@@ -1205,92 +1204,6 @@ async function loadComparison() {
     body.innerHTML = '<div class="empty">對照統計載入失敗。</div>';
   }
 }
-
-/* ═══ 老師帶單(僅供參考,不影響決策)═══ */
-async function loadMentor() {
-  const body = $("mentor-body");
-  try {
-    const data = await getPrivate("/api/mentor/signals", "mentor-body");
-    if (data === null) return;
-    if (!data.has_signals) {
-      body.innerHTML = '<div class="empty">目前沒有老師帶單。新增後這裡會顯示老師方向與系統方向的比對。</div>';
-      return;
-    }
-    const alignChip = (a, text) => {
-      const cls = a === "ALIGNED" ? "good" : a === "OPPOSITE" ? "bad" : "warn";
-      return h`<span class="chip ${cls}">${text}</span>`;
-    };
-    const sysDir = (d) => d === "LONG" ? "做多" : d === "SHORT" ? "做空" : "無明確方向";
-    body.innerHTML = data.signals.map((s) => h`
-      <div class="mentor-card">
-        <div class="mentor-head">
-          <span class="pos-side">${s.direction === "LONG" ? "老師做多" : "老師做空"}</span>
-          ${alignChip(s.alignment, s.alignment_text)}
-          <button class="btn btn-sm" data-act="mentor-dismiss" data-id="${s.id}">移除</button>
-        </div>
-        <div class="kv"><span>老師進場價</span><span class="num">${fmt(s.entry_price)}</span></div>
-        ${s.stop_loss != null ? h`<div class="kv"><span>老師停損(賠錢出場)</span><span class="num">${fmt(s.stop_loss)}</span></div>` : ""}
-        ${(s.targets || []).length ? h`<div class="kv"><span>老師停利(目標價)</span><span class="num">${(s.targets || []).map((t) => fmt(t)).join(" / ")}</span></div>` : ""}
-        <div class="kv"><span>系統目前方向</span><span>${sysDir(s.system_direction)}</span></div>
-        <div class="kv"><span>與現價差</span><span class="num">${s.entry_vs_current_text || "–"}</span></div>
-        ${s.note ? h`<div class="mentor-memo">老師備註:${s.note}</div>` : ""}
-      </div>`).join("") +
-      h`<div class="bias-disclaimer">${data.note}</div>`;
-  } catch (e) {
-    body.innerHTML = '<div class="empty">老師帶單載入失敗。</div>';
-  }
-}
-
-async function loadMentorHistory() {
-  const body = $("mentor-history");
-  try {
-    const data = await getPrivate("/api/mentor/history", "mentor-history");
-    if (data === null) return;
-    if (!data.trades.length) {
-      body.innerHTML = '<div class="empty">尚無歷史紀錄。</div>';
-      return;
-    }
-    const s = data.summary;
-    const pnlCls = (v) => (v >= 0 ? "cmp-pos" : "cmp-neg");
-    const gapNote = joinSafe((data.known_gaps || []).map((g) =>
-      h`<div class="mentor-gap">⚠ 已知資料缺口:${g} —— 這段期間「沒有紀錄」,不代表老師空手</div>`));
-    const tradeRows = joinSafe(data.trades.map((t) => h`<tr>
-          <td class="${t.direction === "LONG" ? "cmp-pos" : "cmp-neg"}">${t.direction === "LONG" ? "做多" : "做空"}</td>
-          <td class="num">${fmt(t.entry_price)} → ${fmt(t.close_price)}</td>
-          <td class="num">${fmt(t.points)}</td>
-          <td class="num">${fmt(t.lots)}</td>
-          <td class="num ${pnlCls(t.pl_usd)}">${t.pl_usd >= 0 ? "+" : ""}${fmt(t.pl_usd)}</td>
-          <td class="num mentor-nodata" title="歷史匯入,無停損資料">${t.stop_loss != null ? fmt(t.stop_loss) : "—"}</td>
-          <td class="num">${(t.close_time || "").slice(0, 16).replace("T", " ")}</td>
-        </tr>`));
-    body.innerHTML = h`
-      <div class="mentor-summary">
-        <span class="chip info">共 ${s.count} 筆</span>
-        <span class="chip good">勝 ${s.wins}</span>
-        <span class="chip bad">負 ${s.losses}</span>
-        <span class="chip">淨損益 <b class="num ${pnlCls(s.net_pl_usd)}">${s.net_pl_usd >= 0 ? "+" : ""}${s.net_pl_usd}</b></span>
-        <span class="chip">扣費後 <b class="num ${pnlCls(s.net_after_fees_usd)}">${s.net_after_fees_usd >= 0 ? "+" : ""}${s.net_after_fees_usd}</b></span>
-        <span class="chip">獲利因子 <b class="num">${s.profit_factor ?? "–"}</b></span>
-      </div>
-      ${gapNote}
-      <div style="overflow-x:auto"><table class="hist-table"><thead><tr>
-        <th>方向</th><th>進場 → 出場</th><th>點數</th><th>手數</th><th>損益</th>
-        <th>賠錢出場價</th><th>平倉時間</th></tr></thead><tbody>
-        ${tradeRows}
-      </tbody></table></div>
-      <div class="bias-disclaimer">${data.note}</div>`;
-  } catch (e) {
-    body.innerHTML = '<div class="empty">歷史紀錄載入失敗。</div>';
-  }
-}
-
-async function dismissMentor(id) {
-  try {
-    await postJSON(`/api/mentor/signals/${id}/deactivate`, {});
-    loadMentor();
-  } catch (e) { alert("移除失敗:" + e); }
-}
-window.dismissMentor = dismissMentor;
 
 /* ═══ 手動持倉管理 ═══ */
 async function loadPositions() {
@@ -1433,7 +1346,6 @@ function reloadPrivatePanels() {
   const tab = active ? active.dataset.tab : "";
   loadAccounts();
   if (tab === "position") loadPositions();
-  else if (tab === "coach") loadCoach();
 }
 
 // 私人資料 GET:帶 cookie;未登入 → 鎖定面板(不自動跳登入,由使用者按登入鈕觸發共享流程)。
@@ -1482,7 +1394,6 @@ async function actStop(id) {
   if (!v) return;
   try {
     const out = await postJSON(`/api/positions/${id}/stop`, { stop_loss: parseFloat(v) });
-    if (out.behavior_flag) alert("⚠ 交易教練:你把出場價往賠更多的方向挪了(凹單),要小心。");
   } catch (e) { alert("失敗:" + e.message); }
   loadPositions(); loadCoach();
 }
@@ -1514,7 +1425,6 @@ async function actPartial(id) {
   try {
     const out = await postJSON(`/api/positions/${id}/partial_exit`,
       { percent: parseFloat(pct), price: px ? parseFloat(px) : null });
-    if (out.behavior_flag) alert(`⚠ 交易教練:偵測到 ${out.behavior_flag}`);
   } catch (e) { alert("失敗:" + e.message); }
   loadPositions(); loadCoach();
 }
@@ -1525,29 +1435,8 @@ async function actClose(id) {
   try {
     const out = await postJSON(`/api/positions/${id}/close`,
       { price: px ? parseFloat(px) : null });
-    if (out.behavior_flag) alert(`⚠ 交易教練:偵測到 ${out.behavior_flag}`);
   } catch (e) { alert("失敗:" + e.message); }
-  loadPositions(); loadCoach();
-}
-
-async function loadCoach() {
-  const body = $("coach-body");
-  try {
-    const flags = await getPrivate("/api/behavior/flags", "coach-body");
-    if (flags === null) return;
-    if (!flags.length) {
-      body.innerHTML = '<div class="empty">尚無行為標籤。當持倉操作觸發紀律問題(擴大停損、過早平倉…)時會顯示於此。</div>';
-      return;
-    }
-    body.innerHTML = flags.map((f) => h`
-      <div class="coach-flag">
-        <span class="cf-name">${f.flag}</span>
-        <span class="cf-time">${f.detected_at.slice(0, 16).replace("T", " ")} UTC</span>
-        <p>${f.corrective_action}</p>
-      </div>`).join("");
-  } catch (e) {
-    body.innerHTML = '<div class="empty">行為紀錄載入失敗。</div>';
-  }
+  loadPositions();
 }
 
 async function loadHistory() {
@@ -1728,7 +1617,6 @@ async function boot() {
       if (t.dataset.tab === "history") loadHistory();
       if (t.dataset.tab === "performance") loadPerformance();
       if (t.dataset.tab === "position") loadPositions();
-      if (t.dataset.tab === "coach") loadCoach();
     }));
 
   $("pos-form").addEventListener("submit", async (e) => {
@@ -1759,8 +1647,7 @@ async function boot() {
     if (!btn) return;
     const id = parseInt(btn.dataset.id, 10);
     const act = btn.dataset.act;
-    if (act === "mentor-dismiss") dismissMentor(id);
-    else if (act === "pos-stop") actStop(id);
+    if (act === "pos-stop") actStop(id);
     else if (act === "pos-partial") actPartial(id);
     else if (act === "pos-context") actPositionContext(id);
     else if (act === "pos-close") actClose(id);

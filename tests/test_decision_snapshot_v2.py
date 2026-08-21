@@ -23,6 +23,8 @@ def test_snapshot_separates_confidence_from_permission():
     assert snap["signalScore"] == 75
     assert snap["canEnter"] is False
     assert snap["action"] == "WAIT_CONFIRMATION"
+    assert snap["marketSession"]["name"] == "LONDON"
+    assert snap["executionCost"]["estimatedRoundTripCost"] == 0.15
 
 
 def test_data_health_fail_closed():
