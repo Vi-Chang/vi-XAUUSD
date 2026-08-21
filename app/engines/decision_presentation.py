@@ -26,12 +26,17 @@ def _plain_lifecycle(state: str) -> str:
     return {
         "WAIT_CONFIRMATION": "還不能進場，正在等確認",
         "WAIT_BREAKOUT_CONFIRMATION": "等 15 分鐘 K 棒收盤突破後才能進場",
+        "WAIT_BREAKOUT_OR_PULLBACK": "同步等待突破，或等待價格回到較好的回踩區",
+        "WAIT_PULLBACK_CONFIRMATION": "價格已進入回踩區，正在等 15 分鐘止跌確認",
         "BREAKOUT_CONFIRMED": "突破已由收盤確認，正在檢查進場位置",
         "WAIT_RETEST": "突破已確認，但目前偏離合理位置，等待回踩",
         "CONFIRMED_WAIT_RETEST": "突破已確認，但目前偏離合理位置，等待回踩",
         "ENTRY_READY": "可以進場",
         "ENTRY_READY_BREAKOUT": "突破進場條件成立",
         "ENTRY_READY_RETEST": "回踩進場條件成立",
+        "BREAKOUT_ENTRY_READY": "突破進場條件成立",
+        "PULLBACK_ENTRY_READY": "回踩進場條件成立",
+        "PULLBACK_INVALIDATED": "原本看漲的回踩條件已被破壞",
         "MISSED_ENTRY": "進場點已錯過，現在不要追價",
         "MISS_ENTRY": "進場點已錯過，現在不要追價",
         "EXPIRED": "原本的進場條件已失效，已重新計算",
@@ -201,8 +206,13 @@ def _format_breakout_setup_event(event: dict, breakout_event: dict) -> str:
     trigger = float(setup.get("breakoutTrigger") or 0)
     zone = f"{float(setup.get('entryZoneLow') or 0):.2f}–{float(setup.get('entryZoneHigh') or 0):.2f}"
     retest = f"{float(setup.get('retestZoneLow') or 0):.2f}–{float(setup.get('retestZoneHigh') or 0):.2f}"
-    if state in {"ENTRY_READY_BREAKOUT", "ENTRY_READY_RETEST"}:
-        entry_type = "突破進場" if state == "ENTRY_READY_BREAKOUT" else "回踩進場"
+    if state in {"ENTRY_READY_BREAKOUT", "ENTRY_READY_RETEST",
+                 "BREAKOUT_ENTRY_READY", "PULLBACK_ENTRY_READY"}:
+        entry_type = ("突破進場" if state in {"ENTRY_READY_BREAKOUT", "BREAKOUT_ENTRY_READY"}
+                      else "回踩進場")
+        if entry_type == "回踩進場":
+            zone = (f"{float(setup.get('pullbackEntryZoneLow') or setup.get('entryZoneLow') or 0):.2f}–"
+                    f"{float(setup.get('pullbackEntryZoneHigh') or setup.get('entryZoneHigh') or 0):.2f}")
         risk = abs(float(setup.get("entryZoneHigh") or trigger) -
                    float(setup.get("stopPrice") or trigger))
         reward = abs(float(setup.get("tp1") or trigger) -
@@ -253,7 +263,12 @@ def _format_breakout_setup_event(event: dict, breakout_event: dict) -> str:
         f"現價：{current:.2f}",
         f"目前情況：{_plain_lifecycle(state)}。",
     ]
-    if state == "WAIT_RETEST":
+    pullback_low = setup.get("pullbackEntryZoneLow")
+    pullback_high = setup.get("pullbackEntryZoneHigh")
+    pullback_zone = (f"{float(pullback_low):.2f}–{float(pullback_high):.2f}"
+                     if isinstance(pullback_low, (int, float)) and isinstance(pullback_high, (int, float))
+                     else "尚未形成有效重疊區")
+    if state in {"WAIT_RETEST", "WAIT_PULLBACK_CONFIRMATION"}:
         distance = (max(0.0, current - float(setup.get("retestZoneHigh") or current))
                     if direction == "LONG" else
                     max(0.0, float(setup.get("retestZoneLow") or current) - current))
@@ -271,6 +286,9 @@ def _format_breakout_setup_event(event: dict, breakout_event: dict) -> str:
             (f"超過 {max_chase:.2f}：不要追價，系統會改找回踩機會。"
              if max_chase else "若突破後離合理進場區太遠：不要追價，改等回踩。"),
             (f"目前還差 {abs(trigger-current):.2f} 才到確認價；還沒到不代表錯過。"),
+            "↩️ 回踩進場",
+            f"如果先回到 {pullback_zone}，不要立刻買，等 15 分鐘確認止跌。",
+            f"回踩區依據：{setup.get('pullbackZoneSummary') or setup.get('pullbackZoneError') or '最新結構正在計算'}。",
         ])
     lines.extend([
         f"判斷取消：15 分鐘 K 棒反向越過 {float(setup.get('stopPrice') or 0):.2f}，代表原本判斷不成立。",

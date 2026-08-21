@@ -134,8 +134,16 @@ def evaluate_market_monitors(
     if not stored_breakout_setups:
         stored_breakout_setups = migrate_legacy_breakout_setup(
             {**data, "entry_engine": entry}, _load(symbol, "final_decision"))
+    latest_closed_15m = {}
+    if m15_closed is not None and not m15_closed.empty:
+        row = m15_closed.iloc[-1]
+        latest_closed_15m = {
+            key: float(row[key]) for key in ("open", "high", "low", "close")
+            if key in row and pd.notna(row[key])
+        }
     breakout_setup_state, breakout_setup_events = evaluate_breakout_setups(
-        {**data, "entry_engine": entry}, stored_breakout_setups)
+        {**data, "entry_engine": entry, "latest_closed_15m": latest_closed_15m},
+        stored_breakout_setups)
     _save(symbol, "breakout_setups", breakout_setup_state)
     continuation_state, continuation_events = evaluate_trend_continuation(
         {**data, "breakout_setup_manager": breakout_setup_state},

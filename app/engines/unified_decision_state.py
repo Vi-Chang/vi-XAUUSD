@@ -254,11 +254,13 @@ def evaluate_unified_decision(
     breakout_events = list(breakout_manager.get("events") or [])
     ready_breakout = next((item for item in reversed(breakout_setups)
                            if item.get("status") in (
-                               "ENTRY_READY_BREAKOUT", "ENTRY_READY_RETEST")), None)
+                               "ENTRY_READY_BREAKOUT", "ENTRY_READY_RETEST",
+                               "BREAKOUT_ENTRY_READY", "PULLBACK_ENTRY_READY")), None)
     waiting_retest = next((item for item in reversed(breakout_setups)
-                           if item.get("status") == "WAIT_RETEST"), None)
+                           if item.get("status") in {"WAIT_RETEST", "WAIT_PULLBACK_CONFIRMATION"}), None)
     pending_breakout = next((item for item in reversed(breakout_setups)
-                             if item.get("status") == "WAIT_BREAKOUT_CONFIRMATION"), None)
+                             if item.get("status") in {"WAIT_BREAKOUT_CONFIRMATION",
+                                                       "WAIT_BREAKOUT_OR_PULLBACK"}), None)
     continuation = data.get("trend_continuation_engine") or {}
     continuation_selected = continuation.get("selected") or {}
     continuation_live = bool(continuation_selected and not continuation.get("shadowMode", True))
@@ -477,6 +479,12 @@ def evaluate_unified_decision(
         "WAIT_RETEST": "突破已確認但價格離合理進場區較遠，等待回踩",
         "ENTRY_READY_BREAKOUT": "突破確認且仍在最大追價界線內，可以評估突破進場",
         "ENTRY_READY_RETEST": "價格回到固定回踩區且15M確認守住，可以評估回踩進場",
+        "WAIT_BREAKOUT_OR_PULLBACK": "同步監控收盤突破與較佳回踩位置",
+        "WAIT_PULLBACK_CONFIRMATION": "價格已進入回踩區，等待15M止跌確認",
+        "BREAKOUT_ENTRY_READY": "15M收盤突破且仍在最大追價界線內",
+        "PULLBACK_ENTRY_READY": "價格回到動態支撐區且15M已確認止跌",
+        "PULLBACK_INVALIDATED": "15M收盤跌破回踩失效價，取消多方回踩劇本",
+        "PULLBACK_ZONE_UPDATED": "新結構成立，回踩觀察區已更新",
         "SETUP_EXPIRED": "突破劇本已到期",
         "ENTRY_READY_SHALLOW_PULLBACK": "強勢趨勢淺回踩已由15M確認",
         "ENTRY_READY_BREAKOUT_RETEST": "固定突破位回踩守住，風控已通過",
