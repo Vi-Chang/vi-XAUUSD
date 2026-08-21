@@ -39,6 +39,7 @@ def test_ready_event_is_scored_forward_only_with_execution_costs():
         assert row.max_favorable_r > 1
         assert row.horizons["1h"]["net_r"] > 0
         report = decision_event_performance(db)
+        assert "by_setup" in report
         assert report["settled_1h"] >= 1
 
 

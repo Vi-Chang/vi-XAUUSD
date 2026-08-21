@@ -1508,6 +1508,16 @@ async function loadPerformance() {
         <span>可供校準<b>${eventPerf.calibration_ready ? "是" : "樣本收集中"}</b></span>
       </div><small>正報酬比例不是未來勝率；未滿 30 筆不會調整正式門檻。</small>
     </div>`);
+    for (const [setupType, row] of Object.entries(eventPerf.by_setup || {})) {
+      cards.push(h`<div class="performance-card">
+        <h4>順勢劇本：${setupType}</h4>
+        <div class="performance-metrics">
+          <span>樣本<b class="num">${row.sample_size}</b></span>
+          <span>正報酬比例<b class="num">${row.win_rate_pct}%</b></span>
+          <span>平均淨 R<b class="num">${row.average_net_r}</b></span>
+        </div><small>${row.calibration_ready ? "已達人工校準門檻" : "未滿 30 筆，只蒐集不調參"}</small>
+      </div>`);
+    }
     const shadow = report.shadow_mode || {};
     cards.push(h`<div class="performance-card calibration-card">
       <h4>影子驗證</h4>

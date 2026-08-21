@@ -104,8 +104,29 @@ def decision_event_performance(db, *, limit: int = 5000) -> dict:
             "win_rate_pct": round(100 * sum((r.horizons["1h"].get("net_r") or 0) > 0
                                              for r in group) / len(group), 1) if group else None,
         }
+    events = {event.event_id: event for event in db.execute(
+        select(DecisionEvent).where(DecisionEvent.event_id.in_([r.event_id for r in settled]))
+    ).scalars().all()} if settled else {}
+    by_setup: dict[str, dict] = {}
+    for row in settled:
+        event = events.get(row.event_id)
+        payload = event.payload if event else {}
+        setup = (payload or {}).get("setup") or {}
+        setup_type = str(setup.get("type") or payload.get("setupType") or "OTHER")
+        bucket = by_setup.setdefault(setup_type, {"sample_size": 0, "net_r": [], "wins": 0})
+        net_r = float((row.horizons.get("1h") or {}).get("net_r") or 0)
+        bucket["sample_size"] += 1
+        bucket["net_r"].append(net_r)
+        bucket["wins"] += int(net_r > 0)
+    setup_report = {name: {
+        "sample_size": values["sample_size"],
+        "win_rate_pct": round(100 * values["wins"] / values["sample_size"], 1),
+        "average_net_r": round(sum(values["net_r"]) / values["sample_size"], 3),
+        "calibration_ready": values["sample_size"] >= 30,
+    } for name, values in by_setup.items()}
     return {"sample_size": len(rows), "settled_1h": len(settled),
             "win_rate_1h_pct": round(100 * len(wins) / len(settled), 1) if settled else None,
             "by_direction": by_direction,
+            "by_setup": setup_report,
             "calibration_ready": len(settled) >= 30,
             "note": "績效已扣除事件記錄中的點差、滑價與費用；此數值不是未來勝率。"}
