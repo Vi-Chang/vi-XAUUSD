@@ -632,6 +632,7 @@ function renderBreakoutSetupLedger(manager) {
   if (card.hidden) return;
   const stateZh = {
     WAIT_BREAKOUT_CONFIRMATION: "尚未確認", BREAKOUT_CONFIRMED: "突破已確認",
+    SHORT_TERM_WEAK_HTF_BULLISH: "短線轉弱，高週期仍偏多",
     WAIT_BREAKOUT_OR_PULLBACK: "等待突破或回踩", WAIT_PULLBACK_CONFIRMATION: "回踩區內等待止跌",
     WAIT_RETEST: "等待回踩", ENTRY_READY_BREAKOUT: "突破進場成立",
     ENTRY_READY_RETEST: "回踩進場成立", MISSED_ENTRY: "已錯過",

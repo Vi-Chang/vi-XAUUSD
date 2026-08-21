@@ -85,6 +85,15 @@ class Settings(BaseSettings):
     telegram_chat_id: str = ""
     alert_aggregation_window_seconds: int = 4
     notify_cooldown_seconds: int = 900
+    telegram_wait_cooldown_seconds: int = 1800
+    telegram_trigger_change_atr_ratio: float = 0.10
+    telegram_trigger_change_min_delta: float = 0.50
+    telegram_entry_zone_change_atr_ratio: float = 0.10
+    telegram_entry_zone_change_min_delta: float = 0.50
+    telegram_invalidation_change_atr_ratio: float = 0.15
+    telegram_invalidation_change_min_delta: float = 1.00
+    telegram_chase_change_atr_ratio: float = 0.25
+    telegram_chase_change_min_delta: float = 1.00
     heartbeat_minutes: int = 30
     # 分級通知門檻:低於此嚴重度只寫 log,達到才推 Telegram(DEBUG<INFO<WARN<ERROR)
     # 預設 WARN:一切正常時手機不響,只有資料延遲/異常才推播(靜默 heartbeat)

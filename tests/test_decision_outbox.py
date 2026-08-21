@@ -7,10 +7,37 @@ from app.db.models import DecisionEvent, TelegramNotification
 from app.db.session import db_session, init_db
 from app.engines.unified_decision_state import evaluate_unified_decision
 from app.services.alert_aggregator import (
+    is_meaningful_change,
     notification_fingerprint,
     notification_fingerprint_parts,
     semantic_key,
 )
+
+
+def test_micro_quote_and_chase_drift_are_not_meaningful():
+    previous = _breakout_dedup_event(
+        event_id="meaningful-old", trigger=4591.37, chase=4595.21)
+    current = {**_breakout_dedup_event(
+        event_id="meaningful-new", trigger=4591.37, chase=4595.46),
+               "currentPrice": 4581.84}
+    meaningful, reason = is_meaningful_change(previous, current)
+    assert meaningful is False
+    assert reason == "NO_MEANINGFUL_DECISION_CHANGE"
+
+
+def test_new_pullback_zone_and_state_transitions_are_meaningful():
+    previous = _breakout_dedup_event(event_id="pullback-old")
+    with_zone = _breakout_dedup_event(event_id="pullback-created")
+    with_zone["breakoutSetupEvent"]["setup"].update({
+        "pullbackEntryZoneLow": 4574.0, "pullbackEntryZoneHigh": 4579.0,
+    })
+    assert is_meaningful_change(previous, with_zone) == (True, "PULLBACK_ZONE_CREATED")
+    entered = _breakout_dedup_event(
+        event_id="pullback-entered", status="WAIT_PULLBACK_CONFIRMATION")
+    assert is_meaningful_change(with_zone, entered)[0] is True
+    ready = _breakout_dedup_event(
+        event_id="pullback-ready", status="PULLBACK_ENTRY_READY")
+    assert is_meaningful_change(entered, ready)[0] is True
 from app.services.decision_outbox import (
     deliver_pending_telegram,
     format_telegram_event,
@@ -373,6 +400,32 @@ def _breakout_dedup_event(*, event_id: str, status="WAIT_BREAKOUT_CONFIRMATION",
             "calculatedAt": calculated, "dataVersion": 1,
             "breakoutSetupEvent": {"setupId": setup["setupId"],
                                    "currentState": status, "setup": setup}}
+
+
+@pytest.mark.asyncio
+async def test_persisted_wait_suppresses_micro_drift_even_across_fingerprint_bucket():
+    first = _breakout_dedup_event(
+        event_id="micro-persisted-first", trigger=4591.37, chase=4595.91)
+    first["symbol"] = "XAUUSD-MICRO-PERSISTED"
+    first["breakoutSetupEvent"]["setup"]["setupId"] = "BO-micro-persisted"
+    first["setupId"] = "BO-micro-persisted"
+    created = persist_decision_events(first["symbol"], [first])
+    assert len(created) == 1
+
+    async def sender(_message):
+        return "micro-persisted-message"
+
+    assert await deliver_pending_telegram(
+        sender=sender, event_id=created[0]["eventId"]) == 1
+    repeated = _breakout_dedup_event(
+        event_id="micro-persisted-second", trigger=4591.37, chase=4596.16,
+        calculated="2026-08-21T14:01:00+00:00")
+    repeated["symbol"] = first["symbol"]
+    repeated["currentPrice"] = 4581.84
+    repeated["breakoutSetupEvent"]["setup"]["setupId"] = "BO-micro-persisted"
+    repeated["setupId"] = "BO-micro-persisted"
+    assert notification_fingerprint(repeated) != notification_fingerprint(first)
+    assert persist_decision_events(first["symbol"], [repeated]) == []
 
 
 @pytest.mark.asyncio

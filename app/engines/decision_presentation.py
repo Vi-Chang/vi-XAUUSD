@@ -63,6 +63,7 @@ def build_decision_presentation(event: dict) -> dict:
         "INVALIDATED": "🟠【原交易計畫已失效】",
         "MISSED_ENTRY": "🟡【原進場區已錯過｜禁止追價】",
         "CONFIRMED_WAIT_RETEST": "🟡【突破確認完成｜等待回踩】",
+        "SHORT_TERM_WEAK_HTF_BULLISH": "⚠️【短線轉弱，先觀望】",
     }
     if state.endswith("BIAS"):
         action = "等待，尚未到進場區，請勿追價。"
@@ -125,6 +126,19 @@ def format_decision_message(event: dict) -> str:
     closed_time = _local_time(str(event.get("candleCloseTime") or ""))
     data_time = _local_time(str(event.get("calculatedAt") or ""))
     state = str(event.get("currentState") or "WAIT")
+    if state == "SHORT_TERM_WEAK_HTF_BULLISH":
+        regain = event.get("triggerLevel")
+        short_level = event.get("longDefensePrice") or event.get("stopLoss")
+        lines = [
+            "⚠️【短線轉弱，先觀望】",
+            "15分鐘正在回檔，但1H／4H還沒有正式翻空。",
+            "現在不追多，也先不追空。",
+            (f"重新轉強：15M收盤站上 {float(regain):.2f}"
+             if isinstance(regain, (int, float)) else "重新轉強：等待15M收盤站回最新壓力"),
+            (f"轉空確認：15M／1H收盤跌破 {float(short_level):.2f}"
+             if isinstance(short_level, (int, float)) else "轉空確認：等待15M／1H跌破最新支撐"),
+        ]
+        return "\n".join(lines)
     score = normalize_signal_score(event.get("signalScore"))
     score_text = str(score) if score is not None else "無有效分數"
     headline = plain_trade_status(state, can_enter=bool(event.get("canEnter")))
@@ -232,7 +246,8 @@ def _format_breakout_setup_event(event: dict, breakout_event: dict) -> str:
             f"TP3：{float(setup.get('tp3') or 0):.2f}",
             f"賺賠比：{rr:.2f}",
             "目前狀態：可以進場",
-            f"條件失效：15M 收盤反向越過 {float(setup.get('stopPrice') or 0):.2f}",
+            (f"條件失效：15M 收盤{'跌破' if direction == 'LONG' else '站上'} "
+             f"{float(setup.get('stopPrice') or 0):.2f}"),
             f"資料時間：{_local_time(str(event.get('calculatedAt') or ''))}（UTC+8）",
         ])
     current = float(event.get("currentPrice") or 0)
@@ -259,11 +274,9 @@ def _format_breakout_setup_event(event: dict, breakout_event: dict) -> str:
                       "下一步：等待新的突破或回踩機會，現在不要追價。",
                       f"資料時間：{_local_time(str(event.get('calculatedAt') or ''))}（UTC+8）"])
         return "\n".join(lines)
-    lines = [
-        "🟡【XAUUSD｜現在先不要進場】",
-        f"現價：{current:.2f}",
-        f"目前情況：{_plain_lifecycle(state)}。",
-    ]
+    side_word = "買" if direction == "LONG" else "賣"
+    cancel_word = "跌破" if direction == "LONG" else "站上"
+    lines = ["🟡【XAUUSD｜現在先不要進】", f"現價：{current:.2f}"]
     pullback_low = setup.get("pullbackEntryZoneLow")
     pullback_high = setup.get("pullbackEntryZoneHigh")
     pullback_zone = (f"{float(pullback_low):.2f}–{float(pullback_high):.2f}"
@@ -271,36 +284,30 @@ def _format_breakout_setup_event(event: dict, breakout_event: dict) -> str:
                      else "尚未形成有效重疊區")
     if state == "PULLBACK_BREACH_PENDING_CLOSE":
         lines.extend([
-            "原因：即時價格已跌穿原回踩防守位，但15分鐘K棒尚未收盤。",
-            "現在：暫停這個回踩機會，不接下跌中的價格。",
-            "收盤後：若仍在失效價下方，正式取消；若重新站回，才重新評估。",
+            "⚠️ 回踩防守位盤中已失守，暫停進場。",
+            "等15M收盤；收破就取消，重新站回才再評估。",
         ])
     elif state in {"WAIT_RETEST", "WAIT_PULLBACK_CONFIRMATION"}:
-        distance = (max(0.0, current - float(setup.get("retestZoneHigh") or current))
-                    if direction == "LONG" else
-                    max(0.0, float(setup.get("retestZoneLow") or current) - current))
         lines.extend([
-            f"原因：目前價格已離合理回踩區約 {distance:.2f}，所以現在不要追。",
-            "↩️ 回踩進場",
-            f"等待價格回到 {retest}，並由 15 分鐘 K 棒確認守住。",
-            f"符合後可觀察的進場範圍：{breakout_zone}。",
+            f"↩️ 回踩{side_word}",
+            f"價格已到 {retest}，先不要進，等15M確認止跌。",
         ])
     else:
         lines.extend([
-            "🚀 突破進場",
-            f"正在等：15 分鐘 K 棒「收盤」{verb} {trigger:.2f}，不是盤中瞬間碰到。",
-            f"確認後可接受進場範圍：{breakout_zone}。",
-            (f"超過 {max_chase:.2f}：不要追價，系統會改找回踩機會。"
-             if max_chase else "若突破後離合理進場區太遠：不要追價，改等回踩。"),
-            (f"目前還差 {abs(trigger-current):.2f} 才到確認價；還沒到不代表錯過。"),
-            "↩️ 回踩進場",
-            f"如果先回到 {pullback_zone}，不要立刻買，等 15 分鐘確認止跌。",
-            f"回踩區依據：{setup.get('pullbackZoneSummary') or setup.get('pullbackZoneError') or '最新結構正在計算'}。",
+            f"🚀 突破{side_word}",
+            f"等15M收盤{verb} {trigger:.2f}",
+            f"可接受進場：{breakout_zone}",
+            (f"超過 {max_chase:.2f} 不追" if max_chase else "離進場區太遠就不追"),
+            f"↩️ 回踩{side_word}",
+            (f"回到 {pullback_zone} 後，等15M確認止跌"
+             if isinstance(pullback_low, (int, float)) and isinstance(pullback_high, (int, float))
+             else ("目前還沒有明確的回踩買點，先等系統找到新的支撐區。"
+                   if direction == "LONG"
+                   else "目前還沒有明確的反彈賣點，先等系統找到新的壓力區。")),
         ])
     lines.extend([
-        f"判斷取消：15 分鐘 K 棒反向越過 {float(setup.get('stopPrice') or 0):.2f}，代表原本判斷不成立。",
-        "下一步：可以進場、失效或出現回踩機會時，系統會主動通知。",
-        f"資料時間：{_local_time(str(event.get('calculatedAt') or ''))}（UTC+8）",
+        f"❌ {'多單' if direction == 'LONG' else '空單'}取消：15M收盤{cancel_word} {float(setup.get('stopPrice') or 0):.2f}",
+        "有新機會時我會再通知。",
     ])
     return "\n".join(lines)
 

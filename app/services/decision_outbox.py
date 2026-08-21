@@ -12,9 +12,31 @@ from app.db.models import DecisionEvent, MarketMonitorState, TelegramNotificatio
 from app.db.session import db_session
 from app.engines.decision_presentation import format_decision_message
 from app.engines.trigger_lifecycle import validate_notification
-from app.services.alert_aggregator import aggregate_signal_facts
+from app.services.alert_aggregator import (
+    aggregate_signal_facts,
+    is_meaningful_change,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _last_sent_market_decision(db, symbol: str, payload: dict) -> dict | None:
+    """Find the latest delivered decision in the same direction/market stream."""
+    direction = str(payload.get("direction") or "NONE")
+    rows = db.execute(
+        select(DecisionEvent)
+        .join(TelegramNotification,
+              TelegramNotification.event_id == DecisionEvent.event_id)
+        .where(DecisionEvent.symbol == symbol,
+               TelegramNotification.status == "SENT")
+        .order_by(TelegramNotification.sent_at.desc())
+        .limit(50)
+    ).scalars().all()
+    for row in rows:
+        old = dict(row.payload or {})
+        if str(old.get("direction") or "NONE") == direction:
+            return old
+    return None
 
 
 def persist_decision_events(symbol: str, events: list[dict]) -> list[dict]:
@@ -67,6 +89,16 @@ def persist_decision_events(symbol: str, events: list[dict]) -> list[dict]:
                 existing_notice.updated_at = now
                 created.append(merged)
                 continue
+            previous_sent = _last_sent_market_decision(db, symbol, payload)
+            meaningful, reason = is_meaningful_change(previous_sent, payload)
+            if not meaningful:
+                logger.info(
+                    "telegram notification suppressed: %s (%s)",
+                    payload.get("setupId") or event_id,
+                    reason,
+                )
+                continue
+            payload["meaningfulChangeReason"] = reason
             exists = db.execute(
                 select(DecisionEvent.id).where(DecisionEvent.event_id == event_id)
             ).scalar_one_or_none()
@@ -122,6 +154,7 @@ def _zh_state(value: str) -> str:
         "MISSED_ENTRY": "原進場區已錯過",
         "INVALIDATED": "原劇本失效",
         "DATA_STALE": "行情資料異常",
+        "SHORT_TERM_WEAK_HTF_BULLISH": "短線轉弱，高週期仍偏多",
     }.get(value, "市場決策更新")
 
 

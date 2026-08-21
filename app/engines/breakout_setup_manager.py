@@ -108,6 +108,7 @@ def build_breakout_setup(data: dict, *, direction: str, previous_setup_id: str =
         "retestZoneLow": round(entry_low, 2), "retestZoneHigh": round(entry_high, 2),
         "entryZoneLow": round(entry_low, 2), "entryZoneHigh": round(entry_high, 2),
         "maxChasePrice": round(trigger + sign * atr * 0.35, 2),
+        "atr15": round(atr, 4),
         "stopPrice": round(stop, 2), "tp1": targets[0], "tp2": targets[1],
         "tp3": targets[2], "expiresAt": expires,
         "status": "WAIT_BREAKOUT_OR_PULLBACK", "blockedReason": (

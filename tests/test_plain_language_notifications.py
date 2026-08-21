@@ -33,15 +33,17 @@ def test_before_breakout_is_waiting_not_missed():
     event = setup()
     message = format_decision_message(event)
     assert plain_trade_status(event["currentState"]) == "🟡 現在先不要進場"
-    assert "收盤」站上 4606.18" in message
-    assert "還沒到不代表錯過" in message
+    assert "等15M收盤站上 4606.18" in message
+    assert "目前還沒有明確的回踩買點" in message
+    assert len(message.splitlines()) <= 10
     assert "WAIT_" not in message
 
 
 def test_intrabar_breakout_still_waits_for_closed_candle():
     message = format_decision_message(setup(price=4607.0, closed=4605.5))
-    assert "現在先不要進場" in message
-    assert "不是盤中瞬間碰到" in message
+    assert "現在先不要進" in message
+    assert "等15M收盤站上 4606.18" in message
+    assert "進場條件成立" not in message
 
 
 def test_closed_breakout_and_inside_zone_is_ready():
@@ -53,9 +55,35 @@ def test_closed_breakout_and_inside_zone_is_ready():
 
 def test_above_chase_limit_waits_retest_with_exact_distance_and_zone():
     message = format_decision_message(setup("WAIT_RETEST", price=4612.3, closed=4608.0))
-    assert "現在不要追" in message
-    assert "離合理回踩區約 9.30" in message
+    assert "現在先不要進" in message
     assert "4598.00–4603.00" in message
+    assert "還差" not in message and "資料時間" not in message
+
+
+def test_wait_message_uses_explicit_directional_invalidation_words():
+    long_message = format_decision_message(setup())
+    assert "15M收盤跌破 4590.00" in long_message
+    assert all(term not in long_message for term in ("反向越過", "穿越", "反向突破"))
+
+
+def test_short_without_pullback_zone_uses_plain_resistance_copy():
+    event = setup()
+    plan = event["breakoutSetupEvent"]["setup"]
+    plan["direction"] = event["direction"] = "SHORT"
+    message = format_decision_message(event)
+    assert "目前還沒有明確的反彈賣點" in message
+    assert "15M收盤站上 4590.00" in message
+
+
+def test_short_term_weak_htf_bullish_is_neutral_plain_language():
+    event = {
+        "currentState": "SHORT_TERM_WEAK_HTF_BULLISH", "currentPrice": 4581.84,
+        "confirmation": "重新轉強：15M收盤站上4591.37；轉空確認：15M／1H跌破4572.52",
+    }
+    message = format_decision_message(event)
+    assert message.startswith("⚠️【短線轉弱，先觀望】")
+    assert "現在不追多，也先不追空" in message
+    assert "SHORT_TERM" not in message
 
 
 def test_retest_ready_is_explicit_entry_route():
