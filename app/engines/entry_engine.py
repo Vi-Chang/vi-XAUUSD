@@ -103,6 +103,48 @@ def _targets(data: dict, scenario: dict, direction: str, entry: float) -> list[f
     return sorted(set(values), reverse=direction == "SHORT")[:2]
 
 
+def ordered_profit_targets(
+    direction: str, entry: float | None, *targets: float | None
+) -> tuple[float | None, float | None, float | None]:
+    """Return unique, profit-side targets from nearest to farthest.
+
+    Structural targets and R-multiple targets come from different calculators.  This
+    is the single boundary that prevents their labels from implying an impossible
+    TP1/TP2/TP3 execution order.
+    """
+    if entry is None:
+        return None, None, None
+    valid = {
+        round(float(value), 2)
+        for value in targets
+        if isinstance(value, (int, float))
+        and ((direction == "LONG" and float(value) > entry)
+             or (direction == "SHORT" and float(value) < entry))
+    }
+    ordered = sorted(valid, reverse=direction == "SHORT")[:3]
+    return tuple((ordered + [None, None, None])[:3])
+
+
+def validate_executable_plan(plan: EntryPlan) -> tuple[bool, str]:
+    """Fail closed when a plan claims executability but its fields disagree."""
+    if plan.status != "ENTRY_TRIGGERED":
+        return True, ""
+    if plan.missing_condition:
+        return False, "進場條件仍有缺項"
+    required = (plan.suggested_entry, plan.stop_loss, plan.take_profit_1)
+    if not all(isinstance(value, (int, float)) for value in required):
+        return False, "進場價、停損或第一止盈不完整"
+    if plan.risk_reward is None or plan.risk_reward < 1.5:
+        return False, "風險報酬比未達 1.5"
+    targets = [value for value in (
+        plan.take_profit_1, plan.take_profit_2, plan.take_profit_3
+    ) if isinstance(value, (int, float))]
+    expected = sorted(set(targets), reverse=plan.direction == "SHORT")
+    if targets != expected:
+        return False, "止盈價未依獲利方向排列"
+    return True, ""
+
+
 def _closed_frame(
     m5: pd.DataFrame | None, m15: pd.DataFrame | None
 ) -> tuple[str, pd.DataFrame | None]:
@@ -419,6 +461,16 @@ def evaluate_entry_engine(
             from app.config import get_settings
 
             if rr >= max(1.5, float(get_settings().setup_min_rr1)):
+                r3 = trigger_price + (
+                    1 if previous.direction == "LONG" else -1
+                ) * risk * 3
+                tp1, tp2, tp3 = ordered_profit_targets(
+                    previous.direction,
+                    trigger_price,
+                    previous.take_profit_1,
+                    previous.take_profit_2,
+                    r3,
+                )
                 plan = replace(
                     previous,
                     status="ENTRY_TRIGGERED",
@@ -427,15 +479,21 @@ def evaluate_entry_engine(
                     suggested_entry=round(trigger_price, 2),
                     risk_reward=rr,
                     confidence_score=min(100, previous.confidence_score + 15),
-                    take_profit_3=round(
-                        trigger_price
-                        + (1 if previous.direction == "LONG" else -1) * risk * 3,
-                        2,
-                    ),
+                    take_profit_1=tp1,
+                    take_profit_2=tp2,
+                    take_profit_3=tp3,
+                    missing_condition="",
                 )
+                valid, validation_error = validate_executable_plan(plan)
+                if not valid:
+                    plan = replace(
+                        plan,
+                        status="ENTRY_READY",
+                        missing_condition=f"一致性檢查未通過：{validation_error}",
+                    )
                 return EntryEvaluation(
                     plan,
-                    "ENTRY_TRIGGERED" not in previous.notified_states,
+                    plan.status not in previous.notified_states,
                     format_entry_message(plan),
                 )
         if touched and previous.status == "SETUP_WATCH":

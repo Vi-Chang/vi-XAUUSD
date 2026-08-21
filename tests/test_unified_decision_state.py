@@ -122,3 +122,31 @@ def test_completed_breakout_is_not_reused_and_short_defense_is_triggered():
     assert any(event["event_type"] == "SHORT_DEFENSE_TRIGGERED" for event in events)
     assert all((event.get("nextTriggerCondition") or {}).get("level") != 4495.12
                for event in events)
+
+
+def test_active_virtual_position_never_tells_flat_user_to_enter_again():
+    data = payload(4515, status="ENTRY_TRIGGERED", tracker={
+        "active": True, "direction": "SHORT", "events": []
+    })
+    data["entry_engine"].update({
+        "direction": "SHORT", "suggested_entry": 4515.26, "stop_loss": 4520,
+        "take_profit_1": 4506.75, "take_profit_2": 4502.26,
+        "take_profit_3": 4480.16, "risk_reward": 1.8,
+        "missing_condition": "",
+    })
+    state, _ = evaluate_unified_decision(data)
+    assert state["state"] == "SHORT_MANAGE"
+    assert "禁止追價" in state["flat_action"]
+    assert "進場" not in state["action"]
+
+
+def test_triggered_with_missing_confirmation_is_downgraded_to_watch():
+    data = payload(4515, status="ENTRY_TRIGGERED")
+    data["entry_engine"].update({
+        "direction": "SHORT", "suggested_entry": 4515, "stop_loss": 4520,
+        "take_profit_1": 4505, "risk_reward": 2,
+        "missing_condition": "尚缺反轉 K 線",
+    })
+    state, _ = evaluate_unified_decision(data)
+    assert state["state"] == "SHORT_WATCH"
+    assert "一致性檢查未通過" in state["flat_action"]

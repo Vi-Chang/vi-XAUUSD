@@ -2,7 +2,12 @@ from datetime import datetime, timezone
 
 import pandas as pd
 
-from app.engines.entry_engine import evaluate_entry_engine
+from app.engines.entry_engine import (
+    EntryPlan,
+    evaluate_entry_engine,
+    ordered_profit_targets,
+    validate_executable_plan,
+)
 
 NOW = datetime(2026, 8, 19, 1, tzinfo=timezone.utc)
 
@@ -168,3 +173,39 @@ def test_triggered_plan_remains_managed_after_first_target():
     assert managed.plan.status == "ENTRY_TRIGGERED"
     assert managed.should_notify is False
     assert managed.message == ""
+
+
+def test_trigger_clears_missing_condition_and_orders_short_targets():
+    watch = evaluate_entry_engine(
+        data("confirmed_breakdown", tp1=97, tp2=90), now=NOW
+    ).plan
+    bearish = frame((100, 100.5, 99.5, 100), (100.2, 100.3, 99.7, 99.8))
+    triggered = evaluate_entry_engine(
+        data("confirmed_breakdown", tp1=97, tp2=90),
+        watch,
+        m5_closed=bearish,
+        now=NOW,
+    ).plan
+    assert triggered.status == "ENTRY_TRIGGERED"
+    assert triggered.missing_condition == ""
+    targets = [triggered.take_profit_1, triggered.take_profit_2,
+               triggered.take_profit_3]
+    targets = [value for value in targets if value is not None]
+    assert targets == sorted(targets, reverse=True)
+    assert validate_executable_plan(triggered) == (True, "")
+
+
+def test_target_normalizer_rejects_wrong_side_and_orders_by_execution():
+    assert ordered_profit_targets("SHORT", 4515.26, 4506.75, 4480.16, 4502.26) == (
+        4506.75, 4502.26, 4480.16
+    )
+    assert ordered_profit_targets("LONG", 100, 105, 99, 103) == (103.0, 105.0, None)
+
+
+def test_executable_plan_with_missing_condition_fails_closed():
+    plan = EntryPlan(
+        status="ENTRY_TRIGGERED", direction="SHORT", suggested_entry=100,
+        stop_loss=101, take_profit_1=98, risk_reward=2,
+        missing_condition="尚缺反轉 K 線",
+    )
+    assert validate_executable_plan(plan) == (False, "進場條件仍有缺項")
