@@ -28,13 +28,17 @@ def notification_fingerprint_parts(event: dict) -> dict[str, str]:
              else event.get("chaseLimit"))
     invalidation = (setup.get("stopPrice") if setup.get("stopPrice") is not None
                     else event.get("stopLoss"))
+    pullback_zone = "-".join(filter(None, (
+        _price(setup.get("pullbackEntryZoneLow")),
+        _price(setup.get("pullbackEntryZoneHigh")),
+    )))
     # A setup's source candle is immutable. Do not use the latest polling candle,
     # otherwise an unchanged WAIT becomes a new alert every 15 minutes.
     source_time = (setup.get("confirmedCandleTime") or setup.get("createdFromCandleTime")
                    or event.get("sourceDataTime")
                    or event.get("decisionBasisCandleCloseTime")
                    or event.get("candleCloseTime") or "")
-    return {
+    parts = {
         "symbol": str(event.get("symbol") or "XAUUSD"),
         "scenarioId": str(scenario_id),
         "direction": str(setup.get("direction") or event.get("direction") or "NONE"),
@@ -44,6 +48,9 @@ def notification_fingerprint_parts(event: dict) -> dict[str, str]:
         "invalidationPrice": _price(invalidation),
         "sourceCandleTime": str(source_time),
     }
+    if pullback_zone:
+        parts["pullbackZone"] = pullback_zone
+    return parts
 
 
 def notification_fingerprint(event: dict) -> str:
@@ -64,7 +71,7 @@ def alert_category(event: dict) -> str:
         return "POSITION_MANAGEMENT"
     if state in {"MISSED_ENTRY", "MISS_ENTRY"}:
         return "MISSED_ENTRY"
-    if state in {"EXPIRED", "SETUP_EXPIRED", "INVALIDATED"}:
+    if state in {"EXPIRED", "SETUP_EXPIRED", "INVALIDATED", "PULLBACK_INVALIDATED"}:
         return "SCENARIO_UPDATED"
     if state.endswith("WATCH") or state.startswith("WAIT"):
         return "WAIT"

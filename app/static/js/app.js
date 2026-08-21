@@ -632,11 +632,14 @@ function renderBreakoutSetupLedger(manager) {
   if (card.hidden) return;
   const stateZh = {
     WAIT_BREAKOUT_CONFIRMATION: "尚未確認", BREAKOUT_CONFIRMED: "突破已確認",
+    WAIT_BREAKOUT_OR_PULLBACK: "等待突破或回踩", WAIT_PULLBACK_CONFIRMATION: "回踩區內等待止跌",
     WAIT_RETEST: "等待回踩", ENTRY_READY_BREAKOUT: "突破進場成立",
     ENTRY_READY_RETEST: "回踩進場成立", MISSED_ENTRY: "已錯過",
+    BREAKOUT_ENTRY_READY: "突破進場成立", PULLBACK_ENTRY_READY: "回踩進場成立",
+    PULLBACK_INVALIDATED: "回踩劇本已取消",
     INVALIDATED: "已失效", EXPIRED: "已到期",
   };
-  const ready = setups.find((s) => String(s.status).startsWith("ENTRY_READY_"));
+  const ready = setups.find((s) => String(s.status).includes("ENTRY_READY"));
   $("breakout-setup-summary").textContent = ready
     ? `${ready.direction === "LONG" ? "多單" : "空單"}${ready.entryType === "RETEST" ? "回踩" : "突破"}條件已成立`
     : "舊劇本與新延續劇本分開顯示；尚未成立時不會誤示可進場。";
@@ -646,7 +649,9 @@ function renderBreakoutSetupLedger(manager) {
     const side = s.direction === "LONG" ? "多方" : "空方";
     const confirmed = s.breakoutConfirmedAt ? "收盤確認已完成" : "正在等 15 分鐘收盤確認";
     const plainState = stateZh[s.status] || "正在重新計算市場條件";
-    box.textContent = `${side}劇本｜關鍵價 ${Number(s.breakoutTrigger).toFixed(2)}：${confirmed}｜現在：${plainState}｜回踩觀察區 ${Number(s.retestZoneLow).toFixed(2)}–${Number(s.retestZoneHigh).toFixed(2)}｜超過 ${Number(s.maxChasePrice).toFixed(2)} 不追價`;
+    const pullbackLow = s.pullbackEntryZoneLow ?? s.retestZoneLow;
+    const pullbackHigh = s.pullbackEntryZoneHigh ?? s.retestZoneHigh;
+    box.textContent = `${side}劇本｜🚀 突破：${Number(s.breakoutTrigger).toFixed(2)}（${confirmed}，超過 ${Number(s.maxChasePrice).toFixed(2)} 不追）｜↩️ 回踩：${Number(pullbackLow).toFixed(2)}–${Number(pullbackHigh).toFixed(2)}，進區後仍要等止跌｜現在：${plainState}`;
     return box;
   }));
 }

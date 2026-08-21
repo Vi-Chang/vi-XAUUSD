@@ -5,8 +5,8 @@ from __future__ import annotations
 import hashlib
 from datetime import datetime, timedelta, timezone
 
-SETUP_VERSION = "breakout-setup-v1"
-TERMINAL = {"MISSED_ENTRY", "INVALIDATED", "EXPIRED"}
+SETUP_VERSION = "breakout-pullback-v2"
+TERMINAL = {"MISSED_ENTRY", "INVALIDATED", "EXPIRED", "PULLBACK_INVALIDATED"}
 
 
 def _level(normalized: dict, kind: str) -> dict | None:
@@ -15,9 +15,60 @@ def _level(normalized: dict, kind: str) -> dict | None:
                  and isinstance(item.get("price"), (int, float))), None)
 
 
+def _pullback_zone(normalized: dict, *, direction: str, trigger: float,
+                   atr: float, buffer: float) -> tuple[dict, str]:
+    """Find a structural pullback zone only when two independent bases overlap."""
+    sign = 1 if direction == "LONG" else -1
+    wanted = "support" if direction == "LONG" else "resistance"
+    candidates: list[tuple[float, str]] = []
+    labels = {"15M": "15 分鐘支撐", "1H": "1 小時支撐", "4H": "4 小時支撐"}
+    for item in normalized.get("confirmationLevels") or []:
+        if item.get("kind") != wanted or not isinstance(item.get("price"), (int, float)):
+            continue
+        timeframe = str(item.get("timeframe") or "結構")
+        candidates.append((float(item["price"]), labels.get(timeframe, f"{timeframe} 結構")))
+
+    # ATR retracement is independent from the discrete swing/support detector.
+    candidates.append((trigger - sign * atr * 0.80, "ATR 波動回撤"))
+    max_gap = max(atr * 0.55, buffer * 2.0)
+    clusters: list[list[tuple[float, str]]] = []
+    for candidate in sorted(candidates, key=lambda item: item[0]):
+        target = next((cluster for cluster in clusters
+                       if abs(sum(x[0] for x in cluster) / len(cluster) - candidate[0]) <= max_gap), None)
+        (target if target is not None else clusters.append([candidate]))
+        if target is not None:
+            target.append(candidate)
+    valid = [cluster for cluster in clusters if len({item[1] for item in cluster}) >= 2]
+    if not valid:
+        return {}, "回踩區未建立：少於兩項獨立結構依據重疊"
+    if direction == "LONG":
+        valid = [cluster for cluster in valid if min(item[0] for item in cluster) < trigger] or valid
+        chosen = max(valid, key=lambda cluster: sum(item[0] for item in cluster) / len(cluster))
+    else:
+        valid = [cluster for cluster in valid if max(item[0] for item in cluster) > trigger] or valid
+        chosen = min(valid, key=lambda cluster: sum(item[0] for item in cluster) / len(cluster))
+    center = sum(item[0] for item in chosen) / len(chosen)
+    half_width = max(buffer, atr * 0.16)
+    reasons = list(dict.fromkeys(item[1] for item in chosen))
+    invalidation = center - sign * max(atr * 0.35, half_width * 1.5)
+    return {
+        "pullbackEntryZoneLow": round(center - half_width, 2),
+        "pullbackEntryZoneHigh": round(center + half_width, 2),
+        "pullbackInvalidationPrice": round(invalidation, 2),
+        "pullbackZoneReason": reasons,
+        "pullbackZoneSummary": "＋".join(reasons) + "重疊的位置",
+    }, ""
+
+
 def _id(symbol: str, direction: str, trigger: float, candle_time: str) -> str:
     seed = f"{symbol}|{direction}|{trigger:.2f}|{candle_time}"
     return f"BO-{hashlib.sha256(seed.encode()).hexdigest()[:16]}"
+
+
+def _number(value: object) -> float:
+    if not isinstance(value, (int, float)):
+        raise TypeError("expected numeric market value")
+    return float(value)
 
 
 def build_breakout_setup(data: dict, *, direction: str, previous_setup_id: str = "",
@@ -35,13 +86,15 @@ def build_breakout_setup(data: dict, *, direction: str, previous_setup_id: str =
     sign = 1 if direction == "LONG" else -1
     stop = float(opposite["price"]) - sign * float(opposite.get("buffer") or atr * 0.1)
     entry_low, entry_high = sorted((trigger - buffer, trigger + buffer))
+    pullback, pullback_error = _pullback_zone(
+        normalized, direction=direction, trigger=trigger, atr=atr, buffer=buffer)
     risk = abs(trigger - stop)
     entry_engine = data.get("entry_engine") or {}
     raw_targets = [entry_engine.get(f"take_profit_{i}") for i in range(1, 4)]
     targets: list[float] = []
     for index, value in enumerate(raw_targets, 1):
         valid = isinstance(value, (int, float)) and sign * (float(value) - trigger) > 0
-        targets.append(round(float(value) if valid else trigger + sign * risk * index, 2))
+        targets.append(round(_number(value) if valid else trigger + sign * risk * index, 2))
     candle_time = str(normalized.get("lastClosedCandleTimestamp") or "")
     created = str(data.get("timestamp_utc") or datetime.now(timezone.utc).isoformat())
     setup_id = _id(symbol, direction, trigger, candle_time)
@@ -57,10 +110,14 @@ def build_breakout_setup(data: dict, *, direction: str, previous_setup_id: str =
         "maxChasePrice": round(trigger + sign * atr * 0.35, 2),
         "stopPrice": round(stop, 2), "tp1": targets[0], "tp2": targets[1],
         "tp3": targets[2], "expiresAt": expires,
-        "status": "WAIT_BREAKOUT_CONFIRMATION", "blockedReason": "等待15M收盤確認",
+        "status": "WAIT_BREAKOUT_OR_PULLBACK", "blockedReason": (
+            "同步等待15M收盤突破，或價格回到有效回踩區後止跌確認"),
         "previousSetupId": previous_setup_id or None,
         "triggerChangeReason": reason, "oldTrigger": None, "newTrigger": round(trigger, 2),
-        "createdFromCandleTime": candle_time, "entryType": None,
+        "createdFromCandleTime": candle_time, "pullbackSourceCandleTime": candle_time,
+        "entryType": None,
+        "pullbackZoneError": pullback_error,
+        **pullback,
     }, ""
 
 
@@ -70,6 +127,49 @@ def _rr_ok(setup: dict) -> bool:
     reward = abs(float(setup["tp1"]) - float(setup["entryZoneHigh"]
                  if setup["direction"] == "LONG" else setup["entryZoneLow"]))
     return risk > 0 and reward / risk >= 1.5
+
+
+def _pullback_rr_ok(setup: dict) -> bool:
+    entry = _number(setup.get("pullbackEntryZoneHigh") if setup["direction"] == "LONG"
+                    else setup.get("pullbackEntryZoneLow"))
+    stop = float(setup.get("pullbackInvalidationPrice") or setup["stopPrice"])
+    reward = abs(float(setup["tp1"]) - entry)
+    return abs(entry - stop) > 0 and reward / abs(entry - stop) >= 1.5
+
+
+def _htf_valid(normalized: dict, direction: str) -> bool:
+    bias = str(normalized.get("trendBias") or "neutral")
+    regime = str(normalized.get("marketRegime") or "")
+    if direction == "LONG":
+        return bias == "bullish" and regime not in {"bearish", "strong_bearish"}
+    return bias == "bearish" and regime not in {"bullish", "strong_bullish"}
+
+
+def _pullback_confirmed(setup: dict, data: dict, closed: float) -> tuple[bool, list[str]]:
+    low = float(setup["pullbackEntryZoneLow"])
+    high = float(setup["pullbackEntryZoneHigh"])
+    direction = setup["direction"]
+    evidence: list[str] = []
+    candle = data.get("latest_closed_15m") or {}
+    candle_low, candle_high = candle.get("low"), candle.get("high")
+    candle_open = candle.get("open")
+    touched = (isinstance(candle_low, (int, float)) and float(candle_low) <= high
+               if direction == "LONG" else
+               isinstance(candle_high, (int, float)) and float(candle_high) >= low)
+    # When OHLC is unavailable, current/closed location still allows watch state,
+    # but cannot manufacture a reversal confirmation.
+    if touched and direction == "LONG" and closed >= high:
+        evidence.append("15M 收盤重新站回回踩區上緣")
+    if touched and direction == "SHORT" and closed <= low:
+        evidence.append("15M 收盤重新跌回回踩區下緣")
+    if all(isinstance(value, (int, float)) for value in (candle_open, candle_low, candle_high)):
+        open_value, low_value, high_value = map(_number, (candle_open, candle_low, candle_high))
+        body = abs(closed - open_value)
+        if direction == "LONG" and closed > open_value and open_value - low_value > body:
+            evidence.append("15M 長下影止跌")
+        if direction == "SHORT" and closed < open_value and high_value - open_value > body:
+            evidence.append("15M 長上影轉弱")
+    return bool(evidence), evidence
 
 
 def _evaluate_setup(setup: dict, data: dict) -> tuple[dict, list[dict]]:
@@ -90,10 +190,54 @@ def _evaluate_setup(setup: dict, data: dict) -> tuple[dict, list[dict]]:
         return result, ([_event(result, old, result["status"], "SETUP_EXPIRED")]
                         if old != result["status"] else [])
     direction, trigger = result["direction"], float(result["breakoutTrigger"])
+    if not _htf_valid(normalized, direction):
+        result.update(status="PULLBACK_INVALIDATED",
+                      blockedReason="1H／4H 背景方向已不再支持這個回踩劇本")
+        return result, [_event(result, old, result["status"], "PULLBACK_INVALIDATED")]
+    if old in {"WAIT_BREAKOUT_CONFIRMATION", "WAIT_BREAKOUT_OR_PULLBACK",
+               "WAIT_PULLBACK_CONFIRMATION", "BREAKOUT_CONFIRMED"}:
+        atr = max(float(normalized.get("atr15") or 0), 0.01)
+        buffer = max((float(result["entryZoneHigh"]) - float(result["entryZoneLow"])) / 2,
+                     atr * 0.10)
+        refreshed, _ = _pullback_zone(
+            normalized, direction=direction, trigger=trigger, atr=atr, buffer=buffer)
+        old_center = ((float(result.get("pullbackEntryZoneLow") or 0)
+                       + float(result.get("pullbackEntryZoneHigh") or 0)) / 2)
+        new_center = ((float(refreshed.get("pullbackEntryZoneLow") or 0)
+                       + float(refreshed.get("pullbackEntryZoneHigh") or 0)) / 2)
+        source_changed = candle_time and candle_time != str(
+            result.get("pullbackSourceCandleTime") or result.get("createdFromCandleTime") or "")
+        if refreshed and source_changed and abs(new_center - old_center) >= atr * 0.15:
+            result.update(refreshed)
+            result["pullbackSourceCandleTime"] = candle_time
+            events.append(_event(result, old, old, "PULLBACK_ZONE_UPDATED"))
+    pullback_low = result.get("pullbackEntryZoneLow")
+    pullback_high = result.get("pullbackEntryZoneHigh")
+    has_pullback = isinstance(pullback_low, (int, float)) and isinstance(pullback_high, (int, float))
+    if has_pullback and isinstance(closed, (int, float)):
+        invalid = float(result.get("pullbackInvalidationPrice") or result["stopPrice"])
+        broken = float(closed) < invalid if direction == "LONG" else float(closed) > invalid
+        if broken and old not in {"BREAKOUT_ENTRY_READY", "PULLBACK_ENTRY_READY"}:
+            result.update(status="PULLBACK_INVALIDATED",
+                          blockedReason=f"15M 收盤已越過回踩失效價 {invalid:.2f}")
+            events.append(_event(result, old, result["status"], "PULLBACK_INVALIDATED"))
+            return result, events
     confirmed = isinstance(closed, (int, float)) and (
         (direction == "LONG" and float(closed) > trigger)
         or (direction == "SHORT" and float(closed) < trigger))
-    if old == "WAIT_BREAKOUT_CONFIRMATION" and confirmed:
+    waiting = old in {"WAIT_BREAKOUT_CONFIRMATION", "WAIT_BREAKOUT_OR_PULLBACK",
+                      "WAIT_PULLBACK_CONFIRMATION"}
+    pullback_ready = False
+    evidence: list[str] = []
+    if waiting and has_pullback and isinstance(closed, (int, float)):
+        in_pullback = _number(pullback_low) <= price <= _number(pullback_high)
+        pullback_ready, evidence = _pullback_confirmed(result, data, float(closed))
+        if in_pullback and pullback_ready and _pullback_rr_ok(result) and normalized.get("marketDataStatus") == "GOOD":
+            result.update(status="PULLBACK_ENTRY_READY", entryType="PULLBACK",
+                          pullbackConfirmationEvidence=evidence, blockedReason="")
+            events.append(_event(result, old, result["status"], "PULLBACK_ENTRY_READY"))
+            return result, events
+    if waiting and confirmed:
         result.update(status="BREAKOUT_CONFIRMED", breakoutConfirmedAt=now,
                       confirmedCandleTime=candle_time,
                       blockedReason="突破已由15M收盤確認，評估突破進場或回踩")
@@ -104,20 +248,28 @@ def _evaluate_setup(setup: dict, data: dict) -> tuple[dict, list[dict]]:
                         else price >= float(result["maxChasePrice"]))
         in_entry = float(result["entryZoneLow"]) <= price <= float(result["entryZoneHigh"])
         if (within_chase or in_entry) and _rr_ok(result) and normalized.get("marketDataStatus") == "GOOD":
-            result.update(status="ENTRY_READY_BREAKOUT", entryType="BREAKOUT",
+            result.update(status="BREAKOUT_ENTRY_READY", entryType="BREAKOUT",
                           blockedReason="")
         else:
-            result.update(status="WAIT_RETEST", blockedReason=(
-                f"突破已確認；等待回踩 {result['retestZoneLow']:.2f}–"
-                f"{result['retestZoneHigh']:.2f} 並由15M確認守住"))
+            result.update(status="WAIT_BREAKOUT_OR_PULLBACK", blockedReason=(
+                f"突破已確認但超過追價上限；改等回踩 "
+                f"{_number(pullback_low):.2f}–{_number(pullback_high):.2f} 止跌確認"
+                if has_pullback else "突破已確認但超過追價上限；等待新結構"))
     elif old == "WAIT_RETEST":
         in_retest = float(result["retestZoneLow"]) <= price <= float(result["retestZoneHigh"])
         retest_holds = in_retest and isinstance(closed, (int, float)) and (
             (direction == "LONG" and float(closed) >= trigger)
             or (direction == "SHORT" and float(closed) <= trigger))
         if retest_holds and _rr_ok(result) and normalized.get("marketDataStatus") == "GOOD":
-            result.update(status="ENTRY_READY_RETEST", entryType="RETEST",
+            result.update(status="PULLBACK_ENTRY_READY", entryType="PULLBACK",
                           blockedReason="")
+    elif waiting and not confirmed:
+        in_pullback = has_pullback and _number(pullback_low) <= price <= _number(pullback_high)
+        result.update(status=("WAIT_PULLBACK_CONFIRMATION" if in_pullback
+                              else "WAIT_BREAKOUT_OR_PULLBACK"),
+                      blockedReason=("價格已進入回踩觀察區；等待15M止跌確認"
+                                     if in_pullback else
+                                     "同步等待15M收盤突破，或價格回到有效回踩區"))
     if result["status"] != old:
         events.append(_event(result, old, result["status"], result["status"]))
     return result, events
