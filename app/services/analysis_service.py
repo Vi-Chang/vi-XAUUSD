@@ -393,10 +393,6 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
     # 市場層決策快照(在持倉 MANAGE 覆寫之前捕捉);公開投影用此,避免洩露個人持倉。
     result.market_decision = result.decision.model_copy()
 
-    # V2 canonical snapshot is built only after every deterministic engine has
-    # completed. UI, history and notification payloads consume this same object.
-    from app.engines.decision_snapshot import build_decision_snapshot
-    result.decision_snapshot = build_decision_snapshot(result.model_dump())
     try:
         from app.services.calibration_guard import (
             apply_calibration_guard,
@@ -561,6 +557,7 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
     result.trade_plan_manager = monitors["trade_plan_manager"]
     result.breakout_setup_manager = monitors["breakout_setup_manager"]
     result.trend_continuation_engine = monitors["trend_continuation_engine"]
+    result.decision_assistant = monitors["decision_assistant"]
     result.final_decision_state = monitors["final_decision_state"]
     final_state = result.final_decision_state.get("state", "WAIT")
     from app.engines.unified_decision_state import enforce_scenario_consistency
@@ -576,7 +573,20 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
     result.decision.trade_status = permission.trade_status
     result.decision.can_enter = permission.can_enter
     result.decision.blocked_reason = permission.blocked_reason
+    assistant = result.decision_assistant
+    result.decision.can_enter = bool(assistant.get("canEnter"))
+    result.decision.trade_status = str(assistant.get("tradeState") or permission.trade_status)
+    result.decision.blocked_reason = "；".join(assistant.get("noTradeReasons") or []) or permission.blocked_reason
+    result.decision.reason = str(assistant.get("actionSummary") or result.decision.reason)
+    if result.decision.can_enter:
+        result.decision.action = "LONG" if assistant.get("direction") == "LONG" else "SHORT"
+    elif result.decision.action in {"LONG", "SHORT", "PREPARE_LONG", "PREPARE_SHORT"}:
+        result.decision.action = "WATCH" if assistant.get("tradeState") != "NO_TRADE" else "NO_TRADE"
     result.market_decision = result.decision.model_copy()
+    # Canonical snapshot must be built after every deterministic monitor.  The
+    # previous ordering captured a half-built decision before breakout/retest.
+    from app.engines.decision_snapshot import build_decision_snapshot
+    result.decision_snapshot = build_decision_snapshot(result.model_dump())
 
     # ── 9d. V2 AI 分析層(4 Agent;任何失敗不影響上面的確定性輸出)──
     try:

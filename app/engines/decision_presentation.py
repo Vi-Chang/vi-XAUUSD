@@ -107,6 +107,9 @@ def _local_time(raw: str) -> str:
 
 
 def format_decision_message(event: dict) -> str:
+    assistant = event.get("decisionAssistant") or {}
+    if assistant:
+        return _format_decision_assistant(event, assistant)
     continuation_event = event.get("trendContinuationEvent") or {}
     if continuation_event.get("setupId"):
         return _format_trend_continuation_event(event, continuation_event)
@@ -180,6 +183,38 @@ def format_decision_message(event: dict) -> str:
         ])
     lines.append(f"資料時間：{data_time}（UTC+8）")
     return "\n".join(lines)
+
+
+def _format_decision_assistant(event: dict, assistant: dict) -> str:
+    action = str(assistant.get("actionSummary") or "現在先等")
+    icons = {"現在可以進": "🟢", "現在先等": "🟡", "不要追價": "🔴",
+             "短線轉弱": "⚠️", "沒有好機會": "⚪", "等回踩": "🟡",
+             "等突破": "🟡", "多方失效": "❌", "空方失效": "❌"}
+    icon = icons.get(action, "🟡")
+    direction = "做多" if assistant.get("direction") == "LONG" else "做空" if assistant.get("direction") == "SHORT" else "暫無方向"
+    zone = assistant.get("entryZone") or {}
+    zone_text = (f"{float(zone['low']):.2f}–{float(zone['high']):.2f}"
+                 if isinstance(zone.get("low"), (int, float)) and isinstance(zone.get("high"), (int, float)) else "尚未形成")
+    invalidation = assistant.get("invalidation")
+    targets = assistant.get("targets") or []
+    target_text = "／".join(f"{float(v):.2f}" for v in targets[:3]) or "尚未形成"
+    if assistant.get("canEnter"):
+        return "\n".join([
+            f"{icon}【{action}｜{direction}】",
+            f"進場區：{zone_text}",
+            f"失效位：{float(invalidation):.2f}" if isinstance(invalidation, (int, float)) else "失效位：尚未形成",
+            f"目標：{target_text}",
+            f"訊號品質：{assistant.get('entryQualityGrade')}級（{assistant.get('entryQualityScore')}分）｜RR {float(assistant.get('rewardRiskRatio') or 0):.2f}",
+        ])
+    reasons = assistant.get("noTradeReasons") or assistant.get("why", {}).get("blocked") or []
+    reason = str(reasons[0]) if reasons else "條件尚未完整"
+    return "\n".join([
+        f"{icon}【{action}】",
+        f"現價：{float(event.get('currentPrice') or 0):.2f}",
+        f"原因：{reason}",
+        f"下一步：{assistant.get('nextTrigger') or '等待新結構'}",
+        (f"失效位：{float(invalidation):.2f}" if isinstance(invalidation, (int, float)) else "失效位：等待結構形成"),
+    ])
 
 
 def _format_trend_continuation_event(event: dict, continuation_event: dict) -> str:

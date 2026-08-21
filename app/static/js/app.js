@@ -361,6 +361,7 @@ function applyAnalysis(a) {
   renderDirectionalAlert(a.directional_alert);
   renderMarketMonitors(a);
   renderFinalDecision(a.final_decision_state, a.decision_snapshot);
+  renderDecisionAssistant(a.decision_assistant || {});
 
   // 資料不足 → 醒目「暫不交易」橫幅(資料過期/異常/休市/證據不足時系統一律 NO_TRADE)
   const ntBanner = $("no-trade-banner");
@@ -462,7 +463,7 @@ function renderDirectionalAlert(alert) {
 
 function renderFinalDecision(finalState, snapshot) {
   if (!finalState) return;
-  if (snapshot && snapshot.schemaVersion === "decision-snapshot-v2") {
+  if (snapshot && ["decision-snapshot-v2", "decision-snapshot-v3"].includes(snapshot.schemaVersion)) {
     finalState = {
       ...finalState, state: snapshot.state, direction: snapshot.direction,
       source_price: snapshot.currentPrice, quote_time: snapshot.quoteTime,
@@ -510,6 +511,29 @@ function renderFinalDecision(finalState, snapshot) {
   $("quick-action-why").textContent = finalState.reason || "等待條件一致";
   $("quick-action-next").textContent = finalState.flat_action || "等待下一個明確條件";
   $("quick-action-card").dataset.action = presentation.tone || (finalState.state === "DATA_STALE" ? "danger" : "neutral");
+}
+
+function renderDecisionAssistant(v3) {
+  const grid = $("quick-v3-grid");
+  const why = $("v3-why");
+  if (!grid || !v3 || v3.schemaVersion !== "decision-assistant-v3") return;
+  grid.hidden = false;
+  why.hidden = false;
+  const side = v3.direction === "LONG" ? "偏多" : v3.direction === "SHORT" ? "偏空" : "中立";
+  const zone = v3.entryZone || {};
+  $("v3-direction").textContent = `${side}｜${v3.regime || "等待"}`;
+  $("v3-can-enter").textContent = v3.canEnter ? "可以評估進場" : v3.actionSummary;
+  $("v3-entry-zone").textContent = zone.low != null && zone.high != null ? `${fmt(zone.low)}–${fmt(zone.high)}` : "尚未形成";
+  $("v3-invalidation").textContent = v3.invalidation == null ? "尚未形成" : fmt(v3.invalidation);
+  $("v3-target").textContent = (v3.targets || []).length ? fmt(v3.targets[0]) : "尚未形成";
+  $("v3-quality").textContent = `${v3.entryQualityGrade}級（${v3.entryQualityScore}分）｜RR ${Number(v3.rewardRiskRatio || 0).toFixed(2)}`;
+  $("v3-trigger").textContent = v3.nextTrigger || "等待新結構";
+  const items = [ ...(v3.regimeReasons || []), ...((v3.why || {}).technical || []), ...((v3.why || {}).blocked || []) ];
+  $("v3-why-list").replaceChildren(...items.slice(0, 10).map((text) => {
+    const li = document.createElement("li"); li.textContent = text; return li;
+  }));
+  $("quick-action-title").textContent = v3.actionSummary;
+  $("quick-action-why").textContent = (v3.noTradeReasons || [])[0] || (v3.regimeReasons || []).join("；");
 }
 
 async function refreshTelegramStatus() {
