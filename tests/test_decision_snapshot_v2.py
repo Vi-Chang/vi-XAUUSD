@@ -75,6 +75,17 @@ def test_snapshot_is_stable_for_quote_only_refresh():
     assert first["decisionId"] == second["decisionId"]
 
 
+def test_snapshot_uses_exact_final_decision_identity():
+    data = _base()
+    data["final_decision_state"].update({
+        "decisionId": "canonical-123", "decisionVersion": 7,
+        "finalAction": "WAIT", "humanSummary": "等待新結構",
+    })
+    snapshot = build_decision_snapshot(data)
+    assert snapshot["decisionId"] == "canonical-123"
+    assert snapshot["decisionVersion"] == 7
+
+
 def test_public_projection_exposes_same_canonical_snapshot():
     data = _base()
     snapshot = build_decision_snapshot(data)
