@@ -480,6 +480,7 @@ async def job_outcome_backfill() -> None:
         from app.services.decision_event_outcomes import (
             backfill_decision_event_outcomes,
         )
+        from app.services.decision_replay import backfill_decision_replay_outcomes
         from app.services.outcome_tracker import backfill_outcomes
 
         with db_session() as db:
@@ -493,10 +494,16 @@ async def job_outcome_backfill() -> None:
                 db, now=datetime.now(timezone.utc),
                 lookback_days=s.outcome_backfill_lookback_days,
                 limit=s.outcome_backfill_batch_size)
+            replay_updated = backfill_decision_replay_outcomes(
+                db, now=datetime.now(timezone.utc),
+                lookback_days=s.outcome_backfill_lookback_days,
+                limit=s.outcome_backfill_batch_size)
         if updated:
             logger.info("outcome backfill updated %d horizon values", updated)
         if event_updated:
             logger.info("decision event outcomes updated %d rows", event_updated)
+        if replay_updated:
+            logger.info("decision replay outcomes updated %d rows", replay_updated)
     except Exception:
         logger.exception("outcome backfill failed")
 
