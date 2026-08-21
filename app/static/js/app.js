@@ -548,23 +548,38 @@ function renderMarketMonitors(a) {
       const longPlan = plans.LONG || {};
       const shortPlan = plans.SHORT || {};
       $("hypothetical-long-exit").textContent = longPlan.partial_exit && longPlan.full_exit
-        ? `分批 ${price(longPlan.partial_exit.low)}–${price(longPlan.partial_exit.high)}；全部 ${price(longPlan.full_exit.low)}–${price(longPlan.full_exit.high)}` : "–";
+        ? `若持有多單：進入 ${price(longPlan.partial_exit.low)}–${price(longPlan.partial_exit.high)} 建議先平倉30%；${price(longPlan.full_exit.low)}–${price(longPlan.full_exit.high)} 評估剩餘部位` : "止盈計畫尚未建立：缺少有效壓力區";
       $("hypothetical-long-defense").textContent = price(longPlan.defense_price);
       $("hypothetical-short-exit").textContent = shortPlan.partial_exit && shortPlan.full_exit
-        ? `分批 ${price(shortPlan.partial_exit.low)}–${price(shortPlan.partial_exit.high)}；全部 ${price(shortPlan.full_exit.low)}–${price(shortPlan.full_exit.high)}` : "–";
+        ? `若持有空單：進入 ${price(shortPlan.partial_exit.low)}–${price(shortPlan.partial_exit.high)} 建議先平倉30%；${price(shortPlan.full_exit.low)}–${price(shortPlan.full_exit.high)} 評估剩餘部位` : "止盈計畫尚未建立：缺少有效支撐區";
       $("hypothetical-short-defense").textContent = price(shortPlan.defense_price);
     }
   }
 
+  const manager = a.trade_plan_manager || {};
+  const activeTradePlan = (manager.activePlans || [])[0];
   const tracker = a.virtual_profit_tracker || {};
   const profitCard = $("virtual-profit-card");
   if (profitCard) {
-    profitCard.hidden = !tracker.setup_id;
+    profitCard.hidden = !activeTradePlan && !tracker.setup_id && !(manager.errors || []).length;
     if (!profitCard.hidden) {
-      const reached = (tracker.reached_levels || []).join("、") || "尚未到達 TP1";
-      $("virtual-profit-summary").textContent = `若你有在 ${price(tracker.entry_price)} 附近進場：${reached}`;
-      $("virtual-profit-targets").textContent = `${price(tracker.tp1)}／${price(tracker.tp2)}／${price(tracker.tp3)}`;
-      $("virtual-profit-protection").textContent = price(tracker.protection_price);
+      if (activeTradePlan) {
+        const side = activeTradePlan.direction === "LONG" ? "多單" : "空單";
+        const completed = activeTradePlan.completedEvents || [];
+        const next = !completed.includes("TAKE_PROFIT_1") ? "TP1" : !completed.includes("TAKE_PROFIT_2") ? "TP2" : "TP3／移動止盈";
+        $("virtual-profit-summary").textContent = `若你持有${side}｜目前 ${Number(activeTradePlan.currentR || 0).toFixed(2)}R｜下一目標 ${next}`;
+        $("virtual-profit-targets").textContent = `TP1 ${price(activeTradePlan.tp1Price)} 平30%／TP2 ${price(activeTradePlan.tp2Price)} 再平30%／TP3 ${price(activeTradePlan.tp3Price)} 剩餘40%移動止盈`;
+        $("virtual-profit-protection").textContent = `${price(activeTradePlan.trailingStopPrice)}；提前退出：${activeTradePlan.earlyExitCondition}`;
+      } else if ((manager.errors || []).length) {
+        $("virtual-profit-summary").textContent = `止盈計畫尚未建立：${manager.errors.join("；")}`;
+        $("virtual-profit-targets").textContent = "–";
+        $("virtual-profit-protection").textContent = "–";
+      } else {
+        const reached = (tracker.reached_levels || []).join("、") || "尚未到達 TP1";
+        $("virtual-profit-summary").textContent = `若你有在 ${price(tracker.entry_price)} 附近進場：${reached}`;
+        $("virtual-profit-targets").textContent = `${price(tracker.tp1)}／${price(tracker.tp2)}／${price(tracker.tp3)}`;
+        $("virtual-profit-protection").textContent = price(tracker.protection_price);
+      }
     }
   }
 }

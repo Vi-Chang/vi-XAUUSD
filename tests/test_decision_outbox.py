@@ -181,6 +181,31 @@ def test_ready_telegram_has_complete_entry_and_risk_plan():
     assert "分批止盈價：4540／4550" in message
 
 
+def test_tp_and_stop_telegram_are_actionable_and_semantically_distinct():
+    base = {
+        "currentState": "LONG_MANAGE", "currentPrice": 4510,
+        "calculatedAt": "2026-08-21T03:01:00+00:00",
+    }
+    tp = {**base, "positionEvent": {
+        "tradePlanId": "tp-long-1", "event_type": "TAKE_PROFIT_1",
+        "side": "LONG", "price": 4510, "targetPrice": 4510,
+        "percent": 30, "newProtectionPrice": 4500, "nextLevel": 4520,
+    }}
+    tp_message = format_telegram_event(tp)
+    assert tp_message.startswith("🟢【多單第一止盈觸發】")
+    assert "若你持有多單：建議平倉 30%" in tp_message
+    assert "剩餘部位防守調整至：4500.00" in tp_message
+    stop = {**base, "currentState": "SHORT_MANAGE", "positionEvent": {
+        "tradePlanId": "tp-short-1", "event_type": "STOP_TRIGGERED",
+        "side": "SHORT", "price": 4560, "percent": 100,
+        "newProtectionPrice": 4560,
+    }}
+    stop_message = format_telegram_event(stop)
+    assert stop_message.startswith("🔴【空單防守條件已觸發】")
+    assert "依風控規則退出" in stop_message
+    assert "不是止盈訊號" in stop_message
+
+
 def test_outbox_worker_is_scheduled_within_five_seconds():
     from app.services.scheduler import build_scheduler
 

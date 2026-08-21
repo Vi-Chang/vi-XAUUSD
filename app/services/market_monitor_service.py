@@ -19,6 +19,7 @@ from app.engines.hypothetical_exit_advisor import (
     build_hypothetical_exit_plans,
     evaluate_hypothetical_exits,
 )
+from app.engines.trade_plan import evaluate_trade_plans, migrate_legacy_virtual_profit
 from app.engines.unified_decision_state import evaluate_unified_decision
 from app.engines.virtual_profit_tracker import evaluate_virtual_profit
 
@@ -106,11 +107,28 @@ def evaluate_market_monitors(
         candle_close_time=str(normalized.get("lastClosedCandleTimestamp") or ""),
     )
     _save(symbol, "virtual_profit", virtual_state)
+    stored_trade_plans = _load(symbol, "trade_plans")
+    if not stored_trade_plans:
+        stored_trade_plans = migrate_legacy_virtual_profit(
+            virtual_state, symbol=symbol,
+            calculated_at=str(data.get("timestamp_utc") or ""))
+    trade_plan_state, trade_plan_events = evaluate_trade_plans(
+        entry,
+        stored_trade_plans,
+        symbol=symbol,
+        current_price=float(normalized.get("currentPrice") or 0),
+        closed_price=normalized.get("lastClosedCandlePrice"),
+        latest_structure_protection=structure_protection,
+        candle_close_time=str(normalized.get("lastClosedCandleTimestamp") or ""),
+        calculated_at=str(data.get("timestamp_utc") or ""),
+    )
+    _save(symbol, "trade_plans", trade_plan_state)
     plans = {plan.side: asdict(plan) for plan in build_hypothetical_exit_plans(data)}
     monitor_result = {
         "hypothetical_exit_advisor": {"plans": plans, "events": exit_events},
         "breakout_alert": breakout_view(breakout_state, breakout_event),
         "virtual_profit_tracker": {**virtual_state, "events": virtual_events},
+        "trade_plan_manager": {**trade_plan_state, "events": trade_plan_events},
     }
     final_input = {**data, **monitor_result}
     final_state, final_events = evaluate_unified_decision(

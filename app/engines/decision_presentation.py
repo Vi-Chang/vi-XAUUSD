@@ -69,6 +69,12 @@ def _local_time(raw: str) -> str:
 
 
 def format_decision_message(event: dict) -> str:
+    position_event = event.get("positionEvent") or {}
+    if position_event.get("tradePlanId"):
+        return _format_position_event(event, position_event)
+    active_plans = event.get("activeTradePlans") or []
+    if str(event.get("currentState") or "").endswith("MANAGE") and active_plans:
+        return _format_management_plan(event, active_plans[0])
     view = event.get("presentation") or build_decision_presentation(event)
     price = float(event.get("currentPrice") or 0)
     closed = event.get("latestClosedCandlePrice")
@@ -116,3 +122,71 @@ def format_decision_message(event: dict) -> str:
         ])
     lines.append(f"資料時間：{data_time}（UTC+8）")
     return "\n".join(lines)
+
+
+def _format_position_event(event: dict, position: dict) -> str:
+    side = "多單" if position.get("side") == "LONG" else "空單"
+    conditional = f"若你持有{side}"
+    event_type = str(position.get("event_type") or "")
+    titles = {
+        "TAKE_PROFIT_1": f"🟢【{side}第一止盈觸發】",
+        "TAKE_PROFIT_2": f"🟢【{side}第二止盈觸發】",
+        "TAKE_PROFIT_3": f"🟢【{side}第三止盈觸發｜啟動移動止盈】",
+        "EARLY_EXIT": f"🟠【{side}動能轉弱｜建議減倉或退出】",
+        "TRAILING_STOP_UPDATE": f"🔵【{side}移動防守更新】",
+        "STOP_TRIGGERED": f"🔴【{side}防守條件已觸發】",
+        "STRUCTURE_INVALIDATED": f"🔴【{side}結構失效】",
+    }
+    price = float(position.get("price") or event.get("currentPrice") or 0)
+    protection = position.get("newProtectionPrice")
+    target = position.get("targetPrice")
+    next_level = position.get("nextLevel")
+    lines = [titles.get(event_type, f"🔵【{side}持倉管理】"), f"現價：{price:.2f}"]
+    if event_type.startswith("TAKE_PROFIT"):
+        lines.extend([
+            f"觸發價：{float(target):.2f}" if isinstance(target, (int, float)) else "觸發價：—",
+            f"{conditional}：建議平倉 {position.get('percent', 0)}%",
+            f"剩餘部位防守調整至：{float(protection):.2f}",
+            (f"下一目標：{float(next_level):.2f}" if isinstance(next_level, (int, float))
+             else "下一步：剩餘 40% 採 15M 結構移動止盈"),
+        ])
+    elif event_type == "EARLY_EXIT":
+        lines.extend([
+            f"觸發原因：{position.get('earlyExitCondition')}",
+            f"最新15M收盤：{float(position['closedPrice']):.2f}",
+            f"{conditional}：建議減倉或退出剩餘部位",
+            f"剩餘部位防守價：{float(protection):.2f}",
+        ])
+    elif event_type in ("STOP_TRIGGERED", "STRUCTURE_INVALIDATED"):
+        lines.extend([
+            f"防守價：{float(protection):.2f}",
+            f"{conditional}：依風控規則退出",
+            "這是防守／停損訊號，不是止盈訊號",
+        ])
+    else:
+        lines.extend([
+            f"新的追蹤防守價：{float(protection):.2f}",
+            f"{conditional}：依更新後防守價管理剩餘部位",
+        ])
+    lines.append(f"資料時間：{_local_time(str(event.get('calculatedAt') or ''))}（UTC+8）")
+    return "\n".join(lines)
+
+
+def _format_management_plan(event: dict, plan: dict) -> str:
+    side = "多單" if plan.get("direction") == "LONG" else "空單"
+    completed = set(plan.get("completedEvents") or [])
+    next_target = ("TP1" if "TAKE_PROFIT_1" not in completed else
+                   "TP2" if "TAKE_PROFIT_2" not in completed else "TP3／移動止盈")
+    return "\n".join([
+        f"🔵【{side}持倉管理｜下一目標{next_target}】",
+        f"現價：{float(event.get('currentPrice') or 0):.2f}",
+        f"參考進場區：{float(plan['entryZoneLow']):.2f}–{float(plan['entryZoneHigh']):.2f}",
+        f"目前浮盈／風險倍數：{float(plan.get('currentR') or 0):.2f}R",
+        f"TP1：{float(plan['tp1Price']):.2f}，觸發後建議平倉30%",
+        f"TP2：{float(plan['tp2Price']):.2f}，觸發後建議再平倉30%",
+        f"TP3：{float(plan['tp3Price']):.2f}，剩餘40%移動止盈",
+        f"目前防守價：{float(plan['trailingStopPrice']):.2f}",
+        f"提前退出條件：{plan['earlyExitCondition']}",
+        f"下一觸發：{next_target}",
+        f"資料時間：{_local_time(str(event.get('calculatedAt') or ''))}（UTC+8）",
+    ])

@@ -241,6 +241,8 @@ def evaluate_unified_decision(
         action = "第一目標已到，管理獲利"
         flat_action = "未持倉：禁止追價，等待新的回踩確認區"
     exit_plans = (data.get("hypothetical_exit_advisor") or {}).get("plans") or {}
+    trade_manager = data.get("trade_plan_manager") or {}
+    active_trade_plans = list(trade_manager.get("activePlans") or [])
     long_plan, short_plan = exit_plans.get("LONG") or {}, exit_plans.get("SHORT") or {}
     long_manage = (
         f"若持有多單：防守 {long_plan.get('defense_price'):.2f}，依序分批止盈"
@@ -259,6 +261,22 @@ def evaluate_unified_decision(
             and price < float(long_plan["defense_price"])):
         long_manage = (f"若持有多單：{long_plan['defense_price']:.2f} "
                        "防守條件已觸發，依風控規則處理")
+    active_long = next((p for p in active_trade_plans if p.get("direction") == "LONG"), None)
+    active_short = next((p for p in active_trade_plans if p.get("direction") == "SHORT"), None)
+    if active_long:
+        long_manage = (
+            f"若你持有多單：TP1 {active_long['tp1Price']:.2f} 平倉30%；"
+            f"TP2 {active_long['tp2Price']:.2f} 再平倉30%；"
+            f"TP3 {active_long['tp3Price']:.2f} 後剩餘40%移動止盈；"
+            f"目前防守 {active_long['trailingStopPrice']:.2f}"
+        )
+    if active_short:
+        short_manage = (
+            f"若你持有空單：TP1 {active_short['tp1Price']:.2f} 平倉30%；"
+            f"TP2 {active_short['tp2Price']:.2f} 再平倉30%；"
+            f"TP3 {active_short['tp3Price']:.2f} 後剩餘40%移動止盈；"
+            f"目前防守 {active_short['trailingStopPrice']:.2f}"
+        )
     from app.engines.confidence import permission_from_state
     permission = permission_from_state(
         state,
@@ -339,11 +357,22 @@ def evaluate_unified_decision(
         "TP3": "THIRD_TARGET_REACHED",
         "TRAILING_EXIT": "PROTECTION_EXIT_REACHED",
     }
-    event_types.extend(
-        tracker_event_map[event.get("event_type")]
-        for event in tracker.get("events") or []
-        if event.get("event_type") in tracker_event_map
-    )
+    if not (data.get("trade_plan_manager") or {}).get("plans"):
+        event_types.extend(
+            tracker_event_map[event.get("event_type")]
+            for event in tracker.get("events") or []
+            if event.get("event_type") in tracker_event_map
+        )
+    trade_event_map = {
+        "TAKE_PROFIT_1": "TAKE_PROFIT_1",
+        "TAKE_PROFIT_2": "TAKE_PROFIT_2",
+        "TAKE_PROFIT_3": "TAKE_PROFIT_3",
+        "EARLY_EXIT": "EARLY_EXIT",
+        "TRAILING_STOP_UPDATE": "TRAILING_STOP_UPDATE",
+        "STOP_TRIGGERED": "STOP_TRIGGERED",
+        "STRUCTURE_INVALIDATED": "STRUCTURE_INVALIDATED",
+    }
+    trade_events = list(trade_manager.get("events") or [])
     exit_event_map = {
         "EXIT_APPROACHING": "EXIT_APPROACHING",
         "EXIT_ZONE_REACHED": "EXIT_ZONE_REACHED",
@@ -353,6 +382,8 @@ def evaluate_unified_decision(
         exit_event_map[event.get("event_type")]
         for event in ((data.get("hypothetical_exit_advisor") or {}).get("events") or [])
         if event.get("event_type") in exit_event_map
+        and not any(plan.get("direction") == event.get("side")
+                    for plan in active_trade_plans)
     )
     directional_type = str(directional.get("event_type") or "")
     if directional_type and directional_type != "FALSE_BREAKOUT":
@@ -398,13 +429,31 @@ def evaluate_unified_decision(
         "TRIGGER_CHANGED": "下一個有效確認條件已更新",
         "LONG_DEFENSE_TRIGGERED": "多單防守條件已觸發",
         "SHORT_DEFENSE_TRIGGERED": "空單防守條件已觸發",
+        "TAKE_PROFIT_1": "第一止盈價已觸發，建議分批平倉 30%",
+        "TAKE_PROFIT_2": "第二止盈價已觸發，建議再平倉 30%",
+        "TAKE_PROFIT_3": "第三止盈價已觸發，剩餘 40% 採移動止盈",
+        "EARLY_EXIT": "15M 收盤觸發提前退出條件",
+        "TRAILING_STOP_UPDATE": "最新 15M 結構已提高移動防守價",
+        "STOP_TRIGGERED": "防守／停損價已觸發",
+        "STRUCTURE_INVALIDATED": "持倉依據的市場結構已正式失效",
     }
     old_trigger = previous.get("next_trigger")
     new_trigger = pending_trigger.get("level") if pending_trigger else None
     if old_state == state and old_trigger != new_trigger:
         event_types.append("TRIGGER_CHANGED")
-    ordinary = [(old_state, state, kind) for kind in dict.fromkeys(event_types)]
-    for previous_state, current_state, event_type in transition_chain or ordinary:
+    ordinary = [(old_state, state, kind, {}) for kind in dict.fromkeys(event_types)]
+    ordinary.extend(
+        (old_state, state, trade_event_map[item["event_type"]], item)
+        for item in trade_events if item.get("event_type") in trade_event_map
+    )
+    transitions = ([(old, new, kind, {}) for old, new, kind in transition_chain]
+                   if transition_chain else ordinary)
+    if transition_chain:
+        transitions.extend(
+            (old_state, state, trade_event_map[item["event_type"]], item)
+            for item in trade_events if item.get("event_type") in trade_event_map
+        )
+    for previous_state, current_state, event_type, trade_event in transitions:
         entry_zone = (
             {"low": entry.get("zone_low"), "high": entry.get("zone_high")}
             if isinstance(entry.get("zone_low"), (int, float))
@@ -423,12 +472,17 @@ def evaluate_unified_decision(
         seed = (
             f"{data.get('symbol', 'XAUUSD')}|{previous_state}|{current_state}|"
             f"{event_type}|{candle_time}|"
-            f"{pending_trigger.get('level') if pending_trigger else ''}"
+            f"{pending_trigger.get('level') if pending_trigger else ''}|"
+            f"{trade_event.get('tradePlanId', '')}|{trade_event.get('targetIndex', '')}"
         )
         event_id = hashlib.sha256(seed.encode()).hexdigest()[:32]
         payload = {
                 "eventId": event_id,
                 "setupId": setup_id,
+                "tradePlanId": trade_event.get("tradePlanId"),
+                "targetIndex": trade_event.get("targetIndex"),
+                "positionEvent": trade_event,
+                "activeTradePlans": active_trade_plans,
                 "event_type": event_type,
                 "previousState": previous_state,
                 "currentState": current_state,

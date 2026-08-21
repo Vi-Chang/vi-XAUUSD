@@ -564,6 +564,7 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
     result.hypothetical_exit_advisor = monitors["hypothetical_exit_advisor"]
     result.breakout_alert = monitors["breakout_alert"]
     result.virtual_profit_tracker = monitors["virtual_profit_tracker"]
+    result.trade_plan_manager = monitors["trade_plan_manager"]
     result.final_decision_state = monitors["final_decision_state"]
     final_state = result.final_decision_state.get("state", "WAIT")
     from app.engines.unified_decision_state import enforce_scenario_consistency
