@@ -49,17 +49,9 @@ def evaluate_and_persist_entry(data: dict, *, m5_closed: pd.DataFrame | None,
 
 
 async def notify_entry_plan(plan_data: dict, notifier, *, symbol: str = "XAUUSD") -> None:
-    if not notifier:
-        return
-    plan = EntryPlan(**{**plan_data,
-        "notified_states": tuple(plan_data.get("notified_states") or ())})
-    if plan.status in ("NO_SETUP",) or plan.status in plan.notified_states:
-        return
-    # Recreate the canonical state-specific message without re-evaluating prices.
-    from app.engines.entry_engine import format_entry_message
-    await notifier.notify("TRIGGER", f"entry:{plan.setup_id}:{plan.status}",
-                          format_entry_message(plan), severity="WARN",
-                          force_push=True, exact_once=True)
-    updated = EntryPlan(**{**asdict(plan),
-        "notified_states": (*plan.notified_states, plan.status)})
-    _save(symbol, updated)
+    """Deprecated compatibility hook: entry engines never push directly.
+
+    The persisted plan is collected as a SignalCandidate during the next
+    FinalDecisionEngine evaluation; only its canonical outbox event may notify.
+    """
+    return

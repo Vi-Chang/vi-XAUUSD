@@ -33,7 +33,9 @@ async def test_every_transition_pushes_once_and_long_invalidation_does_not_block
         "retest_rejected", closed="2026-08-20T01:30:00+00:00", closed_price=4483)
     await short_alert_service.process_short_alert(result, notifier, entry_plan=short_entry())
 
-    assert [event[1].split(":")[1] for event in notifier.events] == [
-        "BREAKDOWN_CONFIRMED", "RETEST_REJECTED", "SHORT_ENTRY_READY"]
+    # Directional state machines now publish SignalFacts only.  Telegram is
+    # exclusively driven by the canonical FinalDecision outbox.
+    assert notifier.events == []
+    assert result["directional_alert"]["event_type"] == "SHORT_ENTRY_READY"
     assert all(event[3]["exact_once"] for event in notifier.events)
     assert result["directional_alert"]["status"] == "SHORT_ENTRY_READY"

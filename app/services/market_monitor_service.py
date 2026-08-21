@@ -21,6 +21,7 @@ from app.engines.breakout_setup_manager import (
 )
 from app.engines.data_health_gate import evaluate_data_health
 from app.engines.decision_assistant import evaluate_decision_assistant
+from app.engines.final_decision_engine import evaluate_final_decision
 from app.engines.hypothetical_exit_advisor import (
     build_hypothetical_exit_plans,
     evaluate_hypothetical_exits,
@@ -28,7 +29,6 @@ from app.engines.hypothetical_exit_advisor import (
 from app.engines.regime_state_machine import evaluate_regime_state
 from app.engines.trade_plan import evaluate_trade_plans, migrate_legacy_virtual_profit
 from app.engines.trend_continuation_engine import evaluate_trend_continuation
-from app.engines.unified_decision_state import evaluate_unified_decision
 from app.engines.virtual_profit_tracker import evaluate_virtual_profit
 
 
@@ -178,20 +178,24 @@ def evaluate_market_monitors(
         previous=_load(symbol, "decision_assistant"))
     _save(symbol, "decision_assistant", assistant_state)
     monitor_result["decision_assistant"] = assistant_state
-    final_input = {**data, **monitor_result}
-    final_state, final_events = evaluate_unified_decision(
+    signal_facts = (exit_events + ([breakout_event] if breakout_event else [])
+                    + virtual_events + trade_plan_events + breakout_setup_events
+                    + continuation_events + regime_events + assistant_events)
+    final_input = {**data, **monitor_result, "signal_facts": signal_facts}
+    final_state, final_events = evaluate_final_decision(
         final_input, _load(symbol, "final_decision")
     )
-    final_events.extend(regime_events)
-    final_events.extend(assistant_events)
     final_state["events"] = final_events
-    if assistant_events:
-        final_state["latest_event"] = assistant_events[-1]
+    if final_events:
+        final_state["latest_event"] = final_events[-1]
     _save(
         symbol,
         "final_decision",
         {k: v for k, v in final_state.items() if k != "events"},
     )
+    if final_state.get("decisionChanged"):
+        from app.services.decision_replay import persist_decision_replay
+        persist_decision_replay(symbol, final_input, final_state)
     return {
         **monitor_result,
         "final_decision_state": final_state,
@@ -219,7 +223,7 @@ def evaluate_live_quote_state(
         previous=_load(symbol, "regime_state"),
     )
     _save(symbol, "regime_state", regime_state)
-    current, events = evaluate_unified_decision(
+    current, events = evaluate_final_decision(
         {**candidate, "normalized_analysis": normalized,
          "regime_state_machine": regime_state}, _load(symbol, "final_decision")
     )
@@ -230,6 +234,9 @@ def evaluate_live_quote_state(
     if events:
         current["latest_event"] = events[-1]
     _save(symbol, "final_decision", {k: v for k, v in current.items() if k != "events"})
+    if current.get("decisionChanged"):
+        from app.services.decision_replay import persist_decision_replay
+        persist_decision_replay(symbol, candidate, current)
     return current, events
 
 

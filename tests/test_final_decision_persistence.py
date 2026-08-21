@@ -27,11 +27,12 @@ def test_refresh_rehydrates_state_without_repeating_last_transition():
         data, price=4481, quote_time="2026-08-20T14:00:00+00:00"
     )
     assert first["state"] == "LONG_BIAS"
-    assert any(event["event_type"] == "STATE_CHANGED" for event in events)
+    assert events == []  # WAIT/Bias is dashboard-only; it must not push Telegram.
 
     restored, repeated = evaluate_live_quote_state(
         data, price=4481, quote_time="2026-08-20T14:00:00+00:00"
     )
     assert restored["state"] == "LONG_BIAS"
-    assert restored["last_event"] == first["last_event"]
+    assert restored["decisionVersion"] == first["decisionVersion"]
+    assert restored["decisionId"] == first["decisionId"]
     assert repeated == []

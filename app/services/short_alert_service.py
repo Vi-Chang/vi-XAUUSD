@@ -81,7 +81,6 @@ async def process_short_alert(result: dict, notifier,
         "candle_close_time": evaluation.state.last_closed_candle,
         "message": evaluation.message, "blocked_reason": evaluation.blocked_reason,
     }
-    if evaluation.should_notify and notifier:
-        await notifier.notify("TRIGGER", evaluation.topic, evaluation.message,
-                              severity="WARN", force_push=True, exact_once=True)
+    # Directional engines only publish facts into the analysis payload.  The
+    # FinalDecisionEngine is the sole market-notification authority.
     return evaluation
