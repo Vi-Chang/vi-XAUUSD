@@ -1,5 +1,6 @@
 from app.engines.data_health_gate import evaluate_data_health
 from app.engines.decision_snapshot import build_decision_snapshot
+from app.services.public_view import PRIVACY_BOUNDARY_VERSION, public_analysis
 
 
 def _base(score=75):
@@ -47,3 +48,13 @@ def test_snapshot_is_stable_for_quote_only_refresh():
     data["current_price"]["last_update"] = "2026-08-21T10:00:08+00:00"
     second = build_decision_snapshot(data)
     assert first["decisionId"] == second["decisionId"]
+
+
+def test_public_projection_exposes_same_canonical_snapshot():
+    data = _base()
+    snapshot = build_decision_snapshot(data)
+    data.update({"privacy_boundary_version": PRIVACY_BOUNDARY_VERSION,
+                 "version": 1, "market_decision": data["decision"],
+                 "decision_snapshot": snapshot})
+    public = public_analysis(data)
+    assert public["decision_snapshot"] == snapshot
