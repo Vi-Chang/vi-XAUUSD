@@ -5,8 +5,11 @@ from __future__ import annotations
 import json
 import sqlite3
 import sys
+from pathlib import Path
 
 import pandas as pd
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.services.trend_continuation_replay import replay_continuation
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from datetime import datetime, timedelta, timezone
 
 import pandas as pd
@@ -12,6 +13,68 @@ READY_STATES = {
     "ENTRY_READY_SHALLOW_PULLBACK", "ENTRY_READY_BREAKOUT_RETEST",
     "ENTRY_READY_BULL_FLAG", "ENTRY_READY_MOMENTUM_CONTINUATION",
 }
+
+
+def _mirror_frame(frame: pd.DataFrame | None) -> pd.DataFrame | None:
+    """Mirror OHLC around zero so the proven long rules remain exactly symmetric."""
+    if frame is None:
+        return None
+    mirrored = frame.copy()
+    old_high, old_low = frame["high"].astype(float), frame["low"].astype(float)
+    mirrored["open"] = -frame["open"].astype(float)
+    mirrored["close"] = -frame["close"].astype(float)
+    mirrored["high"] = -old_low
+    mirrored["low"] = -old_high
+    return mirrored
+
+
+def _unmirror_short(long_result: dict, settings) -> tuple[dict, list[dict]]:
+    type_map = {
+        "SHALLOW_PULLBACK_LONG": "SHALLOW_PULLBACK_SHORT",
+        "BREAKOUT_RETEST_LONG": "BREAKOUT_RETEST_SHORT",
+        "BULL_FLAG_CONTINUATION": "BEAR_FLAG_CONTINUATION",
+        "MOMENTUM_CONTINUATION": "MOMENTUM_CONTINUATION_SHORT",
+    }
+    status_map = {
+        "ENTRY_READY_SHALLOW_PULLBACK": "ENTRY_READY_SHALLOW_PULLBACK_SHORT",
+        "ENTRY_READY_BREAKOUT_RETEST": "ENTRY_READY_BREAKOUT_RETEST_SHORT",
+        "ENTRY_READY_BULL_FLAG": "ENTRY_READY_BEAR_FLAG",
+        "ENTRY_READY_MOMENTUM_CONTINUATION": "ENTRY_READY_MOMENTUM_CONTINUATION_SHORT",
+    }
+    mapped: list[dict] = []
+    for original in long_result.get("candidates") or []:
+        item = dict(original)
+        item["type"] = type_map.get(item.get("type"), item.get("type"))
+        item["status"] = status_map.get(item.get("status"), item.get("status"))
+        item["direction"] = "SHORT"
+        for key in ("suggestedEntry", "stopPrice", "tp1", "tp2", "tp3"):
+            if item.get(key) is not None:
+                item[key] = round(-float(item[key]), 2)
+        if item.get("entryZoneLow") is not None:
+            low, high = -float(item["entryZoneHigh"]), -float(item["entryZoneLow"])
+            item["entryZoneLow"], item["entryZoneHigh"] = round(low, 2), round(high, 2)
+        if item.get("setupId"):
+            item["setupId"] = _setup_id(item["type"], item.get("createdFromCandleTime") or "", item.get("entryZoneHigh") or 0)
+        # Mirroring is an internal calculation detail; user-facing prices must
+        # always remain normal positive XAUUSD values.
+        for key in ("passedReasons", "missingConditions"):
+            item[key] = [re.sub(r"-(\d+(?:\.\d+)?)", r"\1", str(reason))
+                         for reason in item.get(key) or []]
+        mapped.append(item)
+    selected = next((item for item in mapped if str(item.get("status")).startswith("ENTRY_READY_")), None)
+    result = {**long_result, "marketType": "TREND_CONTINUATION_SHORT",
+              "trendScore": 100 - int(long_result.get("trendScore") or 100),
+              "adjustedSignalScore": 100 - int(long_result.get("trendScore") or 100),
+              "candidates": mapped, "selected": selected,
+              "status": selected.get("status") if selected else "WAIT"}
+    events = []
+    if selected:
+        events.append({"event_type": selected["status"], "setupId": selected["setupId"],
+                       "currentState": selected["status"], "direction": "SHORT", "setup": selected,
+                       "entryZone": {"low": selected["entryZoneLow"], "high": selected["entryZoneHigh"]},
+                       "triggerPrice": selected["entryZoneLow"], "blockedReason": "",
+                       "notificationEligible": not settings.trend_continuation_shadow_mode})
+    return result, events
 
 
 def _ema(series: pd.Series, span: int) -> pd.Series:
@@ -101,7 +164,8 @@ def _plan(kind: str, status: str, *, candle_time: str, zone_low: float,
 
 def evaluate_trend_continuation(data: dict, *, m15: pd.DataFrame | None,
                                 h1: pd.DataFrame | None, h4: pd.DataFrame | None,
-                                previous: dict | None = None) -> tuple[dict, list[dict]]:
+                                previous: dict | None = None,
+                                _mirrored: bool = False) -> tuple[dict, list[dict]]:
     from app.config import get_settings
 
     settings = get_settings()
@@ -115,6 +179,11 @@ def evaluate_trend_continuation(data: dict, *, m15: pd.DataFrame | None,
         return {"enabled": True, "shadowMode": True, "marketType": "UNDEFINED",
                 "candidates": [], "reason": "已收盤15M不足20根", "version": ENGINE_VERSION}, []
     market_type, trend_score, dimensions = classify_market_type(h1, h4)
+    if market_type == "TREND_CONTINUATION_SHORT" and not _mirrored:
+        mirrored, _ = evaluate_trend_continuation(
+            data, m15=_mirror_frame(frame), h1=_mirror_frame(h1), h4=_mirror_frame(h4),
+            previous=None, _mirrored=True)
+        return _unmirror_short(mirrored, settings)
     atr = max(_atr(frame), 0.01)
     last, prior = frame.iloc[-1], frame.iloc[-2]
     current, closed = float(last["close"]), float(last["close"])

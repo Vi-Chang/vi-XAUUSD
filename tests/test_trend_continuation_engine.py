@@ -101,6 +101,20 @@ def test_strong_aligned_trend_can_form_strict_momentum_continuation():
     assert momentum["riskWeight"] == .5
 
 
+def test_short_trend_uses_symmetric_routes_and_prices():
+    down_higher = frame([150 - i * .8 for i in range(60)], 60)
+    result, _ = evaluate_trend_continuation(
+        data(), m15=frame([130 - i * .5 for i in range(40)]),
+        h1=down_higher, h4=down_higher)
+    assert result["marketType"] == "TREND_CONTINUATION_SHORT"
+    assert {candidate["type"] for candidate in result["candidates"]} >= {
+        "SHALLOW_PULLBACK_SHORT", "BREAKOUT_RETEST_SHORT",
+        "BEAR_FLAG_CONTINUATION", "MOMENTUM_CONTINUATION_SHORT"}
+    planned = next(candidate for candidate in result["candidates"] if candidate.get("stopPrice"))
+    assert planned["direction"] == "SHORT"
+    assert planned["stopPrice"] > planned["suggestedEntry"] > planned["tp1"]
+
+
 def test_waiting_setup_keeps_immutable_prices_on_next_candle():
     first = frame([100 + i * .7 for i in range(40)])
     state, _ = evaluate_trend_continuation(data(), m15=first,

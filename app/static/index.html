@@ -276,7 +276,6 @@
     <button class="tab active" data-tab="scenarios">多空劇本</button>
     <button class="tab" data-tab="ai">AI 策略</button>
     <button class="tab" data-tab="position">持倉管理</button>
-    <button class="tab" data-tab="coach">交易教練</button>
     <button class="tab" data-tab="history">歷史復盤</button>
     <button class="tab" data-tab="performance">訊號績效</button>
   </nav>
@@ -311,28 +310,6 @@
         <button type="submit" class="btn btn-primary">新增持倉</button>
       </form>
       <div id="position-list"><div class="empty">載入中…</div></div>
-    </div>
-    <div class="panel" id="panel-coach">
-      <div id="coach-body"><div class="empty">載入中…</div></div>
-    </div>
-    <div class="panel" id="panel-mentor">
-      <p class="mentor-note">老師帶單僅供參考比對,<b>不算持倉、不影響系統任何進出場判斷與證據分數</b>。</p>
-      <form class="pos-form" id="mentor-form">
-        <div class="pf-field"><label>老師方向</label>
-          <select id="mf-dir"><option value="LONG">做多 LONG</option><option value="SHORT">做空 SHORT</option></select></div>
-        <div class="pf-field"><label>老師進場價</label><input type="number" step="0.01" id="mf-entry" required></div>
-        <div class="pf-field"><label>停損(可空)</label><input type="number" step="0.01" id="mf-stop" placeholder="賠錢出場價"></div>
-        <div class="pf-field"><label>停利/目標價(可空)</label><input type="number" step="0.01" id="mf-target" placeholder="賺錢出場價"></div>
-        <div class="pf-field"><label>備註(可空)</label><input type="text" id="mf-note" placeholder="老師的說明"></div>
-        <button type="submit" class="btn">新增老師帶單</button>
-      </form>
-      <div class="mentor-section-title">進行中</div>
-      <div id="mentor-body"><div class="empty">載入中…</div></div>
-      <div class="mentor-section-title">歷史紀錄(僅供參考)</div>
-      <div id="mentor-history"><div class="empty">載入中…</div></div>
-    </div>
-    <div class="panel" id="panel-compare">
-      <div id="compare-body"><div class="empty">載入中…</div></div>
     </div>
     <div class="panel" id="panel-history">
       <div id="history-body"><div class="empty">載入中…</div></div>

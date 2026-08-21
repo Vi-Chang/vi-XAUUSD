@@ -360,7 +360,7 @@ function applyAnalysis(a) {
   renderEntryPlan(a.entry_engine);
   renderDirectionalAlert(a.directional_alert);
   renderMarketMonitors(a);
-  renderFinalDecision(a.final_decision_state);
+  renderFinalDecision(a.final_decision_state, a.decision_snapshot);
 
   // 資料不足 → 醒目「暫不交易」橫幅(資料過期/異常/休市/證據不足時系統一律 NO_TRADE)
   const ntBanner = $("no-trade-banner");
@@ -460,8 +460,19 @@ function renderDirectionalAlert(alert) {
   $("bearish-monitor-message").textContent = alert.message || "持續等待下一個 15M 結構事件。";
 }
 
-function renderFinalDecision(finalState) {
+function renderFinalDecision(finalState, snapshot) {
   if (!finalState) return;
+  if (snapshot && snapshot.schemaVersion === "decision-snapshot-v2") {
+    finalState = {
+      ...finalState, state: snapshot.state, direction: snapshot.direction,
+      source_price: snapshot.currentPrice, quote_time: snapshot.quoteTime,
+      last_closed_candle_time: snapshot.marketDataTimestamp,
+      flat_action: snapshot.action === "ENTER_LONG" || snapshot.action === "ENTER_SHORT"
+        ? "進場條件已成立，依完整風控計畫評估" : "等待，尚不可進場，請勿追價",
+      confirmation: snapshot.nextTrigger,
+      reason: snapshot.blockedReason || (snapshot.missingConditions || []).join("；"),
+    };
+  }
   const event = finalState.latest_event || {};
   if (event.eventId) finalState = {
     ...finalState,
