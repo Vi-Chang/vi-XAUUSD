@@ -1613,6 +1613,20 @@ async function loadPerformance() {
       market_state: "市場狀態", session: "交易時段", setup_state: "戰術狀態",
       signal_mode: "訊號類型", stop_source: "停損來源" };
     const cards = [];
+    const phase2 = report.phase2_validation || {};
+    const overall2 = phase2.overall || {};
+    const calibration2 = phase2.calibration || {};
+    cards.push(h`<div class="performance-card calibration-card">
+      <h4>Phase 2 驗證（策略已凍結）</h4>
+      <div class="performance-metrics">
+        <span>完整 Setup<b class="num">${overall2.sampleSize || 0}</b></span>
+        <span>方向準確率<b>${overall2.directionAccuracy == null ? "樣本不足" : `${(overall2.directionAccuracy * 100).toFixed(1)}%`}</b></span>
+        <span>平均 R<b>${overall2.averageR == null ? "—" : Number(overall2.averageR).toFixed(2)}</b></span>
+        <span>漏掉進場<b>${overall2.missedEntryRate == null ? "—" : `${(overall2.missedEntryRate * 100).toFixed(1)}%`}</b></span>
+        <span>假停損<b>${overall2.falseStopRate == null ? "—" : `${(overall2.falseStopRate * 100).toFixed(1)}%`}</b></span>
+        <span>校準誤差 ECE<b>${calibration2.ECE == null ? "樣本不足" : Number(calibration2.ECE).toFixed(3)}</b></span>
+      </div><small>${phase2.phase2ValidationPassed ? "Phase 2 驗證已通過" : "目前只顯示 Setup Confidence Score；尚未取得足夠 OOS／walk-forward 證據。"}</small>
+    </div>`);
     const eventPerf = report.decision_events || {};
     cards.push(h`<div class="performance-card calibration-card">
       <h4>實際決策事件追蹤</h4>

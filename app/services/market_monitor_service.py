@@ -234,6 +234,11 @@ def evaluate_market_monitors(
     if final_state.get("decisionChanged"):
         from app.services.decision_replay import persist_decision_replay
         persist_decision_replay(symbol, final_input, final_state)
+        from app.db.session import db_session
+        from app.services.phase2_validation import persist_decision_journals
+        with db_session() as db:
+            persist_decision_journals(
+                db, symbol=symbol, data=final_input, decision=final_state)
     return {
         **monitor_result,
         "final_decision_state": final_state,

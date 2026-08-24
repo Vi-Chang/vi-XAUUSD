@@ -493,6 +493,60 @@ class DecisionReplay(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+class DecisionJournal(Base):
+    """Immutable point-in-time snapshot for one independently tracked setup."""
+    __tablename__ = "decision_journals"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    journal_id: Mapped[str] = mapped_column(String(64), unique=True)
+    setup_id: Mapped[str] = mapped_column(String(64))
+    decision_id: Mapped[str] = mapped_column(String(64))
+    strategy_version: Mapped[str] = mapped_column(String(64))
+    symbol: Mapped[str] = mapped_column(String(32), default="XAUUSD")
+    strategy_type: Mapped[str] = mapped_column(String(48), default="OTHER")
+    direction: Mapped[str] = mapped_column(String(8), default="NONE")
+    is_primary: Mapped[bool] = mapped_column(Boolean, default=False)
+    snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    post_analysis: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    __table_args__ = (
+        UniqueConstraint("setup_id", "strategy_version", name="uq_journal_setup_version"),
+        Index("ix_decision_journal_time", "symbol", "created_at"),
+    )
+
+
+class SetupOutcome(Base):
+    """Forward-only outcome; original DecisionJournal is never updated."""
+    __tablename__ = "setup_outcomes"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    journal_id: Mapped[str] = mapped_column(
+        ForeignKey("decision_journals.journal_id"), unique=True)
+    status: Mapped[str] = mapped_column(String(24), default="PENDING")
+    outcome: Mapped[dict] = mapped_column(JSON, default=dict)
+    evaluated_through: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class HumanOverrideAudit(Base):
+    """User execution deviations stay separate from deterministic system results."""
+    __tablename__ = "human_override_audits"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    journal_id: Mapped[str] = mapped_column(String(64), default="")
+    override_type: Mapped[str] = mapped_column(String(32))
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class Phase2DailyReport(Base):
+    __tablename__ = "phase2_daily_reports"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    report_date: Mapped[date] = mapped_column(Date, unique=True)
+    strategy_version: Mapped[str] = mapped_column(String(64))
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class ProviderHealth(Base):
     """16. provider_health — 各資料源健康與配額"""
     __tablename__ = "provider_health"

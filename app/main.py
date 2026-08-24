@@ -449,6 +449,8 @@ async def performance_api(limit: int = 5000) -> dict:
         report = performance_report(db, limit=limit)
         from app.services.decision_event_outcomes import decision_event_performance
         report["decision_events"] = decision_event_performance(db, limit=limit)
+        from app.services.phase2_validation import validation_report
+        report["phase2_validation"] = validation_report(db, limit=limit)
         return report
 
 
