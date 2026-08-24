@@ -12,6 +12,7 @@ from typing import Any, Literal, cast
 
 from app.config import get_settings
 from app.engines.data_health_gate import evaluate_data_health
+from app.engines.entry_location import classify_entry_location, stop_is_valid
 from app.engines.unified_decision_state import evaluate_unified_decision
 
 Direction = Literal["LONG", "SHORT", "NEUTRAL"]
@@ -197,6 +198,8 @@ def _summary(reason: str, action: str) -> str:
         "POSITION_ACTIVE": "目前先管理既有部位，不建立互相衝突的新交易。",
         "ENTRY_READY": "進場、失效與目標條件均已完成，可依計畫評估執行。",
         "WAIT_CONFIRMATION": "機會仍在，但目前還不到可以下單的條件。",
+        "BEHAVIOR_WAIT_PULLBACK": "大方向仍偏多，但15M正在緩步下降，暫停追多並等待止跌確認。",
+        "BEHAVIOR_LONG_BLOCK": "15M出現急跌或反轉風險，暫停新的多單進場。",
     }
     return messages.get(reason, "現在沒有足夠優勢，先等待新的市場條件。")
 
@@ -217,14 +220,36 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
     event = data.get("event_risk") or {}
     position_active = bool((data.get("position_management") or {}).get("has_position")
                            or (data.get("trade_plan_manager") or {}).get("activePlans"))
-    selected = max(candidates, key=lambda item: (item.lifecycle_state == "ENTRY_READY",
-                                                  item.strength), default=None)
-    raw_score = int(assistant.get("entryQualityScore") or
-                    (selected.strength if selected else 0))
-    rr = _number(assistant.get("rewardRiskRatio"))
-    if rr is None and selected:
-        rr = selected.risk_reward
-    distance_atr = float(assistant.get("distanceInAtr") or 0)
+    behavior = str((data.get("market_behavior_engine") or {}).get(
+        "market_behavior") or "RANGE")
+    def _selection_rank(item: SignalCandidate) -> tuple[bool, bool, int]:
+        zone = item.entry_zone
+        in_zone = bool(zone and zone[0] <= current_price <= zone[1])
+        executable = (item.lifecycle_state == "ENTRY_READY" and in_zone
+                      and stop_is_valid(item.direction, current_price,
+                                        item.invalidation_price))
+        return executable, item.lifecycle_state == "ENTRY_READY", item.strength
+
+    selected = max(candidates, key=_selection_rank, default=None)
+    # Score and R/R must belong to the selected setup. Assistant summaries may
+    # describe a different, higher-scoring but non-executable candidate.
+    raw_score = int(selected.strength if selected else
+                    assistant.get("entryQualityScore") or 0)
+    rr = (selected.risk_reward if selected and selected.risk_reward is not None
+          else _number(assistant.get("rewardRiskRatio")))
+    selected_zone = selected.entry_zone if selected else None
+    effective_chase_limit = selected.chase_limit if selected else None
+    if selected and selected_zone and effective_chase_limit is None:
+        chase_distance = settings.decision_assistant_missed_entry_atr * max(atr, 0.01)
+        effective_chase_limit = (selected_zone[1] + chase_distance
+                                 if selected.direction == "LONG"
+                                 else selected_zone[0] - chase_distance)
+    entry_location = (classify_entry_location(
+        selected.direction, current_price, selected_zone[0], selected_zone[1],
+        effective_chase_limit)
+        if selected and selected_zone else "NO_EXECUTABLE_ZONE")
+    valid_stop = (stop_is_valid(selected.direction, current_price, selected.invalidation_price)
+                  if selected else False)
     secondary: list[str] = []
     fact_types = {str(item.get("event_type") or "")
                   for item in data.get("signal_facts") or [] if isinstance(item, dict)}
@@ -238,44 +263,36 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
         action, primary, risk_gate = "NO_TRADE", "SPREAD_TOO_HIGH", "RISK_BLOCK"
     elif position_active:
         action, primary, risk_gate = "MANAGE_POSITION", "POSITION_ACTIVE", "POSITION_MANAGEMENT"
-    elif selected and selected.lifecycle_state == "ENTRY_READY" and bool(assistant.get("canEnter")):
+    elif (selected and selected.direction == "LONG"
+          and behavior in {"STRONG_DECLINE", "REVERSAL_WARNING", "REVERSAL_CONFIRMED"}):
+        action, primary, risk_gate = "NO_TRADE", "BEHAVIOR_LONG_BLOCK", "RISK_BLOCK"
+    elif (selected and selected.direction == "LONG"
+          and behavior == "SLOW_BEARISH_DRIFT"):
+        action, primary, risk_gate = "WAIT", "BEHAVIOR_WAIT_PULLBACK", "WAIT"
+    elif str(assistant.get("regime")) in {"RANGE", "NO_EDGE", "REVERSAL_RISK"}:
+        action, primary, risk_gate = "NO_TRADE", "STRUCTURE_UNCLEAR", "NO_TRADE"
+    elif (selected and selected.lifecycle_state == "ENTRY_READY"
+          and entry_location == "IN_EXECUTABLE_ZONE" and valid_stop):
         if rr is None or rr < settings.decision_assistant_min_rr:
             action, primary, risk_gate = "NO_TRADE", "RR_TOO_LOW", "RISK_BLOCK"
-        elif distance_atr >= settings.decision_assistant_missed_entry_atr:
-            action, primary, risk_gate = "NO_TRADE", "OVEREXTENDED", "RISK_BLOCK"
+        elif raw_score < 50:
+            action, primary, risk_gate = "NO_TRADE", "QUALITY_TOO_LOW", "RISK_BLOCK"
         else:
             action = "ENTER_LONG" if selected.direction == "LONG" else "ENTER_SHORT"
             primary, risk_gate = "ENTRY_READY", "ENTRY_READY"
+    elif selected and entry_location in {"CHASE_LONG", "CHASE_SHORT"}:
+        action, primary, risk_gate = "WAIT", "OVEREXTENDED", "WAIT_RETEST"
+    elif selected and selected.lifecycle_state in {"ENTRY_READY", "CONFIRMED", "WATCHING"}:
+        action, primary, risk_gate = "WAIT", "SETUP_CONFIRMED_WAIT_PRICE", "WAIT"
     elif rr is not None and rr < settings.decision_assistant_min_rr:
         action, primary, risk_gate = "NO_TRADE", "RR_TOO_LOW", "RISK_BLOCK"
-    elif distance_atr >= settings.decision_assistant_missed_entry_atr:
-        action, primary, risk_gate = "WAIT", "OVEREXTENDED", "ENTRY_APPROACHING"
-    elif str(assistant.get("regime")) in {"RANGE", "NO_EDGE", "REVERSAL_RISK"}:
-        action, primary, risk_gate = "NO_TRADE", "STRUCTURE_UNCLEAR", "NO_TRADE"
     else:
         action, primary, risk_gate = "WAIT", "WAIT_CONFIRMATION", "WAIT"
-    if str(assistant.get("regime")) == "SHORT_WEAK_HTF_BULLISH":
+    if str(assistant.get("regime")) == "HTF_BULLISH_LTF_WEAKENING":
         secondary.append("TIMEFRAME_CONFLICT")
 
     candle_time = str((data.get("normalized_analysis") or {}).get(
         "lastClosedCandleTimestamp") or "")
-    previous_zone = previous.get("entryZone") or {}
-    previous_action = str(previous.get("finalAction") or "")
-    same_candle = candle_time == str(previous.get("sourceCandleCloseTime") or "")
-    still_in_previous_zone = (
-        isinstance(previous_zone.get("low"), (int, float))
-        and isinstance(previous_zone.get("high"), (int, float))
-        and float(previous_zone["low"]) <= current_price <= float(previous_zone["high"])
-    )
-    critical_override = primary in {"DATA_STALE", "EVENT_BLACKOUT", "SPREAD_TOO_HIGH"}
-    if (previous_action in {"ENTER_LONG", "ENTER_SHORT"} and action != previous_action
-            and same_candle and still_in_previous_zone and not critical_override):
-        sticky = dict(previous)
-        sticky.update({"currentPrice": current_price,
-                       "evaluatedAt": str(data.get("timestamp_utc") or ""),
-                       "decisionChanged": False, "events": []})
-        return sticky, []
-
     scenario_id = selected.scenario_id if selected else str(assistant.get("scenarioId") or "")
     zone = selected.entry_zone if selected else None
     chase_limit = selected.chase_limit if selected else None
@@ -371,9 +388,15 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
         "dataAgeSeconds": health.get("dataAgeSeconds"),
         "notificationSeverity": severity,
     })
-    ready_directions = {candidate.direction for candidate in candidates
-                        if candidate.lifecycle_state == "ENTRY_READY"
-                        and candidate.direction in {"LONG", "SHORT"}}
+    ready_directions = {
+        candidate.direction for candidate in candidates
+        if candidate.lifecycle_state == "ENTRY_READY"
+        and candidate.direction in {"LONG", "SHORT"}
+        and candidate.entry_zone is not None
+        and candidate.entry_zone[0] <= current_price <= candidate.entry_zone[1]
+        and stop_is_valid(candidate.direction, current_price,
+                          candidate.invalidation_price)
+    }
     if len(ready_directions) > 1:
         base.update({"finalAction": "NO_TRADE", "state": "NO_TRADE",
                      "canEnter": False, "primaryReason": "TIMEFRAME_CONFLICT",
@@ -383,6 +406,23 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
     consistency_errors = validate_final_decision(base)
     if consistency_errors:
         base = fail_closed(base, consistency_errors)
+        safe_signature = hashlib.sha256(repr((
+            "NO_TRADE", "SYSTEM_DECISION_CONFLICT", scenario_id,
+            candle_time, tuple(consistency_errors),
+        )).encode()).hexdigest()[:24]
+        safe_decision_id = hashlib.sha256(
+            f"{data.get('symbol', 'XAUUSD')}|{safe_signature}".encode()
+        ).hexdigest()[:32]
+        changed = safe_decision_id != str(previous.get("decisionId") or "")
+        version = int(previous.get("decisionVersion") or 0) + (1 if changed else 0)
+        base.update({"decisionSignature": safe_signature,
+                     "decisionId": safe_decision_id,
+                     "decisionChanged": changed,
+                     "decisionVersion": version})
+    # Event publication must use the post-validation canonical result. Keeping
+    # the pre-validation locals could emit ENTRY_READY after fail-closed.
+    action = cast(FinalAction, str(base.get("finalAction") or "NO_TRADE"))
+    primary = str(base.get("primaryReason") or "SYSTEM_DECISION_CONFLICT")
     events: list[dict] = []
     event_types: list[str] = []
     if changed:
@@ -402,6 +442,7 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
         "SETUP_EXPIRED", "MISSED_ENTRY", "POSITION_DEFEND", "POSITION_EXIT",
         "STOP_TRIGGERED", "TP1_HIT", "TP2_HIT", "TP3_HIT", "TRAIL_UPDATED",
         "REGIME_MAJOR_CHANGE", "WHIPSAW_DETECTED",
+        "MARKET_BEHAVIOR_CHANGED",
         "POSITION_WARNING", "SOFT_INVALIDATION_PENDING", "SOFT_INVALIDATED",
         "HARD_INVALIDATED", "POSITION_RECOVERED", "POSITION_DATA_RISK",
     }
@@ -426,7 +467,8 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
             "previousState": str(previous.get("state") or "WAIT"),
             "currentState": published_state, "transitionReason": base["humanSummary"],
             "marketState": str(assistant.get("regime") or ""),
-            "finalDecision": base["finalAction"], "currentPrice": current_price,
+            "finalDecision": base["finalAction"], "finalAction": base["finalAction"],
+            "canEnter": bool(base.get("canEnter")), "currentPrice": current_price,
             "entryZone": base.get("entryZone"), "chaseLimit": base.get("chaseLimit"),
             "stopLoss": base.get("invalidationPrice"), "targets": base.get("targets") or [],
             "candleCloseTime": candle_time,
@@ -444,10 +486,13 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
             "qualityScore": base.get("qualityScore"), "qualityGrade": base.get("qualityGrade"),
             "effectiveRR": base.get("effectiveRR"),
             "signalFacts": list(data.get("signal_facts") or []),
+            "marketBehavior": behavior,
+            "marketBehaviorState": data.get("market_behavior_engine") or {},
             "notificationEligible": True,
             **{key: canonical_fact.get(key) for key in (
                 "tradePlanId", "tradeThesis", "warningLevel", "hardInvalidation",
-                "emergencyStop", "reclaimDeadline", "reasonCode", "closedPrice")
+                "emergencyStop", "reclaimDeadline", "reasonCode", "closedPrice",
+                "previousBehavior", "behaviorConfidence", "marketBias")
                if canonical_fact.get(key) is not None},
         })
     base["events"] = events

@@ -18,8 +18,11 @@ def setup(status="WAIT_BREAKOUT_CONFIRMATION", *, price=4584.31, closed=4584.0):
         "retestZoneLow": 4598.0, "retestZoneHigh": 4603.0,
         "stopPrice": 4590.0, "tp1": 4620.0, "tp2": 4632.0, "tp3": 4650.0,
     }
+    actionable = status in {"ENTRY_READY_BREAKOUT", "ENTRY_READY_RETEST"}
     return {"eventId": f"event-{status}", "symbol": "XAUUSD", "setupId": plan["setupId"],
             "direction": "LONG", "currentState": status, "currentPrice": price,
+            "canEnter": actionable,
+            "finalAction": "ENTER_LONG" if actionable else "WAIT",
             "latestClosedCandlePrice": closed,
             "candleCloseTime": "2026-08-21T14:00:00+00:00",
             "decisionBasisCandleCloseTime": "2026-08-21T14:00:00+00:00",
@@ -53,6 +56,14 @@ def test_closed_breakout_and_inside_zone_is_ready():
     assert "TP1：4620.00" in message
 
 
+def test_internal_ready_without_canonical_permission_is_not_actionable():
+    event = setup("ENTRY_READY_BREAKOUT", price=4607.2, closed=4607.0)
+    event.update(canEnter=False, finalAction="WAIT")
+    message = format_decision_message(event)
+    assert "現在先不要進" in message
+    assert "進場條件成立" not in message
+
+
 def test_above_chase_limit_waits_retest_with_exact_distance_and_zone():
     message = format_decision_message(setup("WAIT_RETEST", price=4612.3, closed=4608.0))
     assert "現在先不要進" in message
@@ -77,7 +88,7 @@ def test_short_without_pullback_zone_uses_plain_resistance_copy():
 
 def test_short_term_weak_htf_bullish_is_neutral_plain_language():
     event = {
-        "currentState": "SHORT_TERM_WEAK_HTF_BULLISH", "currentPrice": 4581.84,
+        "currentState": "HTF_BULLISH_LTF_WEAKENING", "currentPrice": 4581.84,
         "confirmation": "重新轉強：15M收盤站上4591.37；轉空確認：15M／1H跌破4572.52",
     }
     message = format_decision_message(event)

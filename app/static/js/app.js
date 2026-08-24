@@ -462,7 +462,7 @@ function applyAnalysis(a) {
   const offVal = a.offset_info ? a.offset_info.value : 0;
   renderScenario($("scenario-long"), a.long_scenario, "做多劇本", offVal);
   renderScenario($("scenario-short"), a.short_scenario, "做空劇本", offVal);
-  renderAiStrategy(a.ai_strategy);
+  renderAiStrategy(a.ai_strategy, (a.decision_snapshot || {}).canonicalDecision || {});
   applyOverlays().catch(console.error);
 }
 
@@ -526,11 +526,39 @@ function renderFinalDecision(finalState, snapshot) {
   const realtime = finalState.realtimePresentation || (S.analysis && S.analysis.realtime_presentation) || {};
   S.realtimeFacts = realtime;
   const presentation = finalState.presentation || event.presentation || {};
-  $("quick-final-state").textContent = labels[finalState.state] || "等待";
-  $("quick-flat-action").textContent = finalState.flat_action || "等待下一個明確條件";
-  $("quick-position-action").textContent = finalState.direction === "SHORT"
-    ? finalState.short_manage : finalState.long_manage;
-  $("quick-trigger").textContent = finalState.confirmation || "等待下一根 15 分鐘 K 線";
+  const canonical = (snapshot && snapshot.canonicalDecision) || finalState.canonicalDecision || event.canonicalDecision || {};
+  const newEntry = canonical.newEntryDecision || {};
+  const position = canonical.positionManagement || {};
+  const trigger = canonical.canonicalNextTrigger || {};
+  const behaviorLabels = {
+    STRONG_RISE: "🟢 急漲 ↑↑", SLOW_RISE: "🟢 緩步上升 ↗", RANGE: "⚪ 盤整 ↔",
+    PULLBACK: "🟡 多頭回檔 ↘", SLOW_BEARISH_DRIFT: "🟠 緩步下降 ↘",
+    STRONG_DECLINE: "🔴 急跌 ↓↓", REBOUND: "🟡 空頭反彈 ↗",
+    REVERSAL_WARNING: "⚠️ 反轉警告", REVERSAL_CONFIRMED: "🔴 反轉已確認",
+    BULLISH_ATTEMPT_WITH_REJECTION: "🟡 多方嘗試續攻，但上方有賣壓",
+    BEARISH_ATTEMPT_WITH_SUPPORT: "🟡 空方嘗試下壓，但下方有承接",
+  };
+  $("quick-market-bias").textContent = canonical.marketBias === "BULLISH" ? "🟢 偏多" : canonical.marketBias === "BEARISH" ? "🔴 偏空" : "⚪ 中立";
+  $("quick-behavior-15m").textContent = behaviorLabels[canonical.behavior15m] || "等待資料";
+  $("quick-behavior-1h").textContent = behaviorLabels[canonical.behavior1h] || "等待資料";
+  $("quick-behavior-4h").textContent = behaviorLabels[canonical.behavior4h] || "等待資料";
+  $("quick-structure-status").textContent = canonical.structureStatus || "等待資料";
+  $("quick-momentum-status").textContent = canonical.momentumStatus || "等待資料";
+  const wick = canonical.wickRejection || {};
+  const wickZone = wick.wick_rejection_zone || {};
+  const wickText = wick.wick_rejection_state === "REPEATED_UPPER_WICK_REJECTION"
+    ? `🟠 明顯上方賣壓｜${wick.wick_rejection_count || 0} 次｜${fmt(wickZone.low)}～${fmt(wickZone.high)}`
+    : wick.wick_rejection_state === "REPEATED_LOWER_WICK_REJECTION"
+      ? `🟢 明顯下方承接｜${wick.wick_rejection_count || 0} 次｜${fmt(wickZone.low)}～${fmt(wickZone.high)}`
+      : wick.wick_rejection_state?.startsWith("SINGLE_UPPER") ? "🟡 單次上方拒絕"
+        : wick.wick_rejection_state?.startsWith("SINGLE_LOWER") ? "🟢 單次下方承接" : "⚪ 無明顯拒絕";
+  $("quick-wick-rejection").textContent = wickText;
+  $("quick-final-state").textContent = canonical.primaryAction || "WAIT";
+  $("quick-flat-action").textContent = newEntry.action || "WAIT";
+  $("quick-position-action").textContent = position.positionKnown
+    ? `${position.actualSide || "持倉"} 成本 ${position.actualEntryPrice == null ? "–" : fmt(position.actualEntryPrice)}｜${position.action || "HOLD"}`
+    : (position.message || "未取得實際持倉資料");
+  $("quick-trigger").textContent = trigger.label || "等待新結構形成";
   const marketFresh = ((realtime.freshnessState || finalState.freshnessState || {}).marketFreshness || {});
   $("quick-freshness").textContent = marketFresh.status === "stale" ? "資料過期，禁止進場" : marketFresh.status === "degraded" ? "資料稍有延遲" : "資料正常";
   const livePrice = realtime.currentPrice ?? finalState.source_price;
@@ -538,11 +566,12 @@ function renderFinalDecision(finalState, snapshot) {
   $("quick-live-time").textContent = fmtTs(realtime.quoteTimeUtc || finalState.quote_time);
   $("quick-closed-price").textContent = realtime.latestClosed15mPrice == null ? (finalState.latest_closed_price == null ? "–" : fmt(finalState.latest_closed_price)) : fmt(realtime.latestClosed15mPrice);
   $("quick-closed-time").textContent = fmtTs(realtime.latestClosed15mTimeUtc || finalState.last_closed_candle_time);
-  $("quick-candle-state").textContent = realtime.closedConfirmed ? "收盤已確認" : realtime.intrabarCrossed ? "盤中已越過，尚未收盤" : "尚未確認";
+  const confirmationStatus = canonical.confirmationStatus || "NOT_REACHED";
+  $("quick-candle-state").textContent = confirmationStatus === "CLOSED_CONFIRMED" ? "收盤已確認" : confirmationStatus === "IN_PROGRESS" ? "盤中已越過，尚未收盤" : confirmationStatus === "FAILED" ? "確認失敗" : "尚未確認";
   updateRealtimeFacts(Number(livePrice));
-  $("quick-action-title").textContent = finalState.humanSummary || presentation.title || finalState.action || labels[finalState.state] || "等待";
-  $("quick-action-why").textContent = finalState.humanSummary || finalState.reason || "等待條件一致";
-  $("quick-action-next").textContent = finalState.flat_action || "等待下一個明確條件";
+  $("quick-action-title").textContent = canonical.primaryAction || finalState.humanSummary || presentation.title || "WAIT";
+  $("quick-action-why").textContent = canonical.primaryReason || finalState.humanSummary || finalState.reason || "等待條件一致";
+  $("quick-action-next").textContent = trigger.label || "等待新結構形成";
   $("quick-action-card").dataset.action = presentation.tone || (finalState.state === "DATA_STALE" ? "danger" : "neutral");
 }
 
@@ -554,13 +583,17 @@ function renderDecisionAssistant(v3, finalDecision = {}) {
   why.hidden = false;
   const side = v3.direction === "LONG" ? "偏多" : v3.direction === "SHORT" ? "偏空" : "中立";
   const zone = v3.entryZone || {};
-  $("v3-direction").textContent = `${side}｜${v3.regime || "等待"}`;
+  const canonical = ((S.analysis || {}).decision_snapshot || {}).canonicalDecision || finalDecision.canonicalDecision || {};
+  const selected = ((canonical.newEntryDecision || {}).selectedSetup) || {};
+  const canonicalZone = selected.entryZone || zone;
+  $("v3-direction").textContent = `${side}｜15M ${canonical.behavior15m || "等待資料"}`;
   $("v3-can-enter").textContent = finalDecision.canEnter ? "可以評估進場" : (finalDecision.humanSummary || v3.actionSummary);
-  $("v3-entry-zone").textContent = zone.low != null && zone.high != null ? `${fmt(zone.low)}–${fmt(zone.high)}` : "尚未形成";
-  $("v3-invalidation").textContent = v3.invalidation == null ? "尚未形成" : fmt(v3.invalidation);
-  $("v3-target").textContent = (v3.targets || []).length ? fmt(v3.targets[0]) : "尚未形成";
-  $("v3-quality").textContent = `${v3.entryQualityGrade}級（${v3.entryQualityScore}分）｜RR ${Number(v3.rewardRiskRatio || 0).toFixed(2)}`;
-  $("v3-trigger").textContent = v3.nextTrigger || "等待新結構";
+  $("v3-entry-zone-label").textContent = selected.entryZoneLabel || "候選進場區";
+  $("v3-entry-zone").textContent = canonicalZone.low != null && canonicalZone.high != null ? `${fmt(canonicalZone.low)}–${fmt(canonicalZone.high)}` : "尚未形成";
+  $("v3-invalidation").textContent = selected.tacticalStop == null ? "尚未形成" : fmt(selected.tacticalStop);
+  $("v3-target").textContent = (selected.targets || []).length ? fmt(selected.targets[0]) : "尚未形成";
+  $("v3-quality").textContent = `${v3.entryQualityGrade}級（${v3.entryQualityScore}分）｜RR ${Number(selected.riskReward || 0).toFixed(2)}`;
+  $("v3-trigger").textContent = (canonical.canonicalNextTrigger || {}).label || v3.nextTrigger || "等待新結構";
   const items = [ ...(v3.regimeReasons || []), ...((v3.why || {}).technical || []), ...((v3.why || {}).blocked || []) ];
   $("v3-why-list").replaceChildren(...items.slice(0, 10).map((text) => {
     const li = document.createElement("li"); li.textContent = text; return li;
@@ -705,10 +738,12 @@ function renderTrendContinuation(engine) {
     RANGE: "區間整理", REVERSAL: "反轉", UNDEFINED: "型態未定" }[engine.marketType] || "型態未定";
   $("trend-shadow-badge").textContent = engine.shadowMode ? "觀察模式" : "正式提示";
   $("trend-continuation-summary").textContent = `${market}｜趨勢評分 ${engine.trendScore || 0}｜15M ATR ${Number(engine.atrValue || 0).toFixed(2)}`;
+  const canonicalDecision = ((S.analysis || {}).decision_snapshot || {}).canonicalDecision || {};
+  const primarySetup = canonicalDecision.primarySetup || {};
   list.replaceChildren(...(engine.candidates || []).map((c) => {
     const box = document.createElement("div");
     box.className = "scenario-item";
-    const ready = String(c.status || "").startsWith("ENTRY_READY_");
+    const ready = canonicalDecision.newEntryDecision?.canEnter === true && c.setupId === primarySetup.setupId;
     const zone = c.entryZoneLow == null ? "尚未建立" : `${Number(c.entryZoneLow).toFixed(2)}–${Number(c.entryZoneHigh).toFixed(2)}`;
     const missing = (c.missingConditions || []).join("；") || "條件完整";
     box.textContent = `${ready ? "🟢 現在可以進場" : "🟡 現在先不要進場"}｜${names[c.type] || "順勢進場機會"}｜進場區 ${zone}｜賺賠比 ${c.riskReward || "–"}｜${missing}`;
@@ -720,13 +755,15 @@ function renderBreakoutSetupLedger(manager) {
   const card = $("breakout-setup-ledger-card");
   const list = $("breakout-setup-list");
   if (!card || !list) return;
+  const canonicalDecision = ((S.analysis || {}).decision_snapshot || {}).canonicalDecision || {};
+  const activeId = canonicalDecision.activeSetupId;
   const canonical = (S.analysis && S.analysis.realtime_presentation || {}).dedupedScenarios;
-  const setups = canonical || manager.setups || [];
+  const setups = (canonical || manager.setups || []).filter((s) => s.setupId === activeId);
   card.hidden = setups.length === 0;
   if (card.hidden) return;
   const stateZh = {
     WAIT_BREAKOUT_CONFIRMATION: "尚未確認", BREAKOUT_CONFIRMED: "突破已確認",
-    SHORT_TERM_WEAK_HTF_BULLISH: "短線轉弱，高週期仍偏多",
+    HTF_BULLISH_LTF_WEAKENING: "短線轉弱，高週期仍偏多",
     SHORT_TERM_RECOVERING: "短線正在恢復，還差最後確認",
     SHORT_TERM_BULLISH_RESTORED: "短線重新轉強",
     BEARISH_CONFIRMED: "短線已正式轉空",
@@ -740,7 +777,7 @@ function renderBreakoutSetupLedger(manager) {
     WATCHING: "尚未成立", ARMED: "接近確認價", READY: "訊號已確認",
     ENTER: "可以進場", MANAGE: "訊號進行中", MISSED: "已錯過，等待回踩",
   };
-  const ready = setups.find((s) => String(s.status).includes("ENTRY_READY"));
+  const ready = canonicalDecision.newEntryDecision?.canEnter ? setups.find((s) => s.setupId === activeId) : null;
   $("breakout-setup-summary").textContent = ready
     ? `${ready.direction === "LONG" ? "多單" : "空單"}${ready.entryType === "RETEST" ? "回踩" : "突破"}條件已成立`
     : "舊劇本與新延續劇本分開顯示；尚未成立時不會誤示可進場。";
@@ -766,11 +803,13 @@ function renderEntryPlan(plan) {
     return;
   }
   card.hidden = false;
-  const contradictoryTriggered = plan.status === "ENTRY_TRIGGERED" && !!plan.missing_condition;
+  const canonicalDecision = ((S.analysis || {}).decision_snapshot || {}).canonicalDecision || {};
+  const entryPermitted = canonicalDecision.newEntryDecision?.canEnter === true;
+  const contradictoryTriggered = plan.status === "ENTRY_TRIGGERED" && !entryPermitted;
   const displayStatus = contradictoryTriggered ? "ENTRY_READY" : plan.status;
   const status = {
     SETUP_WATCH: "機會準備中", ENTRY_READY: "已到觀察區，等待 K 線確認",
-    ENTRY_TRIGGERED: "條件完成，可依計畫執行", INVALIDATED: "計畫已取消",
+    ENTRY_TRIGGERED: entryPermitted ? "條件完成，可依計畫執行" : "劇本已確認，等待可執行價格", INVALIDATED: "計畫已取消",
     EXITED: "計畫已結束", WAIT_CONFIRMATION: "還不能進場，正在等收盤確認",
     WAIT_BREAKOUT_CONFIRMATION: "等 15 分鐘收盤突破後才能進場",
     MISSED_ENTRY: "這個進場點已錯過，現在不要追", MISS_ENTRY: "這個進場點已錯過，現在不要追",
@@ -965,7 +1004,7 @@ function aiZone(resolved, id) {
                    : h`${lo} – ${hi} <span class="ai-id">${id}</span>`;
 }
 
-function renderAiStrategy(ai) {
+function renderAiStrategy(ai, canonical = {}) {
   const box = $("ai-body");
   if (!box) return;
   if (!ai || (!ai.available && !ai.invalid)) {
@@ -1028,7 +1067,7 @@ function renderAiStrategy(ai) {
 
         <div class="ai-sec-title">行動</div>
         ${act.type === "Wait" && act.wait_condition ? h`<div class="ai-kv"><span>等什麼</span><span>${act.wait_condition}</span></div>` : ""}
-        <div class="ai-kv"><span>下一步觸發</span><span>${act.next_trigger || ""}</span></div>
+        <div class="ai-kv"><span>正式進場確認</span><span>${(canonical.canonicalNextTrigger || {}).label || act.next_trigger || ""}</span></div>
 
         <div class="ai-sec-title">交易方案(${broker}掛單價)</div>
         <div class="ai-kv"><span>進場</span><span class="num">${aiZone(res, tp.entry_id)}</span></div>

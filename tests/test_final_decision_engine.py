@@ -67,7 +67,7 @@ def test_overextended_breakout_does_not_enter():
 
 
 def test_htf_bullish_m15_pullback_never_enters_short():
-    data = market(can_enter=False, regime="SHORT_WEAK_HTF_BULLISH")
+    data = market(can_enter=False, regime="HTF_BULLISH_LTF_WEAKENING")
     decision, _ = evaluate_final_decision(data)
     assert decision["finalAction"] != "ENTER_SHORT"
     assert "TIMEFRAME_CONFLICT" in decision["secondaryReasons"]

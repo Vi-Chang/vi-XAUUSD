@@ -687,6 +687,7 @@ def evaluate_unified_decision(
     out["presentation"] = build_decision_presentation({
         "state": state,
         "direction": direction,
+        "canEnter": current.can_enter,
         "flatAction": flat_action,
         "missingCondition": entry.get("missing_condition"),
         "confirmation": current.confirmation,

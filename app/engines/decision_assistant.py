@@ -4,6 +4,8 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
+from app.engines.entry_location import classify_entry_location, stop_is_valid
+
 ENGINE_VERSION = "decision-assistant-v3"
 READY = {"LONG_READY", "SHORT_READY", "BREAKOUT_ENTRY_READY", "PULLBACK_ENTRY_READY"}
 
@@ -29,7 +31,7 @@ def classify_regime(data: dict) -> tuple[str, list[str]]:
     composite = str(regime_state.get("compositeRegime") or "")
     if composite:
         mapped = {
-            "HTF_BULLISH_LTF_WEAKENING": "SHORT_WEAK_HTF_BULLISH",
+            "HTF_BULLISH_LTF_WEAKENING": "HTF_BULLISH_LTF_WEAKENING",
             "HTF_BULLISH_LTF_RECOVERING": "SHORT_TERM_RECOVERING",
             "HTF_BULLISH_LTF_BULLISH_RESTORED": "SHORT_TERM_BULLISH_RESTORED",
             "HTF_BULLISH_LTF_BULLISH": "TREND_BULLISH",
@@ -52,7 +54,7 @@ def classify_regime(data: dict) -> tuple[str, list[str]]:
     if n.get("marketDataStatus") != "GOOD":
         return "NO_EDGE", ["行情資料不完整或過期"]
     if trend == "bullish" and momentum in {"weakening", "pullback", "reversal_risk"}:
-        return "SHORT_WEAK_HTF_BULLISH", reasons
+        return "HTF_BULLISH_LTF_WEAKENING", reasons
     if trend == "bearish" and momentum in {"accelerating", "stable"}:
         return "SHORT_STRONG_HTF_BEARISH", reasons
     if trend == "bullish" and (rsi >= 80 or score >= 90) and n.get("entryTiming") == "chase":
@@ -157,9 +159,21 @@ def evaluate_decision_assistant(data: dict, *, latest_candle: dict | None = None
     rr_passed = rr >= settings.decision_assistant_min_rr
     status = str(selected.get("status") or "NO_SETUP")
     execution_state = str(selected.get("tradeState") or "")
-    can_enter = (status in READY or status.startswith("ENTRY_READY_")) and rr_passed and score >= 50
+    chase_limit = selected.get("maxChasePrice")
+    location_state = classify_entry_location(
+        direction, current, low, high,
+        float(chase_limit) if isinstance(chase_limit, (int, float)) else None,
+    ) if low and high else "NO_EXECUTABLE_ZONE"
+    market_fresh = str(n.get("marketDataStatus") or "FAILED") == "GOOD"
+    valid_stop = stop_is_valid(
+        direction, current,
+        float(selected["stopPrice"]) if isinstance(selected.get("stopPrice"), (int, float)) else None,
+    )
+    confirmation_valid = status in READY or status.startswith("ENTRY_READY_")
+    can_enter = (confirmation_valid and location_state == "IN_EXECUTABLE_ZONE"
+                 and rr_passed and score >= 50 and valid_stop and market_fresh)
     no_trade_reasons = []
-    if regime in {"NO_EDGE", "RANGE", "SHORT_WEAK_HTF_BULLISH", "SHORT_TERM_RECOVERING",
+    if regime in {"NO_EDGE", "RANGE", "HTF_BULLISH_LTF_WEAKENING", "SHORT_TERM_RECOVERING",
                   "OVERHEATED_BULLISH", "OVERSOLD_BEARISH", "REVERSAL_RISK"}:
         no_trade_reasons.append("目前市場型態不適合直接追價")
         can_enter = False
@@ -167,13 +181,24 @@ def evaluate_decision_assistant(data: dict, *, latest_candle: dict | None = None
         no_trade_reasons.append(f"賺賠比 {rr:.2f}，低於門檻 {settings.decision_assistant_min_rr:.2f}")
     if score < 50:
         no_trade_reasons.append(f"進場品質 {score} 分，未達通知門檻 50 分")
+    if confirmation_valid and location_state != "IN_EXECUTABLE_ZONE":
+        no_trade_reasons.append("交易劇本已確認，但現價不在可執行進場區")
+    if not valid_stop:
+        no_trade_reasons.append("防守價無效，不能建立可執行交易")
+    if not market_fresh:
+        no_trade_reasons.append("行情資料不是最新狀態")
     if execution_state == "MANAGE":
         can_enter = False
         action, trade_state = "管理已成立訊號", "MANAGE"
-    elif distance_atr >= settings.decision_assistant_missed_entry_atr:
+    elif location_state in {"CHASE_LONG", "CHASE_SHORT"}:
         can_enter = False
         action = "不要追價"
         trade_state = "MISSED_ENTRY" if status in READY else "NO_TRADE"
+    elif confirmation_valid and location_state in {
+            "ABOVE_LONG_ZONE", "BELOW_SHORT_ZONE", "WAIT_BEARISH_RECONFIRMATION",
+            "WAIT_HIGHER_PRICE"}:
+        can_enter = False
+        action, trade_state = "等待可執行價格", "SETUP_CONFIRMED"
     elif no_trade_reasons:
         action, trade_state = "沒有好機會", "NO_TRADE"
     elif distance_atr <= settings.decision_assistant_approaching_atr and not can_enter:
@@ -219,6 +244,8 @@ def evaluate_decision_assistant(data: dict, *, latest_candle: dict | None = None
         "targets": [x for x in (selected.get("tp1"), selected.get("tp2"), selected.get("tp3")) if isinstance(x, (int, float))],
         "rewardRiskRatio": round(rr, 2), "rrPassed": rr_passed,
         "distanceFromOptimalEntry": round(distance, 2), "distanceInAtr": round(distance_atr, 3),
+        "entryLocationState": location_state, "confirmationValid": confirmation_valid,
+        "stopValid": valid_stop, "dataFresh": market_fresh,
         "chasePenalty": chase_penalty, "breakoutQuality": bq, "pullbackDepth": depth,
         "noTradeReasons": no_trade_reasons, "eventType": event_type,
         "shouldNotify": should_notify,

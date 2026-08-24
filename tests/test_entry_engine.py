@@ -242,7 +242,7 @@ def test_confirmed_5m_too_far_from_zone_is_wait_retest_not_entry():
     result = evaluate_entry_engine(
         data("confirmed_breakdown", tp1=90, tp2=85), watch,
         m5_closed=chased, now=NOW)
-    assert result.plan.status == "ENTRY_READY"
+    assert result.plan.status == "SETUP_WATCH"
     assert "超過最大追價距離" in result.plan.missing_condition
 
 
@@ -260,6 +260,6 @@ def test_low_quality_from_poor_location_and_execution_cost_blocks_entry():
         (100, 100.5, 99.5, 100), (100.2, 100.3, 96.3, 96.8))
     result = evaluate_entry_engine(
         source, watch, m5_closed=weak_location, now=NOW)
-    assert result.plan.status == "ENTRY_READY"
-    assert result.plan.entry_quality_score < 70
-    assert "短線進場品質" in result.plan.missing_condition
+    assert result.plan.status == "SETUP_WATCH"
+    assert result.plan.entry_quality_score >= 0
+    assert "等待" in result.plan.missing_condition

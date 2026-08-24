@@ -239,6 +239,7 @@ def test_watch_telegram_is_yellow_and_explicitly_forbids_entry():
 def test_ready_telegram_has_complete_entry_and_risk_plan():
     event = {
         "currentState": "LONG_READY", "direction": "LONG",
+        "canEnter": True, "finalAction": "ENTER_LONG",
         "currentPrice": 4534, "latestClosedCandlePrice": 4533,
         "candleCloseTime": "2026-08-20T15:30:00+00:00",
         "calculatedAt": "2026-08-20T15:31:00+00:00",

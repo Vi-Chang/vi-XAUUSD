@@ -9,7 +9,8 @@ LEGAL_TRANSITIONS: dict[str, set[str]] = {
     "CONFIRMED_WAIT_RETEST": {"CONFIRMED_WAIT_RETEST", "ENTRY_READY", "INVALIDATED"},
     "ENTRY_READY": {"ENTRY_READY", "MISSED_ENTRY", "INVALIDATED"},
     "MISSED_ENTRY": {"MISSED_ENTRY", "INVALIDATED"},
-    "INVALIDATED": {"INVALIDATED"},
+    "INVALIDATED": {"INVALIDATED", "ARCHIVED"},
+    "ARCHIVED": {"ARCHIVED"},
 }
 
 
@@ -35,9 +36,18 @@ def evaluate_setup_lifecycle(
     notified_at = previous.get("entryNotificationSentAt") if same_setup else None
     was_ready = bool(previous.get("wasEntryReady")) if same_setup else False
     missed_at = previous.get("missedAt") if same_setup else None
+    created_at = previous.get("createdAt") if same_setup else _now(calculated_at)
+    invalidated_at = previous.get("invalidatedAt") if same_setup else None
+    archived_at = previous.get("archivedAt") if same_setup else None
+    entry_window_opened_at = previous.get("entryWindowOpenedAt") if same_setup else None
 
     if invalidated:
-        desired, reason = "INVALIDATED", "原交易劇本已失效"
+        if old == "INVALIDATED":
+            desired, reason = "ARCHIVED", "失效劇本已移出目前決策"
+            archived_at = archived_at or _now(calculated_at)
+        else:
+            desired, reason = "INVALIDATED", "原交易劇本已失效"
+            invalidated_at = invalidated_at or _now(calculated_at)
     else:
         confirmed = confirmation_price is None or (
             latest_closed_price is not None
@@ -62,6 +72,7 @@ def evaluate_setup_lifecycle(
                 desired, reason = "ENTRY_READY", "收盤確認、進場區與風控條件均已通過"
                 was_ready = True
                 ready_at = ready_at or _now(calculated_at)
+                entry_window_opened_at = entry_window_opened_at or _now(calculated_at)
             else:
                 desired, reason = "CONFIRMED_WAIT_RETEST", (
                     "突破確認完成，但目前價格不在合理進場區，等待回踩"
@@ -74,6 +85,7 @@ def evaluate_setup_lifecycle(
         reason = f"拒絕非法狀態轉換 {old} → {rejected}"
     return {
         "setupId": setup_id,
+        "createdAt": created_at,
         "state": desired,
         "direction": direction,
         "confirmationRequired": confirmation_price is not None,
@@ -83,9 +95,12 @@ def evaluate_setup_lifecycle(
         "entryZoneLow": entry_zone_low,
         "entryZoneHigh": entry_zone_high,
         "entryReadyAt": ready_at,
+        "entryWindowOpenedAt": entry_window_opened_at,
         "entryNotificationSentAt": notified_at,
         "wasEntryReady": was_ready,
         "missedAt": missed_at,
+        "invalidatedAt": invalidated_at,
+        "archivedAt": archived_at,
         "stateReason": reason,
     }
 

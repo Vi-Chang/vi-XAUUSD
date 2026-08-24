@@ -43,7 +43,7 @@ const SC_STATUS_ZH = {
 
 const LIFECYCLE_ZH = {
   NO_SETUP: "暫無有效機會", BREAKOUT_PENDING: "突破待確認",
-  WAITING_FOR_ENTRY: "等待進入進場區", READY: "符合進場條件",
+  WAITING_FOR_ENTRY: "等待進入進場區", READY: "條件已完成，由最終風控決定是否進場",
   CONFIRMED_WAIT_RETEST: "突破確認完成，等待回踩",
   WAITING_FOR_CONFIRMATION: "等待 15 分鐘收盤確認",
   FAILED_BREAKOUT: "突破失敗", EXPIRED: "劇本已失效",

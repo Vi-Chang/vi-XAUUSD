@@ -13,7 +13,9 @@ TAIPEI = ZoneInfo("Asia/Taipei")
 def plain_trade_status(state: str, *, can_enter: bool = False) -> str:
     """Translate engine lifecycle states into an unambiguous user action."""
     value = str(state or "WAIT")
-    if can_enter or value.endswith("READY") or value.startswith("ENTRY_READY_"):
+    # Lifecycle labels describe a setup, not trade permission. Only the
+    # canonical decision may grant the green actionable presentation.
+    if can_enter:
         return "🟢 現在可以進場"
     if value in {"MISSED_ENTRY", "MISS_ENTRY"}:
         return "🔴 這個進場點已經錯過，不要追價"
@@ -67,7 +69,7 @@ def build_decision_presentation(event: dict) -> dict:
         "INVALIDATED": "🟠【原交易計畫已失效】",
         "MISSED_ENTRY": "🟡【原進場區已錯過｜禁止追價】",
         "CONFIRMED_WAIT_RETEST": "🟡【突破確認完成｜等待回踩】",
-        "SHORT_TERM_WEAK_HTF_BULLISH": "⚠️【短線轉弱，先觀望】",
+        "HTF_BULLISH_LTF_WEAKENING": "⚠️【短線轉弱，先觀望】",
         "SHORT_TERM_RECOVERING": "⚪【短線正在恢復，還差最後確認】",
         "SHORT_TERM_BULLISH_RESTORED": "🟢【短線重新轉強】",
         "BEARISH_CONFIRMED": "🔴【短線已正式轉空】",
@@ -82,7 +84,7 @@ def build_decision_presentation(event: dict) -> dict:
     elif state.endswith("WATCH"):
         action = "等待，尚不可進場，請勿追價。"
         tone = "warning"
-    elif state.endswith("READY"):
+    elif state.endswith("READY") and bool(event.get("canEnter")):
         action = "進場條件已成立。"
         tone = "long_ready" if state == "LONG_READY" else "short_ready"
     elif state.endswith("MANAGE"):
@@ -92,8 +94,13 @@ def build_decision_presentation(event: dict) -> dict:
         action, tone = "資料過期，暫停交易。", "danger"
     else:
         action, tone = str(event.get("flatAction") or "等待新的確認條件。"), "neutral"
+    title = titles.get(state, "⚪【市場決策更新】")
+    if state.endswith("READY") and not bool(event.get("canEnter")):
+        title = ("🟡【空方劇本已確認｜等待可執行價格】"
+                 if direction == "SHORT" else
+                 "🟡【多方劇本已確認｜等待可執行價格】")
     return {
-        "title": titles.get(state, "⚪【市場決策更新】"),
+        "title": title,
         "tone": tone,
         "currentAction": action,
         "state": state,
@@ -119,6 +126,68 @@ def _local_time(raw: str) -> str:
 
 def format_decision_message(event: dict) -> str:
     canonical_type = str(event.get("event_type") or "")
+    if canonical_type in {"WICK_REJECTION_CHANGED", "REJECTION_BREAKOUT_CHANGED"}:
+        state = str(event.get("currentState") or "")
+        breakout = str(event.get("breakoutState") or "NONE")
+        zone = event.get("zone") or {}
+        range_text = (f"{float(zone['low']):.2f}–{float(zone['high']):.2f}"
+                      if isinstance(zone.get("low"), (int, float)) and
+                      isinstance(zone.get("high"), (int, float)) else "等待新區域")
+        if breakout == "BREAKOUT_CONFIRMED":
+            return ("🟢【XAUUSD｜拒絕區已被收盤突破】\n"
+                    f"區域：{range_text}\n15M 實體已突破並確認守住，續攻條件改善。")
+        if state == "REPEATED_UPPER_WICK_REJECTION":
+            return ("⚠️【XAUUSD｜15M 上方連續出現賣壓】\n"
+                    f"區域：{range_text}\n多方動能可能仍在修復，但價格尚未突破供給區。\n目前：不追多。")
+        if state == "REPEATED_LOWER_WICK_REJECTION":
+            return ("⚠️【XAUUSD｜15M 下方連續出現承接】\n"
+                    f"區域：{range_text}\n空方動能可能仍偏弱，但價格尚未跌破承接區。\n目前：不追空。")
+    if canonical_type == "MARKET_BEHAVIOR_CHANGED":
+        labels = {
+            "STRONG_RISE": "急漲", "SLOW_RISE": "緩步上升", "RANGE": "盤整",
+            "PULLBACK": "多頭回檔", "SLOW_BEARISH_DRIFT": "緩步下降",
+            "STRONG_DECLINE": "急跌", "REBOUND": "空頭反彈",
+            "REVERSAL_WARNING": "反轉警告", "REVERSAL_CONFIRMED": "反轉已確認",
+        }
+        behavior = str(event.get("marketBehavior") or "RANGE")
+        previous = str(event.get("previousBehavior") or "RANGE")
+        bias = str(event.get("marketBias") or "NEUTRAL")
+        action = ("暫停追多，等待止跌確認。" if bias == "BULLISH" and behavior in {
+            "SLOW_BEARISH_DRIFT", "PULLBACK", "REVERSAL_WARNING"}
+            else "等待下一個已收盤 K 棒確認。")
+        return "\n".join([
+            "⚠️【XAUUSD｜15M 價格行為改變】",
+            f"由「{labels.get(previous, previous)}」變為「{labels.get(behavior, behavior)}」。",
+            f"大方向：{'偏多' if bias == 'BULLISH' else '偏空' if bias == 'BEARISH' else '中立'}（價格行為不會自動改寫大方向）",
+            f"信心分數：{event.get('behaviorConfidence') or 0}/100",
+            f"現在：{action}",
+        ])
+    canonical = event.get("canonicalDecision") or {}
+    if canonical and canonical_type in {"ENTRY_READY", "CANDLE_FINALIZED", "WAIT_RETEST"}:
+        entry = canonical.get("newEntryDecision") or {}
+        trigger = canonical.get("canonicalNextTrigger") or {}
+        position = canonical.get("positionManagement") or {}
+        action = str(canonical.get("primaryAction") or "WAIT")
+        title = ("🟢【XAUUSD｜現在可以進場】" if action in {"BUY", "SELL"}
+                 else "🟡【XAUUSD｜現在先不要進場】")
+        lines = [title, f"現價：{float(event.get('currentPrice') or 0):.2f}",
+                 f"原因：{canonical.get('primaryReason')}",
+                 f"下一個重要條件：{trigger.get('label')}"]
+        chosen = entry.get("selectedSetup") or {}
+        if chosen:
+            zone = chosen.get("entryZone") or {}
+            lines.extend([
+                f"{chosen.get('entryZoneLabel')}：{zone.get('low') or '—'}～{zone.get('high') or '—'}",
+                f"盈虧比：{chosen.get('riskReward') if chosen.get('riskReward') is not None else '—'}",
+            ])
+        if not position.get("positionKnown"):
+            lines.append("持倉：未取得實際持倉資料")
+        else:
+            lines.append(
+                f"持倉：{position.get('actualSide')} 成本 {position.get('actualEntryPrice')}，"
+                f"目前動作 {position.get('action')}")
+        lines.append(f"收盤確認來源：最新已收 15M {canonical.get('lastClosedCandleTime') or '—'}")
+        return "\n".join(lines)
     if canonical_type == "DATA_RECOVERED":
         closed = event.get("latestClosedCandlePrice")
         return "\n".join([
@@ -227,7 +296,7 @@ def format_decision_message(event: dict) -> str:
         return ("🔴【短線已正式轉空】\n"
                 "15分鐘與1小時已收盤結構同步轉空。\n"
                 "目前重新評估空方進場位置、失效價與賺賠比。")
-    if state == "SHORT_TERM_WEAK_HTF_BULLISH":
+    if state == "HTF_BULLISH_LTF_WEAKENING":
         regain = event.get("triggerLevel")
         short_level = event.get("longDefensePrice") or event.get("stopLoss")
         lines = [
@@ -262,7 +331,7 @@ def format_decision_message(event: dict) -> str:
         item = completed[-1]
         verb = "站上" if item.get("condition") == "closeAbove" else "跌破"
         lines.append(f"已完成：15M 收盤{verb} {float(item['level']):.2f}")
-    if state.endswith("READY"):
+    if state.endswith("READY") and bool(event.get("canEnter")):
         zone = event.get("entryZone") or {}
         targets = event.get("targets") or []
         lines.extend([
@@ -399,8 +468,10 @@ def _format_breakout_setup_event(event: dict, breakout_event: dict) -> str:
     trigger = float(setup.get("breakoutTrigger") or 0)
     zone = f"{float(setup.get('entryZoneLow') or 0):.2f}–{float(setup.get('entryZoneHigh') or 0):.2f}"
     retest = f"{float(setup.get('retestZoneLow') or 0):.2f}–{float(setup.get('retestZoneHigh') or 0):.2f}"
-    if state in {"ENTRY_READY_BREAKOUT", "ENTRY_READY_RETEST",
-                 "BREAKOUT_ENTRY_READY", "PULLBACK_ENTRY_READY"}:
+    actionable = (bool(event.get("canEnter")) and
+                  str(event.get("finalAction") or "") in {"ENTER_LONG", "ENTER_SHORT"})
+    if (state in {"ENTRY_READY_BREAKOUT", "ENTRY_READY_RETEST",
+                  "BREAKOUT_ENTRY_READY", "PULLBACK_ENTRY_READY"} and actionable):
         entry_type = ("突破進場" if state in {"ENTRY_READY_BREAKOUT", "BREAKOUT_ENTRY_READY"}
                       else "回踩進場")
         if entry_type == "回踩進場":

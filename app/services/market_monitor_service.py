@@ -26,10 +26,12 @@ from app.engines.hypothetical_exit_advisor import (
     build_hypothetical_exit_plans,
     evaluate_hypothetical_exits,
 )
+from app.engines.market_behavior import evaluate_market_behavior
 from app.engines.regime_state_machine import evaluate_regime_state
 from app.engines.trade_plan import evaluate_trade_plans, migrate_legacy_virtual_profit
 from app.engines.trend_continuation_engine import evaluate_trend_continuation
 from app.engines.virtual_profit_tracker import evaluate_virtual_profit
+from app.engines.wick_rejection import evaluate_wick_rejection
 from app.services.double_sweep_service import evaluate_double_sweep_monitor
 
 
@@ -208,6 +210,16 @@ def evaluate_market_monitors(
         "double_sweep_statistical": {
             **double_sweep_state, "events": double_sweep_events},
     }
+    wick_state, wick_events = evaluate_wick_rejection(
+        m15_closed, data=data, previous=_load(symbol, "wick_rejection"))
+    _save(symbol, "wick_rejection", wick_state)
+    monitor_result["wick_rejection_engine"] = wick_state
+    behavior_input = {**data, "wick_rejection_engine": wick_state}
+    behavior_state, behavior_events = evaluate_market_behavior(
+        m15=m15_closed, h1=h1_closed, h4=h4_closed, data=behavior_input,
+        previous=_load(symbol, "market_behavior"))
+    _save(symbol, "market_behavior", behavior_state)
+    monitor_result["market_behavior_engine"] = behavior_state
     regime_state, regime_events = evaluate_regime_state(
         data, indicators=indicators, previous=_load(symbol, "regime_state"))
     _save(symbol, "regime_state", regime_state)
@@ -217,14 +229,21 @@ def evaluate_market_monitors(
         previous=_load(symbol, "decision_assistant"))
     _save(symbol, "decision_assistant", assistant_state)
     monitor_result["decision_assistant"] = assistant_state
-    signal_facts = (exit_events + ([breakout_event] if breakout_event else [])
+    signal_facts = (exit_events + ([breakout_event] if breakout_event else []) + wick_events
                     + virtual_events + trade_plan_events + breakout_setup_events
-                    + continuation_events + regime_events + assistant_events)
+                    + continuation_events + regime_events + behavior_events
+                    + assistant_events)
     signal_facts += double_sweep_events
     final_input = {**data, **monitor_result, "signal_facts": signal_facts}
     final_state, final_events = evaluate_final_decision(
         final_input, _load(symbol, "final_decision")
     )
+    from app.engines.canonical_decision import build_canonical_decision
+    canonical = build_canonical_decision(final_input, final_state)
+    final_state["canonicalDecision"] = canonical
+    for event in final_events:
+        event["canonicalDecision"] = canonical
+        event["nextTriggerCondition"] = canonical["canonicalNextTrigger"]
     final_state["events"] = final_events
     if final_events:
         final_state["latest_event"] = final_events[-1]

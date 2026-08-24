@@ -190,6 +190,7 @@ class PositionManagement(BaseModel):
     has_position: bool = False
     position_side: str = ""
     entry_price: float | None = None
+    position_size: float | None = None
     current_r_multiple: float | None = None
     recommended_action: str = ""
     partial_exit_plan: str = ""
@@ -567,6 +568,8 @@ class AnalysisResult(BaseModel):
     breakout_setup_manager: dict = Field(default_factory=dict)
     trend_continuation_engine: dict = Field(default_factory=dict)
     double_sweep_statistical: dict = Field(default_factory=dict)
+    market_behavior_engine: dict = Field(default_factory=dict)
+    wick_rejection_engine: dict = Field(default_factory=dict)
     decision_assistant: dict = Field(default_factory=dict)
     final_decision_state: dict = Field(default_factory=dict)
     decision_snapshot: dict = Field(default_factory=dict)

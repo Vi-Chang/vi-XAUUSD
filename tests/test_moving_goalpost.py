@@ -76,7 +76,7 @@ def test_confirmed_but_beyond_atr_chase_is_missed_wait_retest():
     setup = state["activeSetup"]
     assert setup["primaryTriggerConfirmed"] is True
     assert setup["status"] == "WAIT_RETEST"
-    assert setup["tradeState"] == "MISSED"
+    assert setup["tradeState"] == "WAIT"
     assert any(event["event_type"] == "WAIT_RETEST" for event in events)
 
 
@@ -84,7 +84,8 @@ def test_entry_ready_is_one_telegram_semantic_event_and_ui_is_explicit():
     state, _ = evaluate_breakout_setups(market(4608, closed=4608), None)
     state, events = evaluate_breakout_setups(market(4615.5, closed=4615.5), state)
     ready = next(event for event in events if event["event_type"] == "BREAKOUT_ENTRY_READY")
-    ready.update(symbol="XAUUSD", currentState="ENTRY_READY", currentPrice=4615.5)
+    ready.update(symbol="XAUUSD", currentState="ENTRY_READY", currentPrice=4615.5,
+                 canEnter=True, finalAction="ENTER_LONG")
     assert alert_category(ready) == "ENTRY_READY"
     assert semantic_key(ready) == semantic_key(dict(ready))
     presentation = build_decision_presentation({

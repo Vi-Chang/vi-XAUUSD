@@ -195,6 +195,10 @@ class Settings(BaseSettings):
     tactical_short_chase_atr_mult: float = 1.5
     tactical_setup_expiry_bars: int = 4
     tactical_min_rr: float = 1.5
+    min_behavior_confidence: int = 55
+    behavior_confirmation_bars: int = 2
+    behavior_immediate_threshold: int = 85
+    behavior_exit_threshold: int = 45
     short_entry_min_quality_score: int = 70
     short_entry_max_chase_atr_mult: float = 0.35
     short_entry_expiry_min_bars: int = 2
@@ -242,6 +246,17 @@ class Settings(BaseSettings):
     no_chase_near_level_atr_mult: float = 0.75  # 0.5~1.0 之間,預設 0.75
     opposing_zone_hard_gate_atr_mult: float = 0.75
     breakout_close_buffer_atr_mult: float = 0.10
+    # Closed-candle wick rejection; centrally configurable and ATR-normalized.
+    wick_rejection_lookback_bars: int = 6
+    wick_repeated_min_count: int = 2
+    wick_ratio_threshold: float = 0.40
+    wick_atr_ratio_threshold: float = 0.22
+    wick_close_from_extreme_atr: float = 0.12
+    wick_min_volume_ratio: float = 0.35
+    wick_cluster_tolerance_atr: float = 0.35
+    wick_breakout_buffer_atr: float = 0.10
+    wick_recency_decay: float = 0.82
+    wick_rejection_max_penalty: int = 35
 
     # ── 事件風控 ──
     event_lockout_minutes: int = 30
