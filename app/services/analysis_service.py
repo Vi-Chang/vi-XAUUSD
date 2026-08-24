@@ -181,6 +181,8 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
 
     dfs_all = {tf: candles_to_df(c) for tf, c in candles.items()}
     dfs_closed = {tf: candles_to_df(c, closed_only=True) for tf, c in candles.items()}
+    from app.services.closed_candle_service import canonical_closed_candles
+    closed_candles = canonical_closed_candles(candles, decision_time=now)
 
     # ── 2. 指標(以已收線資料為準)──
     ind: dict[str, dict] = {}
@@ -205,7 +207,9 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
             value = computed.iloc[-3].get("macd_hist")
             ind[tf]["macd_hist_prev2"] = (
                 None if value is None or pd.isna(value) else round(float(value), 4))
-        closed_times[tf] = df.index[-1].isoformat()
+        canonical_candle = closed_candles.get(tf) or {}
+        if canonical_candle.get("available"):
+            closed_times[tf] = str(canonical_candle["close_time"])
     atr15 = ind.get("15M", {}).get("atr14") or (tick.mid * 0.001)
 
     # ── 3. 事件風險(MVP:manual fallback)──
@@ -463,7 +467,15 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
                 risk_release_condition=(normalized.invalidationConditions[0].message
                                         if normalized.invalidationConditions else
                                         "等待短線動能與已收盤結構恢復一致。"),
-                data_timestamp=normalized.marketDataTimestamp)
+                data_timestamp=normalized.marketDataTimestamp,
+                positions=[{
+                    "position_id": str(item.get("position_id") or item.get("ticket") or index),
+                    "side": item.get("side"), "entry_price": item.get("entry_price"),
+                    "position_size": item.get("lot_size"),
+                    "position_class": item.get("position_class") or "CORE",
+                    "stop_loss": item.get("stop_loss"),
+                } for index, item in enumerate(
+                    [position_view(raw, tick.mid) for raw in open_positions])])
             if result.decision.action in ("WATCH", "PREPARE_LONG", "PREPARE_SHORT"):
                 result.decision.action = "MANAGE"
                 result.decision.reason = ("你手上已經有單了,先顧好這張單、別急著找新的。"
@@ -551,7 +563,8 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
     # entry invalidation, or trade-cycle state.
     from app.services.market_monitor_service import evaluate_market_monitors
     monitors = evaluate_market_monitors(
-        result.model_dump(), m15_closed=dfs_closed.get("15M"),
+        {**result.model_dump(), "closed_candles": closed_candles},
+        m15_closed=dfs_closed.get("15M"),
         h1_closed=dfs_closed.get("1H"), h4_closed=dfs_closed.get("4H"),
         indicators=ind)
     result.hypothetical_exit_advisor = monitors["hypothetical_exit_advisor"]
@@ -565,6 +578,7 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
     result.wick_rejection_engine = monitors["wick_rejection_engine"]
     result.decision_assistant = monitors["decision_assistant"]
     result.final_decision_state = monitors["final_decision_state"]
+    result.closed_candles = closed_candles
     from app.engines.realtime_presentation import build_realtime_presentation
     result.realtime_presentation = build_realtime_presentation(
         result.model_dump(), price=tick.mid, quote_time=tick.quote_time.isoformat(), now=now)

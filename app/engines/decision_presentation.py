@@ -94,7 +94,7 @@ def build_decision_presentation(event: dict) -> dict:
         action, tone = "資料過期，暫停交易。", "danger"
     else:
         action, tone = str(event.get("flatAction") or "等待新的確認條件。"), "neutral"
-    title = titles.get(state, "⚪【市場決策更新】")
+    title = titles.get(state, "⚪【市場方向暫無法確認】")
     if state.endswith("READY") and not bool(event.get("canEnter")):
         title = ("🟡【空方劇本已確認｜等待可執行價格】"
                  if direction == "SHORT" else
@@ -122,6 +122,17 @@ def _local_time(raw: str) -> str:
         ).strftime("%Y-%m-%d %H:%M")
     except ValueError:
         return raw or "未知"
+
+
+def _closed_candle_text(candle: dict) -> str:
+    if not candle.get("available"):
+        return f"不可用（{candle.get('error_reason') or 'UNKNOWN'}）"
+    try:
+        opened = datetime.fromisoformat(str(candle["open_time"]).replace("Z", "+00:00")).astimezone(TAIPEI)
+        closed = datetime.fromisoformat(str(candle["close_time"]).replace("Z", "+00:00")).astimezone(TAIPEI)
+        return f"{opened:%H:%M}–{closed:%H:%M}｜收盤 {float(candle['close_price']):.2f}"
+    except (KeyError, TypeError, ValueError):
+        return "不可用（PARSE_ERROR）"
 
 
 def format_decision_message(event: dict) -> str:
@@ -175,7 +186,9 @@ def format_decision_message(event: dict) -> str:
         if state == "REPEATED_LOWER_WICK_REJECTION":
             return ("⚠️【XAUUSD｜15M 下方連續出現承接】\n"
                     f"區域：{range_text}\n空方動能可能仍偏弱，但價格尚未跌破承接區。\n目前：不追空。")
-    if canonical_type == "MARKET_BEHAVIOR_CHANGED":
+    canonical = event.get("canonicalDecision") or {}
+    if canonical_type == "MARKET_BEHAVIOR_CHANGED" and str(
+            canonical.get("notificationRoute") or "NEW_ENTRY") != "POSITION_MANAGEMENT":
         labels = {
             "STRONG_RISE": "急漲", "SLOW_RISE": "緩步上升", "RANGE": "盤整",
             "PULLBACK": "多頭回檔", "SLOW_BEARISH_DRIFT": "緩步下降",
@@ -195,15 +208,38 @@ def format_decision_message(event: dict) -> str:
             f"信心分數：{event.get('behaviorConfidence') or 0}/100",
             f"現在：{action}",
         ])
-    canonical = event.get("canonicalDecision") or {}
-    if canonical and canonical_type in {
-            "ENTRY_READY", "CANDLE_FINALIZED", "WAIT_RETEST", "ENTRY_APPROACHING",
-            "RETRACE_APPROACHING", "RETRACE_ZONE_ENTERED", "SETUP_WEAKENING",
-            "OPPORTUNITY_STATE_CHANGED"}:
+    if canonical:
         entry = canonical.get("newEntryDecision") or {}
         trigger = canonical.get("canonicalNextTrigger") or {}
         position = canonical.get("positionManagement") or {}
+        route = str(canonical.get("notificationRoute") or "NEW_ENTRY")
+        completeness = canonical.get("decisionCompleteness") or {}
+        candle = canonical.get("closedCandle") or {}
         action = str(canonical.get("primaryAction") or "WAIT")
+        if completeness and not completeness.get("valid") and route != "POSITION_MANAGEMENT":
+            return ("⚠️【XAUUSD 決策資料不完整】\n"
+                    "暫停交易判斷。\n"
+                    f"原因：{'、'.join(completeness.get('errors') or ['UNKNOWN'])}")
+        if route == "POSITION_MANAGEMENT":
+            lines = ["🔵【XAUUSD 持倉管理】",
+                     f"現價：{float(event.get('currentPrice') or position.get('currentPrice') or 0):.2f}"]
+            for item in position.get("perPositionDecisions") or []:
+                side = "多單" if item.get("side") == "LONG" else "空單"
+                lines.extend([
+                    f"{side} {item.get('positionClass') or 'CORE'}｜成本 {item.get('actualEntryPrice')}｜數量 {item.get('actualSize')}",
+                    f"目前動作：{item.get('positionAction') or position.get('action') or 'HOLD'}",
+                    f"短線持倉防守：{item.get('tacticalDefenseLevel') or '—'}",
+                    f"大結構失效：{item.get('structuralInvalidationLevel') or '—'}",
+                ])
+            if not candle.get("available"):
+                lines.append(f"⚠️ 已收15M資料缺口：{candle.get('error_reason') or 'UNKNOWN'}；硬停損與即時風控仍持續。")
+            else:
+                lines.append(f"最新已收15M：{_closed_candle_text(candle)}")
+            lines.extend([
+                f"新開部位：{entry.get('action') or 'WAIT'}，{'可評估' if entry.get('canEnter') else '不追價／不加碼'}。",
+                "主通知已依實際持倉切換為持倉管理。",
+            ])
+            return "\n".join(lines)
         title = ("🟢【XAUUSD｜現在可以進場】" if action in {"BUY", "SELL"}
                  else "🟡【XAUUSD｜現在先不要進場】")
         lines = [title, f"現價：{float(event.get('currentPrice') or 0):.2f}",
@@ -233,7 +269,7 @@ def format_decision_message(event: dict) -> str:
             lines.append(
                 f"持倉：{position.get('actualSide')} 成本 {position.get('actualEntryPrice')}，"
                 f"目前動作 {position.get('action')}")
-        lines.append(f"收盤確認來源：最新已收 15M {canonical.get('lastClosedCandleTime') or '—'}")
+        lines.append(f"收盤確認來源：最新已收15M {_closed_candle_text(candle) if candle else canonical.get('lastClosedCandleTime') or '—'}")
         return "\n".join(lines)
     if canonical_type == "DATA_RECOVERED":
         closed = event.get("latestClosedCandlePrice")

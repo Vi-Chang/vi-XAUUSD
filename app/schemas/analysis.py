@@ -203,6 +203,7 @@ class PositionManagement(BaseModel):
     account_risk: str = ""
     risk_release_condition: str = ""
     data_timestamp: str = ""
+    positions: list[dict] = Field(default_factory=list)
 
 
 DecisionAction = Literal[
@@ -548,6 +549,7 @@ class AnalysisResult(BaseModel):
     current_price: CurrentPrice = CurrentPrice()
     data_quality: DataQuality = DataQuality()
     freshness_state: dict = Field(default_factory=dict)
+    closed_candles: dict = Field(default_factory=dict)
     realtime_presentation: dict = Field(default_factory=dict)
     event_risk: EventRisk = EventRisk()
     cross_market_context: CrossMarketContext = CrossMarketContext()

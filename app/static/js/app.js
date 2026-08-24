@@ -555,8 +555,11 @@ function renderFinalDecision(finalState, snapshot) {
   $("quick-wick-rejection").textContent = wickText;
   $("quick-final-state").textContent = canonical.primaryAction || "WAIT";
   $("quick-flat-action").textContent = newEntry.action || "WAIT";
+  const positionDecisions = position.perPositionDecisions || [];
   $("quick-position-action").textContent = position.positionKnown
-    ? `${position.actualSide || "持倉"} 成本 ${position.actualEntryPrice == null ? "–" : fmt(position.actualEntryPrice)}｜${position.action || "HOLD"}`
+    ? (positionDecisions.length
+      ? positionDecisions.map((p) => `${p.side || "持倉"} 成本 ${p.actualEntryPrice == null ? "–" : fmt(p.actualEntryPrice)}｜${p.positionAction || "HOLD"}`).join("；")
+      : `${position.actualSide || "持倉"} 成本 ${position.actualEntryPrice == null ? "–" : fmt(position.actualEntryPrice)}｜${position.action || "HOLD"}`)
     : (position.message || "未取得實際持倉資料");
   $("quick-trigger").textContent = trigger.label || "等待新結構形成";
   const marketFresh = ((realtime.freshnessState || finalState.freshnessState || {}).marketFreshness || {});
@@ -564,8 +567,14 @@ function renderFinalDecision(finalState, snapshot) {
   const livePrice = realtime.currentPrice ?? finalState.source_price;
   $("quick-live-price").textContent = livePrice == null ? "–" : fmt(livePrice);
   $("quick-live-time").textContent = fmtTs(realtime.quoteTimeUtc || finalState.quote_time);
-  $("quick-closed-price").textContent = realtime.latestClosed15mPrice == null ? (finalState.latest_closed_price == null ? "–" : fmt(finalState.latest_closed_price)) : fmt(realtime.latestClosed15mPrice);
-  $("quick-closed-time").textContent = fmtTs(realtime.latestClosed15mTimeUtc || finalState.last_closed_candle_time);
+  const closedCandle = canonical.closedCandle || {};
+  $("quick-closed-price").textContent = closedCandle.available
+    ? fmt(closedCandle.close_price)
+    : (realtime.latestClosed15mPrice == null ? (finalState.latest_closed_price == null ? "–" : fmt(finalState.latest_closed_price)) : fmt(realtime.latestClosed15mPrice));
+  const closedRange = closedCandle.available && closedCandle.open_time && closedCandle.close_time
+    ? `${fmtTs(closedCandle.open_time)}–${new Date(closedCandle.close_time).toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit", hour12: false })}`
+    : fmtTs(realtime.latestClosed15mTimeUtc || finalState.last_closed_candle_time);
+  $("quick-closed-time").textContent = closedRange;
   const confirmationStatus = canonical.confirmationStatus || "NOT_REACHED";
   $("quick-candle-state").textContent = confirmationStatus === "CLOSED_CONFIRMED" ? "收盤已確認" : confirmationStatus === "IN_PROGRESS" ? "盤中已越過，尚未收盤" : confirmationStatus === "FAILED" ? "確認失敗" : "尚未確認";
   updateRealtimeFacts(Number(livePrice));
@@ -608,7 +617,7 @@ function renderDecisionAssistant(v3, finalDecision = {}) {
     `快速收復：${breakQuality.fastReclaim ? "是（疑似假突破，不代表反向行情已成立）" : "否"}`,
   ] : [];
   const profitItems = ((canonical.positionManagement || {}).perPositionDecisions || []).map((p) =>
-    `${p.position_class} ${p.side}｜浮盈 ${Number(p.current_unrealized_profit || 0).toFixed(2)}｜最高 ${Number(p.max_unrealized_profit || 0).toFixed(2)}｜回吐 ${(Number(p.profit_giveback_ratio || 0) * 100).toFixed(0)}%｜${p.position_action}`
+    `${p.positionClass || p.position_class || "CORE"} ${p.side}｜浮盈 ${Number(p.unrealizedPnl ?? p.current_unrealized_profit ?? 0).toFixed(2)}｜最高 ${Number(p.peakProfit ?? p.max_unrealized_profit ?? 0).toFixed(2)}｜回吐 ${(Number(p.givebackRatio ?? p.profit_giveback_ratio ?? 0) * 100).toFixed(0)}%｜${p.positionAction || p.position_action || "HOLD"}`
   );
   const items = [ ...opportunityItems, ...breakItems, ...profitItems, ...(v3.regimeReasons || []), ...((v3.why || {}).technical || []), ...((v3.why || {}).blocked || []) ];
   $("v3-why-list").replaceChildren(...items.slice(0, 10).map((text) => {
