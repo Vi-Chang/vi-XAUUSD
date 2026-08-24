@@ -42,7 +42,10 @@ def _candidate_view(candidate: dict, current: float | None, minimum_rr: float) -
     evaluation_entry = (current if in_zone else (low + high) / 2
                         if low is not None and high is not None else current)
     rr = _number(candidate.get("risk_reward"))
-    if evaluation_entry is not None and stop is not None and target is not None:
+    estimated_rr = _number(candidate.get("estimated_risk_reward"))
+    lifecycle = str(candidate.get("lifecycle_state") or "WATCHING")
+    if (lifecycle == "ENTRY_READY" and in_zone and evaluation_entry is not None
+            and stop is not None and target is not None):
         risk = (evaluation_entry - stop if direction == "LONG"
                 else stop - evaluation_entry)
         reward = (target - evaluation_entry if direction == "LONG"
@@ -54,10 +57,12 @@ def _candidate_view(candidate: dict, current: float | None, minimum_rr: float) -
                     (direction == "SHORT" and current < chase)))
     if chased:
         quality = "CHASE"
-    elif rr is None or rr < minimum_rr:
+    elif lifecycle == "ENTRY_READY" and (rr is None or rr < minimum_rr):
         quality = "POOR"
-    elif in_zone and str(candidate.get("lifecycle_state")) == "ENTRY_READY":
+    elif in_zone and lifecycle == "ENTRY_READY" and rr is not None:
         quality = "IDEAL"
+    elif (estimated_rr or 0) >= minimum_rr:
+        quality = "ACCEPTABLE"
     else:
         quality = "ACCEPTABLE"
     route = _route(candidate)
@@ -78,17 +83,19 @@ def _candidate_view(candidate: dict, current: float | None, minimum_rr: float) -
     return {
         "setupId": str(candidate.get("scenario_id") or ""),
         "setupVersion": int(candidate.get("scenario_version") or 1),
+        "opportunityType": str(candidate.get("setup_type") or ""),
         "route": route, "direction": direction,
         "confirmationLevel": trigger,
         "confirmationSource": "CLOSED_CANDLE",
         "entryZone": {"low": low, "high": high}, "entryZoneLabel": zone_label,
         "entryQuality": quality, "tacticalStop": stop,
-        "targets": targets, "riskReward": rr,
+        "targets": targets, "estimatedRR": estimated_rr,
+        "executableRR": rr, "riskReward": rr,
         "rrPassed": rr is not None and rr >= minimum_rr,
         "requiredEntryPriceForMinRR": required_entry_for_rr(
             target=target, stop=stop, minimum_rr=minimum_rr),
         "chaseLimit": chase, "canEnter": (
-            quality == "IDEAL" and str(candidate.get("lifecycle_state")) == "ENTRY_READY"),
+            quality == "IDEAL" and lifecycle == "ENTRY_READY" and rr is not None),
         "blockedReasons": list(candidate.get("reason_codes") or []),
         "setupState": setup_state,
         "active": raw_state not in TERMINAL_SETUP_STATES,
@@ -96,7 +103,7 @@ def _candidate_view(candidate: dict, current: float | None, minimum_rr: float) -
 
 
 def _setup_score(item: dict, bias: str) -> int:
-    rr = float(item.get("riskReward") or 0)
+    rr = float(item.get("executableRR") or item.get("estimatedRR") or 0)
     rr_score = min(100.0, rr / 3.0 * 100.0)
     quality_score = {"IDEAL": 100, "ACCEPTABLE": 70, "POOR": 25,
                      "CHASE": 0, "INVALID": 0}.get(str(item.get("entryQuality")), 40)
@@ -121,6 +128,10 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
     minimum_rr = float(settings.decision_assistant_min_rr)
     health = evaluate_data_health(data)
     normalized = data.get("normalized_analysis") or {}
+    opportunity_engine = data.get("entry_opportunity_engine") or {}
+    raw_opportunities = opportunity_engine.get("opportunities") or []
+    dynamic_profit = data.get("dynamic_profit_protection") or {}
+    break_lifecycle = data.get("break_lifecycle_engine") or {}
     current = _number(health.get("currentPrice"))
     all_candidates = [_candidate_view(item, current, minimum_rr)
                       for item in final.get("signalCandidates") or []]
@@ -282,6 +293,12 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
         reason_codes.append("MOMENTUM_PRICE_CONFLICT")
     reason_codes = list(dict.fromkeys(reason_codes))[:3]
     setup_state = str(selected.get("setupState") or "WATCHING")
+    primary_opportunity = opportunity_engine.get("bestReachableOpportunity") or {}
+    preferred_route = str(primary_opportunity.get("type") or "") or (
+        "PULLBACK" if best_pullback and
+        (best_pullback.get("riskReward") or -1) >
+        ((best_breakout or {}).get("riskReward") or -1)
+        else "BREAKOUT" if best_breakout else None)
     return {
         "schemaVersion": "canonical-trading-decision-v2",
         "timestamp": decision_timestamp,
@@ -313,6 +330,10 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
         "entryQuality": selected.get("entryQuality") if selected else "INVALID",
         "reasonCodes": reason_codes,
         "primarySetup": selected or None,
+        "primaryOpportunityId": opportunity_engine.get("primaryOpportunityId"),
+        "alternativeOpportunityIds": opportunity_engine.get("alternativeOpportunityIds") or [],
+        "entryOpportunities": opportunity_engine.get("opportunities") or [],
+        "bestReachableOpportunity": opportunity_engine.get("bestReachableOpportunity"),
         "alternativeSetups": [item for item in ranked
                               if item.get("setupId") != selected.get("setupId")],
         "archivedSetups": archived_candidates,
@@ -357,6 +378,15 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
                                            else trigger_level if direction == "LONG" else None),
             "next_bearish_confirmation": max(support_levels) if support_levels else None,
         },
+        "breakLifecycle": break_lifecycle,
+        "breakQuality": {
+            "state": break_lifecycle.get("state"),
+            "score": break_lifecycle.get("break_confidence"),
+            "followThrough": break_lifecycle.get("follow_through"),
+            "fastReclaim": break_lifecycle.get("state") in {
+                "FAILED_BREAKDOWN", "FAILED_BREAKOUT"},
+            "reclaimScore": break_lifecycle.get("reclaim_confidence"),
+        },
         "dataStale": stale,
         "newEntryDecision": {
             "action": entry_action, "canEnter": can_enter, "direction": direction,
@@ -367,12 +397,16 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
                             "NO_ENTRY_RR" if selected and not rr_ok else
                             "ENTRY_READY" if can_enter else "WAIT_CONFIRMATION"),
             "selectedSetup": selected or None,
+            "primaryOpportunityId": opportunity_engine.get("primaryOpportunityId"),
+            "shallowPullback": next((x for x in raw_opportunities
+                                     if x.get("type") == "SHALLOW_PULLBACK"), None),
+            "deepPullback": next((x for x in raw_opportunities
+                                  if x.get("type") == "DEEP_PULLBACK"), None),
+            "breakoutRetest": next((x for x in raw_opportunities
+                                    if x.get("type") == "BREAKOUT_RETEST"), None),
             "pullbackLong": best_pullback,
             "breakoutLong": best_breakout,
-            "preferredRoute": ("PULLBACK" if best_pullback and
-                               (best_pullback.get("riskReward") or -1) >
-                               ((best_breakout or {}).get("riskReward") or -1)
-                               else "BREAKOUT" if best_breakout else None),
+            "preferredRoute": preferred_route,
         },
         "positionManagement": {
             "positionKnown": known,
@@ -390,6 +424,11 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
             "structuralInvalidation": normalized.get("structuralInvalidationLevel"),
             "structuralInvalidationNote": normalized.get("structuralInvalidationNote") or "",
             "targets": selected.get("targets") if selected else [],
+            "perPositionDecisions": dynamic_profit.get("positions") or [],
+            "hardRiskStop": ((dynamic_profit.get("positions") or [{}])[0]).get(
+                "hard_risk_stop") if dynamic_profit.get("positions") else None,
+            "structuralExitConfirmation": ((dynamic_profit.get("positions") or [{}])[0]).get(
+                "structural_exit_confirmation") if dynamic_profit.get("positions") else None,
         },
         "reversalProtection": {
             "cooldownActive": bool(tp_facts),

@@ -128,6 +128,13 @@ def evaluate_market_behavior(*, m15: pd.DataFrame | None, h1: pd.DataFrame | Non
                              previous: dict | None = None) -> tuple[dict, list[dict]]:
     previous = previous or {}
     normalized = data.get("normalized_analysis") or {}
+    break_state = data.get("break_lifecycle_engine") or {}
+    normalized = dict(normalized)
+    if break_state.get("state") in {"FAILED_BREAKDOWN", "LIQUIDITY_SWEEP_CANDIDATE"}:
+        normalized["supportState"] = "failed_breakdown"
+        normalized["higherTimeframeReversalConfirmed"] = False
+    elif break_state.get("state") == "BREAK_CONFIRMATION_PENDING":
+        normalized["supportState"] = "testing_support"
     bias = str(normalized.get("trendBias") or "neutral").upper()
     results = {"15M": _classify(m15, bias=bias, normalized=normalized),
                "1H": _classify(h1, bias=bias, normalized={}),
@@ -191,6 +198,9 @@ def evaluate_market_behavior(*, m15: pd.DataFrame | None, h1: pd.DataFrame | Non
         "wick_rejection": rejection,
         "pending_behavior": pending, "pending_count": count,
         "last_evaluated_candle": candle_time,
+        "market_regime": break_state.get("market_regime") or "NORMAL",
+        "break_lifecycle": break_state,
+        "position_size_multiplier": break_state.get("position_size_multiplier", 1.0),
     }
     events = []
     if changed:

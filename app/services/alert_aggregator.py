@@ -107,7 +107,7 @@ def notification_fingerprint_parts(event: dict) -> dict[str, str]:
     """Stable decision identity; excludes quote time, price, text and dataVersion."""
     wrapper = event.get("breakoutSetupEvent") or event.get("trendContinuationEvent") or {}
     setup = wrapper.get("setup") or {}
-    scenario_id = (setup.get("setupId") or wrapper.get("setupId")
+    scenario_id = (event.get("opportunityId") or setup.get("setupId") or wrapper.get("setupId")
                    or event.get("scenario_id") or event.get("setupId") or "")
     status = (setup.get("status") or wrapper.get("currentState")
               or event.get("currentState") or "WAIT")
@@ -137,6 +137,10 @@ def notification_fingerprint_parts(event: dict) -> dict[str, str]:
         "invalidationPrice": _price(invalidation),
         "sourceCandleTime": str(source_time),
     }
+    if str(event.get("event_type") or "") in {"DATA_STALE", "DATA_RECOVERED"}:
+        # Freshness alerts are transitions, not candle-scoped market setups.
+        parts["scenarioId"] = "DATA_HEALTH"
+        parts["sourceCandleTime"] = ""
     if pullback_zone:
         parts["pullbackZone"] = pullback_zone
     return parts
@@ -151,6 +155,16 @@ def notification_fingerprint(event: dict) -> str:
         "invalidationPrice": settings.telegram_invalidation_change_min_delta,
     }
     stable = {**parts, "eventType": str(event.get("event_type") or "DECISION_UPDATED")}
+    wrapper = event.get("breakoutSetupEvent") or event.get("trendContinuationEvent") or {}
+    setup = wrapper.get("setup") or {}
+    entry_zone = "-".join(filter(None, (
+        _price(setup.get("entryZoneLow") if setup.get("entryZoneLow") is not None
+               else (event.get("entryZone") or {}).get("low")),
+        _price(setup.get("entryZoneHigh") if setup.get("entryZoneHigh") is not None
+               else (event.get("entryZone") or {}).get("high")),
+    )))
+    if entry_zone:
+        stable["entryZone"] = entry_zone
     for field, step in steps.items():
         value = _number(parts.get(field))
         if value is not None and step > 0:
@@ -159,6 +173,11 @@ def notification_fingerprint(event: dict) -> str:
         values = str(parts["pullbackZone"]).split("-")
         step = settings.telegram_entry_zone_change_min_delta
         stable["pullbackZone"] = "-".join(
+            f"{math.floor(float(value) / step) * step:.2f}" for value in values)
+    if stable.get("entryZone"):
+        values = str(stable["entryZone"]).split("-")
+        step = settings.telegram_entry_zone_change_min_delta
+        stable["entryZone"] = "-".join(
             f"{math.floor(float(value) / step) * step:.2f}" for value in values)
     raw = "|".join(stable.values())
     return hashlib.sha256(raw.encode()).hexdigest()

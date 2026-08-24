@@ -77,8 +77,9 @@ def publish_current_final_decision(symbol: str, decision: dict) -> tuple[dict, b
             event["decisionId"], event["decisionVersion"] = decision_id, version
             event["supersedesDecisionId"] = supersedes
             event["eventId"] = hashlib.sha256(
-                f"{decision_id}|{event.get('finalDecision')}|"
-                f"{event.get('candleCloseTime')}".encode()).hexdigest()[:32]
+                f"{decision_id}|{event.get('event_type')}|{event.get('setupId')}|"
+                f"{event.get('currentState')}|{event.get('candleCloseTime')}"
+                .encode()).hexdigest()[:32]
         if row is None:
             row = CurrentFinalDecision(
                 symbol=symbol, decision_id=decision_id, decision_version=version,

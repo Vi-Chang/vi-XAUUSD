@@ -592,9 +592,25 @@ function renderDecisionAssistant(v3, finalDecision = {}) {
   $("v3-entry-zone").textContent = canonicalZone.low != null && canonicalZone.high != null ? `${fmt(canonicalZone.low)}–${fmt(canonicalZone.high)}` : "尚未形成";
   $("v3-invalidation").textContent = selected.tacticalStop == null ? "尚未形成" : fmt(selected.tacticalStop);
   $("v3-target").textContent = (selected.targets || []).length ? fmt(selected.targets[0]) : "尚未形成";
-  $("v3-quality").textContent = `${v3.entryQualityGrade}級（${v3.entryQualityScore}分）｜RR ${Number(selected.riskReward || 0).toFixed(2)}`;
+  const rrText = selected.executableRR != null
+    ? `可執行 RR ${Number(selected.executableRR).toFixed(2)}`
+    : `預估 RR ${selected.estimatedRR == null ? "–" : Number(selected.estimatedRR).toFixed(2)}`;
+  $("v3-quality").textContent = `${v3.entryQualityGrade}級（${v3.entryQualityScore}分）｜${rrText}`;
   $("v3-trigger").textContent = (canonical.canonicalNextTrigger || {}).label || v3.nextTrigger || "等待新結構";
-  const items = [ ...(v3.regimeReasons || []), ...((v3.why || {}).technical || []), ...((v3.why || {}).blocked || []) ];
+  const opportunityItems = (canonical.entryOpportunities || []).slice(0, 3).map((op, index) => {
+    const z = op.entry_zone || {};
+    const name = op.type === "SHALLOW_PULLBACK" ? "淺回踩" : op.type === "DEEP_PULLBACK" ? "深回踩" : "突破回測";
+    return `${index === 0 ? "首選" : "備選"} ${name}：${fmt(z.lower)}–${fmt(z.upper)}｜預估 RR ${op.estimated_rr == null ? "–" : Number(op.estimated_rr).toFixed(2)}`;
+  });
+  const breakQuality = canonical.breakQuality || {};
+  const breakItems = breakQuality.state ? [
+    `突破狀態：${breakQuality.state}｜品質 ${breakQuality.score ?? 0}/100｜延續 ${breakQuality.followThrough || "不足"}`,
+    `快速收復：${breakQuality.fastReclaim ? "是（疑似假突破，不代表反向行情已成立）" : "否"}`,
+  ] : [];
+  const profitItems = ((canonical.positionManagement || {}).perPositionDecisions || []).map((p) =>
+    `${p.position_class} ${p.side}｜浮盈 ${Number(p.current_unrealized_profit || 0).toFixed(2)}｜最高 ${Number(p.max_unrealized_profit || 0).toFixed(2)}｜回吐 ${(Number(p.profit_giveback_ratio || 0) * 100).toFixed(0)}%｜${p.position_action}`
+  );
+  const items = [ ...opportunityItems, ...breakItems, ...profitItems, ...(v3.regimeReasons || []), ...((v3.why || {}).technical || []), ...((v3.why || {}).blocked || []) ];
   $("v3-why-list").replaceChildren(...items.slice(0, 10).map((text) => {
     const li = document.createElement("li"); li.textContent = text; return li;
   }));

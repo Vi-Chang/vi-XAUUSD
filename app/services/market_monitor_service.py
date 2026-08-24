@@ -26,8 +26,12 @@ from app.engines.hypothetical_exit_advisor import (
     build_hypothetical_exit_plans,
     evaluate_hypothetical_exits,
 )
+from app.engines.break_lifecycle import evaluate_break_lifecycle
+from app.engines.dynamic_profit_protection import evaluate_dynamic_profit
+from app.engines.entry_opportunity import evaluate_entry_opportunities
 from app.engines.market_behavior import evaluate_market_behavior
 from app.engines.regime_state_machine import evaluate_regime_state
+from app.engines.signal_lifecycle import evaluate_signal_lifecycle
 from app.engines.trade_plan import evaluate_trade_plans, migrate_legacy_virtual_profit
 from app.engines.trend_continuation_engine import evaluate_trend_continuation
 from app.engines.virtual_profit_tracker import evaluate_virtual_profit
@@ -188,10 +192,19 @@ def evaluate_market_monitors(
             key: float(row[key]) for key in ("open", "high", "low", "close")
             if key in row and pd.notna(row[key])
         }
+    break_state, break_events = evaluate_break_lifecycle(
+        m15_closed, data=data, previous=_load(symbol, "break_lifecycle"))
+    _save(symbol, "break_lifecycle", break_state)
     breakout_setup_state, breakout_setup_events = evaluate_breakout_setups(
         {**data, "entry_engine": entry, "latest_closed_15m": latest_closed_15m},
         stored_breakout_setups)
     _save(symbol, "breakout_setups", breakout_setup_state)
+    opportunity_state, opportunity_events = evaluate_entry_opportunities(
+        {**data, "latest_closed_15m": latest_closed_15m,
+         "breakout_setup_manager": breakout_setup_state,
+         "break_lifecycle_engine": break_state},
+        _load(symbol, "entry_opportunities"))
+    _save(symbol, "entry_opportunities", opportunity_state)
     continuation_state, continuation_events = evaluate_trend_continuation(
         {**data, "breakout_setup_manager": breakout_setup_state},
         m15=m15_closed, h1=h1_closed, h4=h4_closed,
@@ -205,6 +218,8 @@ def evaluate_market_monitors(
         "trade_plan_manager": {**trade_plan_state, "events": trade_plan_events},
         "breakout_setup_manager": {
             **breakout_setup_state, "events": breakout_setup_events},
+        "entry_opportunity_engine": {
+            **opportunity_state, "events": opportunity_events},
         "trend_continuation_engine": {
             **continuation_state, "events": continuation_events},
         "double_sweep_statistical": {
@@ -214,12 +229,20 @@ def evaluate_market_monitors(
         m15_closed, data=data, previous=_load(symbol, "wick_rejection"))
     _save(symbol, "wick_rejection", wick_state)
     monitor_result["wick_rejection_engine"] = wick_state
-    behavior_input = {**data, "wick_rejection_engine": wick_state}
+    monitor_result["break_lifecycle_engine"] = break_state
+    behavior_input = {**data, "wick_rejection_engine": wick_state,
+                      "break_lifecycle_engine": break_state}
     behavior_state, behavior_events = evaluate_market_behavior(
         m15=m15_closed, h1=h1_closed, h4=h4_closed, data=behavior_input,
         previous=_load(symbol, "market_behavior"))
     _save(symbol, "market_behavior", behavior_state)
     monitor_result["market_behavior_engine"] = behavior_state
+    profit_state, profit_events = evaluate_dynamic_profit(
+        data={**data, **monitor_result, "indicator_snapshot": indicators}, frame=m15_closed,
+        trade_plans=trade_plan_state, break_state=break_state,
+        previous=_load(symbol, "dynamic_profit"))
+    _save(symbol, "dynamic_profit", profit_state)
+    monitor_result["dynamic_profit_protection"] = profit_state
     regime_state, regime_events = evaluate_regime_state(
         data, indicators=indicators, previous=_load(symbol, "regime_state"))
     _save(symbol, "regime_state", regime_state)
@@ -232,8 +255,8 @@ def evaluate_market_monitors(
     signal_facts = (exit_events + ([breakout_event] if breakout_event else []) + wick_events
                     + virtual_events + trade_plan_events + breakout_setup_events
                     + continuation_events + regime_events + behavior_events
-                    + assistant_events)
-    signal_facts += double_sweep_events
+                    + assistant_events + opportunity_events)
+    signal_facts += double_sweep_events + break_events + profit_events
     final_input = {**data, **monitor_result, "signal_facts": signal_facts}
     final_state, final_events = evaluate_final_decision(
         final_input, _load(symbol, "final_decision")
@@ -244,6 +267,22 @@ def evaluate_market_monitors(
     for event in final_events:
         event["canonicalDecision"] = canonical
         event["nextTriggerCondition"] = canonical["canonicalNextTrigger"]
+    lifecycle_input = {**final_state,
+                       "entryZone": final_state.get("entryZone") or canonical.get("entryZone"),
+                       "triggerLevel": (canonical.get("canonicalNextTrigger") or {}).get("level")
+                       if isinstance(canonical.get("canonicalNextTrigger"), dict) else None}
+    lifecycle_state, lifecycle_events = evaluate_signal_lifecycle(
+        lifecycle_input, _load(symbol, "signal_lifecycle"))
+    _save(symbol, "signal_lifecycle", lifecycle_state)
+    for event in lifecycle_events:
+        event.update({
+            "symbol": symbol, "decisionId": final_state.get("decisionId"),
+            "decisionVersion": final_state.get("decisionVersion"),
+            "dataVersion": int(data.get("version") or 0),
+            "marketState": lifecycle_state.get("bias"),
+            "canonicalDecision": canonical,
+        })
+    final_events.extend(lifecycle_events)
     final_state["events"] = final_events
     if final_events:
         final_state["latest_event"] = final_events[-1]
@@ -312,6 +351,18 @@ def evaluate_live_quote_state(
     if presentation["defenseState"] == "POSITION_DEFENSE_TRIGGERED":
         current["canEnter"] = False
         current["positionDefenseState"] = "POSITION_DEFENSE_TRIGGERED"
+    lifecycle_state, lifecycle_events = evaluate_signal_lifecycle(
+        current, _load(symbol, "signal_lifecycle"), live_quote=True)
+    _save(symbol, "signal_lifecycle", lifecycle_state)
+    for event in lifecycle_events:
+        event.update({
+            "symbol": symbol, "decisionId": current.get("decisionId"),
+            "decisionVersion": current.get("decisionVersion"),
+            "dataVersion": int(candidate.get("version") or 0),
+            "marketState": lifecycle_state.get("bias"),
+        })
+    events.extend(lifecycle_events)
+    current["events"] = events
     from app.services.current_decision_store import publish_current_final_decision
     current, published = publish_current_final_decision(symbol, current)
     events = list(current.get("events") or []) if published else []

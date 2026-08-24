@@ -257,6 +257,13 @@ class Settings(BaseSettings):
     wick_breakout_buffer_atr: float = 0.10
     wick_recency_decay: float = 0.82
     wick_rejection_max_penalty: int = 35
+    break_confirmation_threshold: int = 65
+    reclaim_confirmation_threshold: int = 60
+    break_follow_through_bars: int = 3
+    whipsaw_failed_break_count: int = 3
+    whipsaw_position_size_multiplier: float = 0.60
+    rapid_extension_atr_threshold: float = 1.50
+    take_profit_high_score: int = 65
 
     # ── 事件風控 ──
     event_lockout_minutes: int = 30
