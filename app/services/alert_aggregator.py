@@ -7,9 +7,10 @@ import math
 from app.config import get_settings
 
 ALERT_PRIORITY = {
-    "ENTRY_READY": 70, "EXIT_WARNING": 60, "MISSED_ENTRY": 50,
-    "SCENARIO_INVALIDATED": 40, "PULLBACK_ZONE_CREATED": 30,
-    "MEANINGFUL_SCENARIO_UPDATE": 20, "WAIT": 10,
+    "EXIT_WARNING": 100, "SCENARIO_INVALIDATED": 90, "ENTRY_READY": 80,
+    "WAIT_RETEST": 70, "SETUP_CONFIRMED": 60, "MISSED_ENTRY": 50,
+    "PULLBACK_ZONE_CREATED": 40, "MEANINGFUL_SCENARIO_UPDATE": 30,
+    "WATCHING": 20, "WAIT": 10,
 }
 
 
@@ -182,9 +183,15 @@ def alert_category(event: dict) -> str:
         return "MISSED_ENTRY"
     if state in {"EXPIRED", "SETUP_EXPIRED", "INVALIDATED", "PULLBACK_INVALIDATED"}:
         return "SCENARIO_INVALIDATED"
+    if state == "WAIT_RETEST":
+        return "WAIT_RETEST"
+    if state in {"SETUP_CONFIRMED", "BREAKOUT_CONFIRMED"}:
+        return "SETUP_CONFIRMED"
     if event_type == "PULLBACK_ZONE_UPDATED":
         return "PULLBACK_ZONE_CREATED"
-    if state.endswith("WATCH") or state.startswith("WAIT"):
+    if state.endswith("WATCH"):
+        return "WATCHING"
+    if state.startswith("WAIT"):
         return "WAIT"
     return "MEANINGFUL_SCENARIO_UPDATE"
 

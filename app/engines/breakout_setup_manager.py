@@ -325,17 +325,28 @@ def _evaluate_setup(setup: dict, data: dict) -> tuple[dict, list[dict]]:
         within_chase = (price <= float(result["maxChasePrice"]) if direction == "LONG"
                         else price >= float(result["maxChasePrice"]))
         in_entry = float(result["entryZoneLow"]) <= price <= float(result["entryZoneHigh"])
-        if (within_chase or in_entry) and _rr_ok(result) and normalized.get("marketDataStatus") == "GOOD":
+        if in_entry and within_chase and _rr_ok(result) and normalized.get("marketDataStatus") == "GOOD":
             move = abs(price - trigger)
             aggressive = move <= float(result.get("maxChaseDistance") or 0) * 0.45
             result.update(status="BREAKOUT_ENTRY_READY", entryType="BREAKOUT",
                           tradeState="ENTER", entryStyle=("AGGRESSIVE" if aggressive else "STANDARD"),
                           immediateEntry=True, entryReadyAt=now, blockedReason="")
         else:
-            result.update(status="WAIT_RETEST", tradeState="MISSED", blockedReason=(
-                f"突破已確認但超過追價上限；改等回踩 "
-                f"{_number(pullback_low):.2f}–{_number(pullback_high):.2f} 止跌確認"
-                if has_pullback else "突破已確認但超過追價上限；等待新結構"))
+            chased = (direction == "LONG" and price > float(result["maxChasePrice"])) or (
+                direction == "SHORT" and price < float(result["maxChasePrice"]))
+            if direction == "SHORT" and price > float(result["entryZoneHigh"]):
+                reason = "空方劇本已確認；現價高於原執行區，等待新的空方拒絕確認並重算候選進場"
+                next_status = "SETUP_CONFIRMED"
+            elif direction == "LONG" and price < float(result["entryZoneLow"]):
+                reason = "多方劇本已確認；現價低於原執行區，等待重新轉強並重算候選進場"
+                next_status = "SETUP_CONFIRMED"
+            else:
+                reason = (f"方向性追價界線已超過；改等回踩 "
+                          f"{_number(pullback_low):.2f}–{_number(pullback_high):.2f} 止跌確認"
+                          if chased and has_pullback else
+                          "交易劇本已確認，但價格不在可執行區；等待合理回踩")
+                next_status = "WAIT_RETEST"
+            result.update(status=next_status, tradeState="WAIT", blockedReason=reason)
     elif old in {"BREAKOUT_ENTRY_READY", "PULLBACK_ENTRY_READY"}:
         if result.get("tradeState") == "ENTER":
             result.update(tradeState="MANAGE", managementState="HOLD",

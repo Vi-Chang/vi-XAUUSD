@@ -12,6 +12,7 @@ from typing import Any, Literal, cast
 
 from app.config import get_settings
 from app.engines.data_health_gate import evaluate_data_health
+from app.engines.entry_location import classify_entry_location, stop_is_valid
 from app.engines.unified_decision_state import evaluate_unified_decision
 
 Direction = Literal["LONG", "SHORT", "NEUTRAL"]
@@ -228,7 +229,19 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
     rr = _number(assistant.get("rewardRiskRatio"))
     if rr is None and selected:
         rr = selected.risk_reward
-    distance_atr = float(assistant.get("distanceInAtr") or 0)
+    selected_zone = selected.entry_zone if selected else None
+    effective_chase_limit = selected.chase_limit if selected else None
+    if selected and selected_zone and effective_chase_limit is None:
+        chase_distance = settings.decision_assistant_missed_entry_atr * max(atr, 0.01)
+        effective_chase_limit = (selected_zone[1] + chase_distance
+                                 if selected.direction == "LONG"
+                                 else selected_zone[0] - chase_distance)
+    entry_location = (classify_entry_location(
+        selected.direction, current_price, selected_zone[0], selected_zone[1],
+        effective_chase_limit)
+        if selected and selected_zone else "NO_EXECUTABLE_ZONE")
+    valid_stop = (stop_is_valid(selected.direction, current_price, selected.invalidation_price)
+                  if selected else False)
     secondary: list[str] = []
     fact_types = {str(item.get("event_type") or "")
                   for item in data.get("signal_facts") or [] if isinstance(item, dict)}
@@ -248,20 +261,22 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
     elif (selected and selected.direction == "LONG"
           and behavior == "SLOW_BEARISH_DRIFT"):
         action, primary, risk_gate = "WAIT", "BEHAVIOR_WAIT_PULLBACK", "WAIT"
-    elif selected and selected.lifecycle_state == "ENTRY_READY" and bool(assistant.get("canEnter")):
+    elif str(assistant.get("regime")) in {"RANGE", "NO_EDGE", "REVERSAL_RISK"}:
+        action, primary, risk_gate = "NO_TRADE", "STRUCTURE_UNCLEAR", "NO_TRADE"
+    elif (selected and selected.lifecycle_state == "ENTRY_READY"
+          and bool(assistant.get("canEnter"))
+          and entry_location == "IN_EXECUTABLE_ZONE" and valid_stop):
         if rr is None or rr < settings.decision_assistant_min_rr:
             action, primary, risk_gate = "NO_TRADE", "RR_TOO_LOW", "RISK_BLOCK"
-        elif distance_atr >= settings.decision_assistant_missed_entry_atr:
-            action, primary, risk_gate = "NO_TRADE", "OVEREXTENDED", "RISK_BLOCK"
         else:
             action = "ENTER_LONG" if selected.direction == "LONG" else "ENTER_SHORT"
             primary, risk_gate = "ENTRY_READY", "ENTRY_READY"
+    elif selected and entry_location in {"CHASE_LONG", "CHASE_SHORT"}:
+        action, primary, risk_gate = "WAIT", "OVEREXTENDED", "WAIT_RETEST"
+    elif selected and selected.lifecycle_state in {"ENTRY_READY", "CONFIRMED", "WATCHING"}:
+        action, primary, risk_gate = "WAIT", "SETUP_CONFIRMED_WAIT_PRICE", "WAIT"
     elif rr is not None and rr < settings.decision_assistant_min_rr:
         action, primary, risk_gate = "NO_TRADE", "RR_TOO_LOW", "RISK_BLOCK"
-    elif distance_atr >= settings.decision_assistant_missed_entry_atr:
-        action, primary, risk_gate = "WAIT", "OVEREXTENDED", "ENTRY_APPROACHING"
-    elif str(assistant.get("regime")) in {"RANGE", "NO_EDGE", "REVERSAL_RISK"}:
-        action, primary, risk_gate = "NO_TRADE", "STRUCTURE_UNCLEAR", "NO_TRADE"
     else:
         action, primary, risk_gate = "WAIT", "WAIT_CONFIRMATION", "WAIT"
     if str(assistant.get("regime")) == "SHORT_WEAK_HTF_BULLISH":

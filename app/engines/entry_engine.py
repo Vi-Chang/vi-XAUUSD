@@ -9,6 +9,8 @@ from typing import Literal
 
 import pandas as pd
 
+from app.engines.entry_location import classify_entry_location
+
 EntryStatus = Literal[
     "NO_SETUP",
     "SETUP_WATCH",
@@ -176,8 +178,15 @@ def calculate_short_entry_quality(
     atr = max(float(normalized.get("atr15") or 0), 1e-9)
     zone_low = float(plan.zone_low or trigger_price)
     zone_high = float(plan.zone_high or trigger_price)
-    distance = 0.0 if zone_low <= trigger_price <= zone_high else min(
-        abs(trigger_price - zone_low), abs(trigger_price - zone_high))
+    location_state = classify_entry_location(
+        plan.direction, trigger_price, zone_low, zone_high,
+        (zone_high + float(plan.max_chase_distance or 0)
+         if plan.direction == "LONG" else
+         zone_low - float(plan.max_chase_distance or 0)),
+    )
+    distance = (trigger_price - zone_high if location_state == "CHASE_LONG"
+                else zone_low - trigger_price if location_state == "CHASE_SHORT"
+                else 0.0)
     location = max(0, round(100 * (1 - distance /
                    max(atr * settings.short_entry_max_chase_atr_mult, 1e-9))))
     momentum = 100 if "明確反轉" in evidence else 95 if "假突破" in evidence or "假跌破" in evidence else 90 if "形成更" in evidence else 80
@@ -524,19 +533,25 @@ def evaluate_entry_engine(
             from app.config import get_settings
 
             settings = get_settings()
-            chase_distance = 0.0 if (
-                previous.zone_low <= trigger_price <= previous.zone_high
-            ) else min(abs(trigger_price - previous.zone_low),
-                       abs(trigger_price - previous.zone_high))
             max_chase = float(previous.max_chase_distance or
                               float(normalized.get("atr15") or 0)
                               * settings.short_entry_max_chase_atr_mult)
+            chase_limit = (previous.zone_high + max_chase
+                           if previous.direction == "LONG"
+                           else previous.zone_low - max_chase)
+            location_state = classify_entry_location(
+                previous.direction, trigger_price, previous.zone_low,
+                previous.zone_high, chase_limit)
+            chase_distance = (trigger_price - previous.zone_high
+                              if location_state == "CHASE_LONG"
+                              else previous.zone_low - trigger_price
+                              if location_state == "CHASE_SHORT" else 0.0)
             quality, breakdown, weakest = calculate_short_entry_quality(
                 data, previous, trigger_price=trigger_price,
                 evidence=evidence, risk_reward=rr)
-            if chase_distance > max_chase:
+            if location_state in {"CHASE_LONG", "CHASE_SHORT"}:
                 plan = replace(
-                    previous, status="ENTRY_READY", trigger_timeframe="5M",
+                    previous, status="SETUP_WATCH", trigger_timeframe="5M",
                     trigger_condition=evidence, entry_quality_score=quality,
                     entry_quality_breakdown=breakdown,
                     missing_condition=(
@@ -544,9 +559,19 @@ def evaluate_entry_engine(
                         f"超過最大追價距離 {max_chase:.2f}；等待回踩"),
                 )
                 return EntryEvaluation(plan, False, "")
+            if location_state != "IN_EXECUTABLE_ZONE":
+                waiting = ("空方價格高於原執行區，等待新的拒絕訊號並重新計算候選進場"
+                           if location_state == "WAIT_BEARISH_RECONFIRMATION" else
+                           "確認價格不在可執行區，等待重新進入合理價位")
+                plan = replace(
+                    previous, status="SETUP_WATCH", trigger_timeframe="5M",
+                    trigger_condition=evidence, entry_quality_score=quality,
+                    entry_quality_breakdown=breakdown, missing_condition=waiting,
+                )
+                return EntryEvaluation(plan, False, "")
             if quality < settings.short_entry_min_quality_score:
                 plan = replace(
-                    previous, status="ENTRY_READY", trigger_timeframe="5M",
+                    previous, status="SETUP_WATCH", trigger_timeframe="5M",
                     trigger_condition=evidence, entry_quality_score=quality,
                     entry_quality_breakdown=breakdown,
                     missing_condition=(
@@ -557,7 +582,7 @@ def evaluate_entry_engine(
             min_rr = max(1.5, float(settings.setup_min_rr1))
             if rr < min_rr:
                 plan = replace(
-                    previous, status="ENTRY_READY", trigger_timeframe="5M",
+                    previous, status="SETUP_WATCH", trigger_timeframe="5M",
                     trigger_condition=evidence, entry_quality_score=quality,
                     entry_quality_breakdown=breakdown,
                     missing_condition=(

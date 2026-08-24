@@ -96,8 +96,8 @@ def test_breakout_above_chase_switches_to_pullback_instead_of_entry():
         at="2026-08-21T10:01:00+00:00"), state)
     setup = state["activeSetup"]
     assert setup["status"] == "WAIT_RETEST"
-    assert setup["tradeState"] == "MISSED"
-    assert "超過追價上限" in setup["blockedReason"]
+    assert setup["tradeState"] == "WAIT"
+    assert "追價界線" in setup["blockedReason"]
     assert not any(event["event_type"].endswith("ENTRY_READY") for event in events)
 
 
