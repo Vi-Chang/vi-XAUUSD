@@ -265,6 +265,14 @@ def compute_readiness(state) -> dict:
         ready, reason = True, ("api_only" if s.api_only_mode else "market_closed")
     elif s.api_only_mode:
         ready, reason = True, "api_only"
+    elif getattr(state, "scheduler_follower", False):
+        if last_t is None:
+            ready, reason = ((True, "scheduler_follower_warming_up") if in_grace
+                             else (False, "scheduler_follower_no_data"))
+        elif age_min is not None and age_min > lag and not _market_reopen_grace(now):
+            ready, reason = False, "scheduler_follower_data_stale"
+        else:
+            ready, reason = True, "scheduler_follower"
     elif not getattr(state, "scheduler_started", False):
         ready, reason = False, "scheduler_not_started"
     elif last_t is None:
@@ -325,11 +333,26 @@ def health_payload(state) -> dict:
     from app.services.api_counter import snapshot
     s = get_settings()
     try:
-        from app.providers.twelve_data import get_shared_quota
-        td_used = get_shared_quota().used_today
+        from app.providers.twelve_data import (
+            get_shared_circuit_breaker,
+            get_shared_quota,
+        )
+        quota = get_shared_quota()
+        circuit = get_shared_circuit_breaker()
+        td_used = quota.used_today
+        td_budget = {
+            "used_today": td_used,
+            "remaining_estimate": quota.remaining_today,
+            "requests_last_minute": quota.requests_last_minute,
+            "provider_cooldown_until": (
+                circuit.open_until.isoformat() if circuit.open_until else None),
+            "circuit_state": circuit.state,
+        }
     except Exception:  # noqa: BLE001
         td_used = None
+        td_budget = {}
     from app.llm import health as llm_health
+    from app.services.market_data_metrics import metrics as market_data_metrics
     readiness = compute_readiness(state)
     started = getattr(state, "started_at", None)
     quote_cache = getattr(state, "quote_cache", None)
@@ -357,7 +380,8 @@ def health_payload(state) -> dict:
         },
         "llm": llm_health.snapshot(),
         "api_usage_today": {**snapshot(), "twelve_data_quota": td_used,
-                            "twelve_data_soft_limit": s.twelve_data_soft_limit},
+                            "twelve_data_soft_limit": s.twelve_data_soft_limit,
+                            "twelve_data_budget": td_budget},
         "dead_components": dead,
         "last_15m_candle": last_t.isoformat() if last_t else None,
         "data_lag_minutes": round(age_min, 1) if age_min is not None else None,
@@ -367,6 +391,7 @@ def health_payload(state) -> dict:
             "out_of_order_event_count": getattr(
                 quote_cache, "out_of_order_tick_count", 0),
             "stale_write_rejected_count": 0,
+            **market_data_metrics.snapshot(),
         },
         "notify_level": s.notify_level,
         "llm_cost_usd_today": 0.0,

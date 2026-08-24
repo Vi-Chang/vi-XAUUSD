@@ -62,6 +62,9 @@ class NotificationManager:
         force_push:忽略 NOTIFY_LEVEL 門檻強制推播(每日摘要用)。
         回傳是否有推播到任一 push channel。
         """
+        from app.services.secret_sanitizer import sanitize_text
+        message = sanitize_text(message)
+        topic = sanitize_text(topic)
         assert level in LEVELS, f"unknown level {level}"
         s = get_settings()
         sev = (severity or LEVEL_SEVERITY.get(level, "INFO")).upper()

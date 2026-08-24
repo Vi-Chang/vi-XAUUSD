@@ -4,6 +4,8 @@ import logging
 import sys
 from datetime import datetime, timezone
 
+from app.services.secret_sanitizer import sanitize, sanitize_text
+
 
 class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
@@ -11,13 +13,13 @@ class JsonFormatter(logging.Formatter):
             "ts": datetime.now(timezone.utc).isoformat(),
             "level": record.levelname,
             "logger": record.name,
-            "msg": record.getMessage(),
+            "msg": sanitize_text(record.getMessage()),
         }
         if record.exc_info:
-            payload["exc"] = self.formatException(record.exc_info)
+            payload["exc"] = sanitize_text(self.formatException(record.exc_info))
         extra = getattr(record, "extra_data", None)
         if extra:
-            payload.update(extra)
+            payload.update(sanitize(extra))
         return json.dumps(payload, ensure_ascii=False, default=str)
 
 

@@ -11,8 +11,12 @@
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+import random
+import uuid
 from datetime import date, datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 
 import httpx
 
@@ -22,8 +26,8 @@ from app.providers.base import (
     MarketDataProvider,
     PriceTick,
     ProviderError,
+    ProviderRateLimitedError,
     QuotaExceededError,
-    with_retry,
 )
 from app.utils.timeutils import TIMEFRAME_MINUTES
 
@@ -61,7 +65,7 @@ class QuotaTracker:
         self._day_count = 0
         self._minute_stamps: list[datetime] = []
 
-    def check_and_count(self) -> None:
+    def check_and_count(self, *, priority: str = "P1") -> None:
         now = datetime.now(timezone.utc)
         if self._day != now.date():
             self._day, self._day_count = now.date(), 0
@@ -70,6 +74,13 @@ class QuotaTracker:
             raise QuotaExceededError("Twelve Data 每日配額已用盡")
         if len(self._minute_stamps) >= self.minute_limit:
             raise QuotaExceededError("Twelve Data 每分鐘配額已用盡")
+        remaining_minute = self.minute_limit - len(self._minute_stamps)
+        # Preserve the last slot for quotes/core confirmation. Optional and
+        # background timeframes degrade before they can starve P0/P1 traffic.
+        if priority == "P3" and remaining_minute <= 2:
+            raise QuotaExceededError("Twelve Data 分鐘預算保留給核心週期")
+        if priority == "P2" and remaining_minute <= 1:
+            raise QuotaExceededError("Twelve Data 分鐘預算保留給即時報價")
         self._day_count += 1
         self._minute_stamps.append(now)
 
@@ -80,6 +91,85 @@ class QuotaTracker:
     @property
     def remaining_today(self) -> int:
         return max(0, self.daily_limit - self._day_count)
+
+    @property
+    def requests_last_minute(self) -> int:
+        now = datetime.now(timezone.utc)
+        return len([item for item in self._minute_stamps
+                    if now - item < timedelta(minutes=1)])
+
+
+class TwelveDataCircuitBreaker:
+    """Global CLOSED/OPEN/HALF_OPEN provider gate with one probe."""
+
+    def __init__(self) -> None:
+        self.state = "CLOSED"
+        self.open_until: datetime | None = None
+        self.rate_limit_count = 0
+        self.probe_inflight = False
+
+    def before_request(self) -> None:
+        now = datetime.now(timezone.utc)
+        if self.state == "OPEN":
+            if self.open_until and now < self.open_until:
+                retry = max(0.0, (self.open_until - now).total_seconds())
+                raise ProviderRateLimitedError(
+                    "Twelve Data 暫停外部請求，改用快取", retry_after=retry)
+            self.state = "HALF_OPEN"
+        if self.state == "HALF_OPEN":
+            if self.probe_inflight:
+                raise ProviderRateLimitedError("Twelve Data 恢復探測進行中")
+            self.probe_inflight = True
+        from app.services.market_data_metrics import metrics
+        metrics.circuit_state = self.state
+
+    def rate_limited(self, retry_after: float | None = None) -> float:
+        settings = get_settings()
+        self.rate_limit_count += 1
+        fallback = min(
+            settings.twelve_data_rate_limit_max_backoff_seconds,
+            settings.twelve_data_rate_limit_base_backoff_seconds
+            * (2 ** max(0, self.rate_limit_count - 1)),
+        )
+        delay = max(float(retry_after or 0), float(fallback))
+        delay *= 1 + random.random() * settings.twelve_data_rate_limit_jitter_ratio
+        self.state, self.probe_inflight = "OPEN", False
+        self.open_until = datetime.now(timezone.utc) + timedelta(seconds=delay)
+        from app.services.market_data_metrics import metrics
+        metrics.circuit_state = self.state
+        return delay
+
+    def success(self) -> bool:
+        recovered = self.state in {"OPEN", "HALF_OPEN"}
+        self.state, self.open_until = "CLOSED", None
+        self.rate_limit_count, self.probe_inflight = 0, False
+        from app.services.market_data_metrics import metrics
+        metrics.circuit_state = self.state
+        return recovered
+
+    def transient_failure(self) -> None:
+        if self.state == "HALF_OPEN":
+            self.rate_limited()
+
+
+_shared_circuit = TwelveDataCircuitBreaker()
+
+
+def get_shared_circuit_breaker() -> TwelveDataCircuitBreaker:
+    return _shared_circuit
+
+
+def _retry_after_seconds(value: str | None) -> float | None:
+    if not value:
+        return None
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        try:
+            parsed = parsedate_to_datetime(value)
+            return max(0.0, (parsed - datetime.now(timezone.utc)).total_seconds())
+        except (TypeError, ValueError, OverflowError):
+            return None
 
 
 _shared_quota: QuotaTracker | None = None
@@ -106,63 +196,97 @@ class TwelveDataProvider(MarketDataProvider):
             raise ProviderError("TWELVE_DATA_API_KEY 未設定(https://twelvedata.com 免費註冊)")
         self._key = s.twelve_data_api_key
         self.quota = get_shared_quota()
+        self.circuit = get_shared_circuit_breaker()
+        self._recovery_signal = False
         self._client = httpx.AsyncClient(base_url="https://api.twelvedata.com", timeout=15.0)
         # K 棒邊界快取:key = timeframe 或 LONG_H1_KEY → (fetch_time, candles)
         self._cache: dict[str, tuple[datetime, list[Candle]]] = {}
 
     async def get_live_price(self, symbol: str = "XAUUSD") -> PriceTick:
-        self.quota.check_and_count()
-        from app.services.api_counter import bump
-        bump(self.name)
+        data = await self._request(
+            "/price", {"symbol": "XAU/USD"}, timeframe="QUOTE", priority="P0")
+        if "price" not in data:
+            raise ProviderError("Twelve Data 報價回應缺少 price")
+        mid = float(data["price"])
+        return PriceTick(symbol=symbol, bid=mid, ask=mid,
+                         quote_time=datetime.now(timezone.utc), provider=self.name)
 
-        async def _call() -> PriceTick:
-            r = await self._client.get("/price", params={"symbol": "XAU/USD", "apikey": self._key})
-            r.raise_for_status()
-            data = r.json()
-            if "price" not in data:
-                raise ProviderError(f"Twelve Data 回應異常: {data}")
-            mid = float(data["price"])
-            # 免費層無 bid/ask;以 mid 近似並由 provider 名稱標示(spread 檢查不適用)
-            return PriceTick(symbol=symbol, bid=mid, ask=mid,
-                            quote_time=datetime.now(timezone.utc), provider=self.name)
-
-        return await with_retry(_call, retries=1, provider=self.name)
+    async def _request(self, path: str, params: dict, *, timeframe: str,
+                       priority: str) -> dict:
+        from app.services.market_data_metrics import metrics
+        from app.services.market_data_service import request_context
+        from app.services.secret_sanitizer import sanitize_text
+        context = request_context.get() or {}
+        caller = str(context.get("caller") or "direct_provider_call")
+        reason = str(context.get("reason") or "market_data")
+        priority = str(context.get("priority") or priority)
+        attempts = max(1, get_settings().twelve_data_transient_retries + 1)
+        last_error: Exception | None = None
+        for attempt in range(attempts):
+            self.circuit.before_request()
+            self.quota.check_and_count(priority=priority)
+            request_id = uuid.uuid4().hex[:16]
+            metrics.record_request(
+                provider=self.name, symbol="XAUUSD", timeframe=timeframe,
+                caller=caller, reason=reason, cache_hit=False,
+                request_id=request_id, external=True)
+            from app.services.api_counter import bump
+            bump(self.name)
+            try:
+                response = await self._client.get(
+                    path, params={**params, "apikey": self._key, "timezone": "UTC"})
+                if response.status_code == 429:
+                    metrics.counters["twelve_data_429_total"] += 1
+                    delay = self.circuit.rate_limited(
+                        _retry_after_seconds(response.headers.get("Retry-After")))
+                    raise ProviderRateLimitedError(
+                        "Twelve Data 流量限制，暫時改用最後有效資料",
+                        retry_after=delay)
+                response.raise_for_status()
+                payload = response.json()
+                if payload.get("status") == "error":
+                    raise ProviderError(
+                        sanitize_text(f"Twelve Data: {payload.get('message') or 'unknown error'}"))
+                if self.circuit.success():
+                    self._recovery_signal = True
+                return payload
+            except ProviderRateLimitedError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - network adapter boundary
+                last_error = exc
+                self.circuit.transient_failure()
+                if attempt + 1 >= attempts:
+                    break
+                metrics.counters["twelve_data_retry_total"] += 1
+                await asyncio.sleep((1 + random.random() * 0.3) * (2 ** attempt))
+        # Do not retain the original httpx exception as __cause__: it may
+        # contain the fully rendered request URL (including the API key).
+        raise ProviderError(
+            f"Twelve Data 暫時無法取得資料：{sanitize_text(last_error)}") from None
 
     async def _fetch_series(self, interval: str, outputsize: int,
                             timeframe_label: str) -> list[Candle]:
-        self.quota.check_and_count()
-        from app.services.api_counter import bump
-        bump(self.name)
-
-        async def _call() -> list[Candle]:
-            r = await self._client.get("/time_series", params={
-                "symbol": "XAU/USD", "interval": interval,
-                "outputsize": outputsize, "apikey": self._key, "timezone": "UTC",
-            })
-            r.raise_for_status()
-            data = r.json()
-            if data.get("status") == "error":
-                raise ProviderError(f"Twelve Data: {data.get('message')}")
-            from app.services.candle_service import candle_close_time
-            now = datetime.now(timezone.utc)
-            out: list[Candle] = []
-            for row in reversed(data.get("values", [])):  # API 回傳新→舊,轉為升冪
-                open_time = datetime.fromisoformat(row["datetime"]).replace(tzinfo=timezone.utc)
-                close_time = candle_close_time(open_time, timeframe_label)
-                out.append(Candle(
-                    symbol="XAUUSD", timeframe=timeframe_label,
-                    open_time=open_time, close_time=close_time,
-                    open=float(row["open"]), high=float(row["high"]),
-                    low=float(row["low"]), close=float(row["close"]),
-                    volume=float(row.get("volume") or 0),
-                    is_closed=close_time <= now,
-                    data_provider=self.name,
-                ))
-            # Twelve Data 於週末/休市仍發布殭屍報價 → 一律濾掉(spec 四)
-            from app.services.candle_service import filter_market_hours
-            return filter_market_hours(out)
-
-        return await with_retry(_call, retries=1, provider=self.name)
+        priority = "P1" if timeframe_label in {"15M", "1H"} else (
+            "P2" if timeframe_label in {"4H", "1D", "5M"} else "P3")
+        data = await self._request(
+            "/time_series", {"symbol": "XAU/USD", "interval": interval,
+                             "outputsize": outputsize},
+            timeframe=timeframe_label, priority=priority)
+        from app.services.candle_service import candle_close_time
+        now = datetime.now(timezone.utc)
+        out: list[Candle] = []
+        for row in reversed(data.get("values", [])):
+            open_time = datetime.fromisoformat(row["datetime"]).replace(tzinfo=timezone.utc)
+            close_time = candle_close_time(open_time, timeframe_label)
+            out.append(Candle(
+                symbol="XAUUSD", timeframe=timeframe_label,
+                open_time=open_time, close_time=close_time,
+                open=float(row["open"]), high=float(row["high"]),
+                low=float(row["low"]), close=float(row["close"]),
+                volume=float(row.get("volume") or 0),
+                is_closed=close_time <= now, data_provider=self.name))
+        from app.services.candle_service import filter_market_hours
+        return filter_market_hours(out)
 
     async def _long_h1(self) -> list[Candle]:
         now = datetime.now(timezone.utc)
@@ -176,6 +300,25 @@ class TwelveDataProvider(MarketDataProvider):
     async def get_candles(self, symbol: str = "XAUUSD", timeframe: str = "15M",
                           count: int = 300) -> list[Candle]:
         now = datetime.now(timezone.utc)
+
+        # One canonical 1H history powers 1H analysis plus local 1D/1W
+        # aggregation.  This removes the former duplicate ordinary-1H and
+        # LONG_H1 downloads during cold start.
+        if timeframe == "1H":
+            long_cached = self._cache.get(LONG_H1_KEY)
+            if long_cached is None:
+                return (await self._long_h1())[-count:]
+            cached = self._cache.get("1H")
+            if cached and not needs_refetch("1H", cached[0], now):
+                return cached[1][-count:]
+            incoming = await self._fetch_series(
+                INTERVAL["1H"], min(count, 5000), "1H")
+            merged = {item.open_time: item for item in long_cached[1]}
+            merged.update({item.open_time: item for item in incoming})
+            history = [merged[key] for key in sorted(merged)][-LONG_H1_SIZE:]
+            self._cache[LONG_H1_KEY] = (now, history)
+            self._cache["1H"] = (now, history[-max(count, 300):])
+            return history[-count:]
 
         # 1D/1W:由長 1H 本地聚合(NY 17:00 ET 切分,spec 三)
         if timeframe in ("1D", "1W"):
@@ -195,3 +338,18 @@ class TwelveDataProvider(MarketDataProvider):
 
     async def close(self) -> None:
         await self._client.aclose()
+
+    def consume_recovery_signal(self) -> bool:
+        recovered, self._recovery_signal = self._recovery_signal, False
+        return recovered
+
+    def prime_candles(self, timeframe: str, candles: list[Candle]) -> None:
+        """Seed adapter cache from durable canonical candles after restart."""
+        if not candles:
+            return
+        stale = datetime.now(timezone.utc) - timedelta(
+            minutes=TIMEFRAME_MINUTES.get(timeframe, 60) + 1)
+        if timeframe == "1H":
+            self._cache[LONG_H1_KEY] = (stale, candles[-LONG_H1_SIZE:])
+        if timeframe not in {"1D", "1W"}:
+            self._cache[timeframe] = (stale, candles)

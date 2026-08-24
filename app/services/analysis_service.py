@@ -174,6 +174,8 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
                    for tf in all_tfs}
     else:
         candles = await refresh_candles(provider, all_tfs, s.candle_history_count, symbol)
+        if hasattr(provider, "complete_recovery_sync"):
+            provider.complete_recovery_sync(all_tfs)
     candles = {tf: (cs if tf in ("1D", "1W") else filter_market_hours(cs, holidays))
                for tf, cs in candles.items()}
     if tick is None:
@@ -364,6 +366,20 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
         atr15=atr15, event_timestamp=ev.data_updated_at,
         event_risk=(ev.time_risk or "UNKNOWN").lower(), event_lockout=ev.event_lockout)
     result.normalized_analysis = normalized
+    if hasattr(provider, "health_snapshot"):
+        result.market_data_health = provider.health_snapshot()
+        if result.market_data_health.get("status") == "DEGRADED":
+            # Preserve direction/structure/levels from LKG candles, but make
+            # the canonical entry gate fail closed until fresh data returns.
+            normalized = normalized.model_copy(update={
+                "marketDataStatus": "STALE",
+                "entryReadiness": "no_trade",
+                "dataConfidence": "low",
+                "riskOverride": "suspend_all_entries",
+                "longEntryAllowed": False,
+                "shortEntryAllowed": False,
+            })
+            result.normalized_analysis = normalized
     from app.engines.freshness_state import evaluate_freshness_state
     result.freshness_state = evaluate_freshness_state(result.model_dump(), now=now)
     from app.services.tactical_shadow import build_tactical_shadow

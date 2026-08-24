@@ -64,6 +64,15 @@ class Settings(BaseSettings):
     twelve_data_api_key: str = ""
     twelve_data_daily_limit: int = 800
     twelve_data_minute_limit: int = 8
+    twelve_data_transient_retries: int = 1
+    twelve_data_rate_limit_base_backoff_seconds: int = 30
+    twelve_data_rate_limit_max_backoff_seconds: int = 240
+    twelve_data_rate_limit_jitter_ratio: float = 0.20
+    market_data_incremental_candle_count: int = 5
+    market_data_refresh_seconds: dict[str, int] = {
+        "5M": 60, "15M": 90, "30M": 150, "1H": 240,
+        "4H": 480, "1D": 1200, "1W": 3600,
+    }
 
     # ── 事件 / 跨市場(Phase 6)──
     finnhub_api_key: str = ""

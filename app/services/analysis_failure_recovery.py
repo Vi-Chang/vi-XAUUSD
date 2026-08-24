@@ -142,6 +142,8 @@ class AnalysisFailureRecovery:
                 return result, None
             except Exception as exc:  # noqa: BLE001
                 last_error = exc
+                from app.services.market_data_metrics import metrics
+                metrics.counters["analysis_failures_total"] += 1
                 logger.warning("analysis attempt %d/%d failed in %s: %s",
                                attempt + 1, len(delays) + 1, module, type(exc).__name__)
                 if attempt < len(delays):

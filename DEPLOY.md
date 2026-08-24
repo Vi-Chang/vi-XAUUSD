@@ -65,7 +65,17 @@ Gemini 免費層限制:**10 RPM / 250 次每日**。系統內建保護(超限自
 
 安全標頭:`Content-Security-Policy`(`script-src 'self'`,無 inline script;inline 事件已改事件委派)、`X-Content-Type-Options: nosniff`、`X-Frame-Options: DENY`、`Referrer-Policy: no-referrer`。
 
-> ⚠️ **多 worker 警告**:session、rate-limit、single-flight 皆為**單一行程內記憶體**。若未來以多 worker(如 `uvicorn --workers N` / gunicorn)部署,這些狀態不跨 worker 共享 —— session 會因 worker 不同而失效、rate-limit 與 single-flight 去重會失準。多 worker 需改用共享儲存(Redis 等)。目前部署維持**單 worker**。
+> ⚠️ **多 worker 注意**：設定 `REDIS_URL` 後，市場資料排程會使用分散式 ownership lock；只有一個副本可輪詢外部行情，其餘副本只讀共享 DB／最後有效行情。session 與行程內 single-flight 仍非跨 worker 共用，因此建議每個容器維持一個 Uvicorn worker。未設定 Redis 時只能部署單一副本，否則每個副本都會成為行情排程 owner。
+
+Twelve Data 正式環境必須以 Zeabur Secret 設定 `TWELVE_DATA_API_KEY`，不可寫入映像、啟動參數或日誌。建議保留預設的增量同步與 429 斷路器設定：
+
+- `TWELVE_DATA_TRANSIENT_RETRIES=1`
+- `TWELVE_DATA_RATE_LIMIT_BASE_BACKOFF_SECONDS=30`
+- `TWELVE_DATA_RATE_LIMIT_MAX_BACKOFF_SECONDS=240`
+- `TWELVE_DATA_RATE_LIMIT_JITTER_RATIO=0.20`
+- `MARKET_DATA_INCREMENTAL_CANDLE_COUNT=5`
+
+多副本部署前應確認所有副本使用同一個 `REDIS_URL` 與資料庫；`/health` 的 `twelve_data_budget`、`twelve_data_circuit_state` 與 `recent_request_sources` 可用來追查配額來源。
 
 > 前端 XSS 防護:所有動態 HTML 經單一 `escape.js`(`h`` 預設跳脫、`SafeHtml` 型別、`joinSafe`;`trusted()` 僅限程式碼內字面值)。本機開發 `scripts/dev_server.py` 已設 `APP_ENV=development`。
 
@@ -92,7 +102,7 @@ Gemini 免費層限制:**10 RPM / 250 次每日**。系統內建保護(超限自
 | `GET /health/live` | Liveness:行程存活即 200(外部 provider 暫時失敗不影響) |
 | `GET /health/ready` | Readiness:能否提供新鮮分析;未就緒回 503。**週末休市視為就緒**(不誤判 stale) |
 
-Readiness `reason` 值:`ok` / `market_closed` / `api_only`(刻意關排程)/ `warming_up` / `no_data` / `data_stale` / `component_down` / `scheduler_disabled`(誤設)/ `admin_token_missing`(production 缺 token,優先於休市,不被 market_closed 掩蓋)。所有 readiness 判定只讀本地狀態,不同步呼叫外部 API;timestamps 一律 UTC-aware;不輸出帳號/token/DB URL/例外訊息/內部路徑。
+Readiness `reason` 值:`ok` / `market_closed` / `api_only`(刻意關排程)/ `warming_up` / `no_data` / `data_stale` / `component_down` / `scheduler_disabled`(誤設)/ `scheduler_follower` / `scheduler_follower_warming_up` / `scheduler_follower_no_data` / `scheduler_follower_data_stale` / `admin_token_missing`(production 缺 token,優先於休市,不被 market_closed 掩蓋)。所有 readiness 判定只讀本地狀態,不同步呼叫外部 API;timestamps 一律 UTC-aware;不輸出帳號/token/DB URL/例外訊息/內部路徑。
 
 ## Zeabur 更新環境變數的注意事項
 

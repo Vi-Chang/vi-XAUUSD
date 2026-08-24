@@ -29,7 +29,9 @@ class TelegramChannel(NotificationChannel):
                 "disable_web_page_preview": True,
             })
             if r.status_code != 200:
-                logger.error("telegram send failed: %s %s", r.status_code, r.text[:200])
+                from app.services.secret_sanitizer import sanitize_text
+                logger.error("telegram send failed: %s %s", r.status_code,
+                             sanitize_text(r.text[:200]))
                 return ""
             payload = r.json()
             return str((payload.get("result") or {}).get("message_id") or "")
@@ -41,7 +43,9 @@ class TelegramChannel(NotificationChannel):
                 "text": text[:4000], "disable_web_page_preview": True,
             })
             if r.status_code != 200:
-                logger.error("telegram edit failed: %s %s", r.status_code, r.text[:200])
+                from app.services.secret_sanitizer import sanitize_text
+                logger.error("telegram edit failed: %s %s", r.status_code,
+                             sanitize_text(r.text[:200]))
                 return ""
             return str(((r.json().get("result") or {}).get("message_id")) or message_id)
 

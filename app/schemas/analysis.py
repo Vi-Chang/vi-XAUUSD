@@ -549,6 +549,7 @@ class AnalysisResult(BaseModel):
     current_price: CurrentPrice = CurrentPrice()
     data_quality: DataQuality = DataQuality()
     freshness_state: dict = Field(default_factory=dict)
+    market_data_health: dict = Field(default_factory=dict)
     closed_candles: dict = Field(default_factory=dict)
     realtime_presentation: dict = Field(default_factory=dict)
     event_risk: EventRisk = EventRisk()
