@@ -129,3 +129,13 @@ def test_estimated_rr_never_enters_final_trade_permission_candidate():
     assert candidates[0].estimated_risk_reward == 2.2
     assert candidates[0].risk_reward is None
     assert candidates[0].lifecycle_state != "ENTRY_READY"
+
+
+def test_failed_break_reclaim_requires_next_closed_hold_before_entry_ready():
+    data = payload()
+    data["break_lifecycle_engine"] = {"state": "FAILED_BREAKDOWN", "level": 97.0}
+    state, _ = evaluate_entry_opportunities(data)
+    shallow = by_type(state, "SHALLOW_PULLBACK")
+    assert shallow["reclaim_confirmation_required"] is True
+    assert shallow["state"] != "ENTRY_READY"
+    assert shallow["executable_rr"] is None

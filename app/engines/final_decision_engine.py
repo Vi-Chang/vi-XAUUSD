@@ -476,6 +476,9 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
         "MARKET_BEHAVIOR_CHANGED",
         "POSITION_WARNING", "SOFT_INVALIDATION_PENDING", "SOFT_INVALIDATED",
         "HARD_INVALIDATED", "POSITION_RECOVERED", "POSITION_DATA_RISK",
+        "BREAK_PENDING", "BREAK_CONFIRMED", "RECLAIM_FAILED",
+        "LIQUIDITY_SWEEP_CANDIDATE", "PROFIT_GIVEBACK_ALERT",
+        "PROFIT_STATE_CHANGED",
     }
     # Lifecycle facts are state transitions in their own right. They must not
     # disappear merely because the high-level ENTER/WAIT/MANAGE action stayed
@@ -493,7 +496,8 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
         events.append({
             "eventId": event_id, "event_type": canonical_event_type,
             "eventVersion": 1, "snapshotId": str(data.get("version") or ""),
-            "positionId": str((data.get("position_management") or {}).get("position_id") or ""),
+            "positionId": str(canonical_fact.get("positionId") or
+                              (data.get("position_management") or {}).get("position_id") or ""),
             "eventTimeUtc": candle_time or evaluated_at, "generatedAtUtc": evaluated_at,
             "previousState": str(previous.get("state") or "WAIT"),
             "currentState": published_state, "transitionReason": base["humanSummary"],
@@ -523,7 +527,9 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
             **{key: canonical_fact.get(key) for key in (
                 "tradePlanId", "tradeThesis", "warningLevel", "hardInvalidation",
                 "emergencyStop", "reclaimDeadline", "reasonCode", "closedPrice",
-                "previousBehavior", "behaviorConfidence", "marketBias")
+                "previousBehavior", "behaviorConfidence", "marketBias",
+                "breakLifecycle", "positionProfitDecision", "triggerLevel",
+                "opportunityId")
                if canonical_fact.get(key) is not None},
         })
     base["events"] = events

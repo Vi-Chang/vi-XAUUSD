@@ -602,7 +602,15 @@ function renderDecisionAssistant(v3, finalDecision = {}) {
     const name = op.type === "SHALLOW_PULLBACK" ? "淺回踩" : op.type === "DEEP_PULLBACK" ? "深回踩" : "突破回測";
     return `${index === 0 ? "首選" : "備選"} ${name}：${fmt(z.lower)}–${fmt(z.upper)}｜預估 RR ${op.estimated_rr == null ? "–" : Number(op.estimated_rr).toFixed(2)}`;
   });
-  const items = [ ...opportunityItems, ...(v3.regimeReasons || []), ...((v3.why || {}).technical || []), ...((v3.why || {}).blocked || []) ];
+  const breakQuality = canonical.breakQuality || {};
+  const breakItems = breakQuality.state ? [
+    `突破狀態：${breakQuality.state}｜品質 ${breakQuality.score ?? 0}/100｜延續 ${breakQuality.followThrough || "不足"}`,
+    `快速收復：${breakQuality.fastReclaim ? "是（疑似假突破，不代表反向行情已成立）" : "否"}`,
+  ] : [];
+  const profitItems = ((canonical.positionManagement || {}).perPositionDecisions || []).map((p) =>
+    `${p.position_class} ${p.side}｜浮盈 ${Number(p.current_unrealized_profit || 0).toFixed(2)}｜最高 ${Number(p.max_unrealized_profit || 0).toFixed(2)}｜回吐 ${(Number(p.profit_giveback_ratio || 0) * 100).toFixed(0)}%｜${p.position_action}`
+  );
+  const items = [ ...opportunityItems, ...breakItems, ...profitItems, ...(v3.regimeReasons || []), ...((v3.why || {}).technical || []), ...((v3.why || {}).blocked || []) ];
   $("v3-why-list").replaceChildren(...items.slice(0, 10).map((text) => {
     const li = document.createElement("li"); li.textContent = text; return li;
   }));

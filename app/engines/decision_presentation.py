@@ -126,6 +126,39 @@ def _local_time(raw: str) -> str:
 
 def format_decision_message(event: dict) -> str:
     canonical_type = str(event.get("event_type") or "")
+    break_state = event.get("breakLifecycle") or {}
+    if canonical_type in {"BREAK_PENDING", "LIQUIDITY_SWEEP_CANDIDATE",
+                          "FAILED_BREAKDOWN", "FAILED_BREAKOUT",
+                          "BREAK_CONFIRMED", "RECLAIM_FAILED"}:
+        level = float(event.get("triggerLevel") or break_state.get("level") or 0)
+        if canonical_type in {"FAILED_BREAKDOWN", "FAILED_BREAKOUT"}:
+            title = "🟢【XAUUSD 關鍵位快速收復】"
+            detail = ("下方跌破缺乏延續，疑似空頭陷阱／流動性掃盤。"
+                      if canonical_type == "FAILED_BREAKDOWN"
+                      else "上方突破缺乏延續，警戒多頭陷阱。")
+        elif canonical_type in {"BREAK_CONFIRMED", "RECLAIM_FAILED"}:
+            title, detail = "🔴【XAUUSD 突破確認】", "已收破且後續延續，原 tactical structure 失效。"
+        else:
+            title, detail = "🟡【XAUUSD 跌破尚未確認】", "價格曾越過關鍵位，但尚未取得延續確認。"
+        return "\n".join([title, f"關鍵價：{level:.2f}", detail,
+                           f"突破品質：{break_state.get('break_confidence', 0)} / 100",
+                           f"延續：{break_state.get('follow_through', '不足')}",
+                           f"快速收復：{'是' if break_state.get('reclaim_level') else '否'}"])
+    profit = event.get("positionProfitDecision") or {}
+    if canonical_type in {"TP_HIT", "PROFIT_GIVEBACK_ALERT", "TRAILING_STOP_UPDATE",
+                          "PROFIT_STATE_CHANGED"} and profit:
+        title = ("⚠️【XAUUSD 獲利回吐擴大】" if canonical_type == "PROFIT_GIVEBACK_ALERT"
+                 else "🚀【XAUUSD 延伸行情確認】" if profit.get("extension_confirmed")
+                 else "🟢【XAUUSD 已進入主要停利區】")
+        return "\n".join([title,
+            f"成本：{float(profit.get('reference_entry') or 0):.2f}",
+            f"現價：{float(profit.get('current_price') or 0):.2f}",
+            f"目前浮盈：{float(profit.get('current_unrealized_profit') or 0):.2f}",
+            f"最高浮盈：{float(profit.get('max_unrealized_profit') or 0):.2f}",
+            f"已回吐：{float(profit.get('profit_giveback_ratio') or 0):.0%}",
+            f"停利分數：{profit.get('take_profit_score', 0)} / 100",
+            f"建議：{profit.get('position_action')}",
+            f"獲利保護：{profit.get('profit_protection_level') or '—'}"])
     if canonical_type in {"WICK_REJECTION_CHANGED", "REJECTION_BREAKOUT_CHANGED"}:
         state = str(event.get("currentState") or "")
         breakout = str(event.get("breakoutState") or "NONE")

@@ -130,6 +130,8 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
     normalized = data.get("normalized_analysis") or {}
     opportunity_engine = data.get("entry_opportunity_engine") or {}
     raw_opportunities = opportunity_engine.get("opportunities") or []
+    dynamic_profit = data.get("dynamic_profit_protection") or {}
+    break_lifecycle = data.get("break_lifecycle_engine") or {}
     current = _number(health.get("currentPrice"))
     all_candidates = [_candidate_view(item, current, minimum_rr)
                       for item in final.get("signalCandidates") or []]
@@ -376,6 +378,15 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
                                            else trigger_level if direction == "LONG" else None),
             "next_bearish_confirmation": max(support_levels) if support_levels else None,
         },
+        "breakLifecycle": break_lifecycle,
+        "breakQuality": {
+            "state": break_lifecycle.get("state"),
+            "score": break_lifecycle.get("break_confidence"),
+            "followThrough": break_lifecycle.get("follow_through"),
+            "fastReclaim": break_lifecycle.get("state") in {
+                "FAILED_BREAKDOWN", "FAILED_BREAKOUT"},
+            "reclaimScore": break_lifecycle.get("reclaim_confidence"),
+        },
         "dataStale": stale,
         "newEntryDecision": {
             "action": entry_action, "canEnter": can_enter, "direction": direction,
@@ -413,6 +424,11 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
             "structuralInvalidation": normalized.get("structuralInvalidationLevel"),
             "structuralInvalidationNote": normalized.get("structuralInvalidationNote") or "",
             "targets": selected.get("targets") if selected else [],
+            "perPositionDecisions": dynamic_profit.get("positions") or [],
+            "hardRiskStop": ((dynamic_profit.get("positions") or [{}])[0]).get(
+                "hard_risk_stop") if dynamic_profit.get("positions") else None,
+            "structuralExitConfirmation": ((dynamic_profit.get("positions") or [{}])[0]).get(
+                "structural_exit_confirmation") if dynamic_profit.get("positions") else None,
         },
         "reversalProtection": {
             "cooldownActive": bool(tp_facts),

@@ -105,6 +105,7 @@ def evaluate_entry_opportunities(data: dict, previous: dict | None = None) -> tu
     strong_shallow = (str(normalized.get("trendBias")) == ("bullish" if side == "LONG" else "bearish")
                       and str(normalized.get("shortTermMomentum")) in {"accelerating", "stable", "recovering"}
                       and bool(setup.get("breakoutConfirmedAt")))
+    break_state = data.get("break_lifecycle_engine") or {}
     for kind in TYPES:
         built = _zone(kind, setup, normalized)
         if not built or target is None:
@@ -119,6 +120,12 @@ def evaluate_entry_opportunities(data: dict, previous: dict | None = None) -> tu
         distance = 0.0 if low <= price <= high else min(abs(price - low), abs(price - high))
         in_zone = low <= price <= high
         confirmation, evidence = _confirmed(side, (low, high), candle)
+        reclaim_requires_hold = (
+            (side == "LONG" and break_state.get("state") == "FAILED_BREAKDOWN") or
+            (side == "SHORT" and break_state.get("state") == "FAILED_BREAKOUT"))
+        if reclaim_requires_hold:
+            confirmation = False
+            evidence = ["快速收復已出現，仍需下一根15M守住 reclaim level"]
         invalidated = ((_num(candle.get("close")) or price) < stop if side == "LONG"
                        else (_num(candle.get("close")) or price) > stop)
         if now >= expires:
@@ -171,6 +178,7 @@ def evaluate_entry_opportunities(data: dict, previous: dict | None = None) -> tu
             "executable_rr_calculated_at": executable_at,
             "expires_at": expires.isoformat(), "max_valid_bars": 8,
             "strong_trend_shallow_retrace_mode": strong_shallow,
+            "reclaim_confirmation_required": reclaim_requires_hold,
         }
         opportunities.append(item)
         if old and old.get("state") != state:
