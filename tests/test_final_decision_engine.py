@@ -54,7 +54,10 @@ def test_signal_candidates_have_lineage_lifecycle_and_level_sources():
 def test_strong_breakout_with_good_rr_enters_long():
     decision, events = evaluate_final_decision(market())
     assert decision["finalAction"] == "ENTER_LONG" and decision["canEnter"]
-    assert decision["riskGate"] == "ENTRY_READY" and len(events) == 1
+    assert decision["riskGate"] == "ENTRY_READY"
+    assert {event["event_type"] for event in events} == {
+        "ENTRY_READY", "CANDLE_FINALIZED"}
+    assert all(event["latestClosedCandlePrice"] == 100.4 for event in events)
 
 
 def test_overextended_breakout_does_not_enter():
@@ -90,6 +93,17 @@ def test_stale_data_is_highest_priority():
     assert decision["riskGate"] == "DATA_INVALID"
 
 
+def test_data_recovery_emits_a_distinct_canonical_event_once():
+    stale_data = market()
+    stale_data["normalized_analysis"]["marketDataStatus"] = "STALE"
+    stale, _ = evaluate_final_decision(stale_data)
+    recovered, events = evaluate_final_decision(market(), previous=stale)
+    assert recovered["primaryReason"] != "DATA_STALE"
+    assert "DATA_RECOVERED" in {event["event_type"] for event in events}
+    _same, repeated = evaluate_final_decision(market(), previous=recovered)
+    assert "DATA_RECOVERED" not in {event["event_type"] for event in repeated}
+
+
 def test_event_blackout_blocks_entry():
     data = market(); data["event_risk"]["event_lockout"] = True
     decision, _ = evaluate_final_decision(data)
@@ -115,6 +129,21 @@ def test_micro_price_change_does_not_create_new_decision_version():
     assert second["decisionChanged"] is False and events == []
 
 
+def test_position_risk_transition_emits_even_when_high_level_action_is_unchanged():
+    first, _ = evaluate_final_decision(market())
+    unchanged = market()
+    unchanged["signal_facts"] = [{
+        "event_type": "POSITION_WARNING", "setupId": "BO-v1",
+        "warningLevel": 99.0, "currentState": "WARNING",
+        "tradeThesis": {"thesisDescription": "固定交易論點"},
+    }]
+    second, events = evaluate_final_decision(unchanged, previous=first)
+    assert second["decisionChanged"] is False
+    warning = next(event for event in events
+                   if event["event_type"] == "POSITION_WARNING")
+    assert warning["warningLevel"] == 99.0
+
+
 def test_scenario_version_change_creates_new_decision_version():
     first, _ = evaluate_final_decision(market())
     changed = market()
@@ -129,7 +158,8 @@ def test_wait_is_dashboard_only_not_periodic_telegram():
     first, events1 = evaluate_final_decision(data)
     _second, events2 = evaluate_final_decision(data, previous=first)
     assert first["finalAction"] == "WAIT"
-    assert events1 == [] and events2 == []
+    assert [event["event_type"] for event in events1] == ["CANDLE_FINALIZED"]
+    assert events2 == []
 
 
 def test_historical_calibration_requires_enough_samples():

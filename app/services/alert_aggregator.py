@@ -149,7 +149,7 @@ def notification_fingerprint(event: dict) -> str:
         "chaseLimit": settings.telegram_chase_change_min_delta,
         "invalidationPrice": settings.telegram_invalidation_change_min_delta,
     }
-    stable = dict(parts)
+    stable = {**parts, "eventType": str(event.get("event_type") or "DECISION_UPDATED")}
     for field, step in steps.items():
         value = _number(parts.get(field))
         if value is not None and step > 0:
@@ -165,6 +165,8 @@ def notification_fingerprint(event: dict) -> str:
 
 def alert_category(event: dict) -> str:
     event_type = str(event.get("event_type") or "")
+    if event_type in {"DOUBLE_SWEEP_CONFIRMED", "DOUBLE_SWEEP_EDGE_CONSUMED"}:
+        return "MEANINGFUL_SCENARIO_UPDATE"
     if event.get("tradePlanId"):
         return "EXIT_WARNING"
     state = str(event.get("currentState") or "WAIT")
@@ -203,6 +205,7 @@ def semantic_key(event: dict) -> str:
         str(event.get("setupId") or ""),
         str(event.get("direction") or "NONE"),
         str(event.get("currentState") or "WAIT"),
+        str(event.get("event_type") or "DECISION_UPDATED"),
         str(event.get("alertCategory") or alert_category(event)),
         str(event.get("triggerLevel") or ""),
     ))

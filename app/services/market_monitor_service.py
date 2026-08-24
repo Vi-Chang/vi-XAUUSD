@@ -30,6 +30,7 @@ from app.engines.regime_state_machine import evaluate_regime_state
 from app.engines.trade_plan import evaluate_trade_plans, migrate_legacy_virtual_profit
 from app.engines.trend_continuation_engine import evaluate_trend_continuation
 from app.engines.virtual_profit_tracker import evaluate_virtual_profit
+from app.services.double_sweep_service import evaluate_double_sweep_monitor
 
 
 def _load(symbol: str, key: str) -> dict:
@@ -103,7 +104,7 @@ def evaluate_market_monitors(
     )
     _save(symbol, "bullish_breakout", asdict(breakout_state))
 
-    entry = data.get("entry_engine") or {}
+    entry = dict(data.get("entry_engine") or {})
     support = next(
         (
             x
@@ -113,6 +114,39 @@ def evaluate_market_monitors(
         None,
     )
     structure_protection = float(support["price"]) if support else None
+    # Detect sweep context before freezing a new trade thesis. Statistical
+    # context may select the initial structural level, but can never mutate it
+    # after the trade plan is created.
+    timeframe_data = data.get("timeframes") or {}
+    generated = str(data.get("timestamp_utc") or datetime.now(timezone.utc).isoformat())
+    try:
+        evaluation_time = datetime.fromisoformat(generated.replace("Z", "+00:00"))
+    except ValueError:
+        evaluation_time = datetime.now(timezone.utc)
+    double_sweep_state, double_sweep_events = evaluate_double_sweep_monitor(
+        m15_closed, symbol=symbol,
+        current_price=float(normalized.get("currentPrice") or 0),
+        regime4h=str((timeframe_data.get("h4") or {}).get("trend")
+                    or data.get("market_state") or "UNKNOWN"),
+        structure1h=str((timeframe_data.get("h1") or {}).get("structure") or "UNKNOWN"),
+        macro_context=str((data.get("event_risk") or {}).get("status") or "UNKNOWN"),
+        now=evaluation_time, previous=_load(symbol, "double_sweep"))
+    _save(symbol, "double_sweep", double_sweep_state)
+    sweep = double_sweep_state.get("event") or {}
+    if entry.get("status") == "ENTRY_TRIGGERED" and sweep:
+        entry.update({
+            "strategy_type": ("SWEEP_RECLAIM_LONG" if entry.get("direction") == "LONG"
+                              else "SWEEP_RECLAIM_SHORT"),
+            "sweep_low": sweep.get("referenceLow"),
+            "sweep_high": sweep.get("referenceHigh"),
+            "atr15": normalized.get("atr15"),
+            "thesis_description": (
+                f"{float(sweep.get('referenceLow')):.2f} 下方掃低後重新收回，多方 reclaim 成立"
+                if entry.get("direction") == "LONG" else
+                f"{float(sweep.get('referenceHigh')):.2f} 上方掃高後重新跌回，空方 reclaim 成立"),
+            "thesis_evidence": ["LIQUIDITY_SWEEP", "RECLAIM", "CLOSED_CANDLE"],
+            "mae_profile": double_sweep_state.get("profile") or {},
+        })
     virtual_state, virtual_events = evaluate_virtual_profit(
         entry,
         _load(symbol, "virtual_profit"),
@@ -136,6 +170,9 @@ def evaluate_market_monitors(
         latest_structure_protection=structure_protection,
         candle_close_time=str(normalized.get("lastClosedCandleTimestamp") or ""),
         calculated_at=str(data.get("timestamp_utc") or ""),
+        atr15=float(normalized.get("atr15") or 0),
+        regime=str(normalized.get("marketRegime") or data.get("market_state") or ""),
+        data_status=str(normalized.get("marketDataStatus") or "FAILED"),
     )
     _save(symbol, "trade_plans", trade_plan_state)
     stored_breakout_setups = _load(symbol, "breakout_setups")
@@ -168,6 +205,8 @@ def evaluate_market_monitors(
             **breakout_setup_state, "events": breakout_setup_events},
         "trend_continuation_engine": {
             **continuation_state, "events": continuation_events},
+        "double_sweep_statistical": {
+            **double_sweep_state, "events": double_sweep_events},
     }
     regime_state, regime_events = evaluate_regime_state(
         data, indicators=indicators, previous=_load(symbol, "regime_state"))
@@ -181,6 +220,7 @@ def evaluate_market_monitors(
     signal_facts = (exit_events + ([breakout_event] if breakout_event else [])
                     + virtual_events + trade_plan_events + breakout_setup_events
                     + continuation_events + regime_events + assistant_events)
+    signal_facts += double_sweep_events
     final_input = {**data, **monitor_result, "signal_facts": signal_facts}
     final_state, final_events = evaluate_final_decision(
         final_input, _load(symbol, "final_decision")
@@ -194,6 +234,11 @@ def evaluate_market_monitors(
     if final_state.get("decisionChanged"):
         from app.services.decision_replay import persist_decision_replay
         persist_decision_replay(symbol, final_input, final_state)
+        from app.db.session import db_session
+        from app.services.phase2_validation import persist_decision_journals
+        with db_session() as db:
+            persist_decision_journals(
+                db, symbol=symbol, data=final_input, decision=final_state)
     return {
         **monitor_result,
         "final_decision_state": final_state,

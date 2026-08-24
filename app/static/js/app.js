@@ -587,6 +587,7 @@ function renderMarketMonitors(a) {
   const price = (value) => value == null ? "–" : Number(value).toFixed(2);
   renderBreakoutSetupLedger(a.breakout_setup_manager || {});
   renderTrendContinuation(a.trend_continuation_engine || {});
+  renderDoubleSweep(a.double_sweep_statistical || {});
   const breakout = a.breakout_alert || {};
   const breakoutCard = $("breakout-alert-card");
   if (breakoutCard) {
@@ -643,18 +644,51 @@ function renderMarketMonitors(a) {
         $("virtual-profit-summary").textContent = `若你持有${side}｜目前 ${Number(activeTradePlan.currentR || 0).toFixed(2)}R｜下一目標 ${next}`;
         $("virtual-profit-targets").textContent = `TP1 ${price(activeTradePlan.tp1Price)} 平30%／TP2 ${price(activeTradePlan.tp2Price)} 再平30%／TP3 ${price(activeTradePlan.tp3Price)} 剩餘40%移動止盈`;
         $("virtual-profit-protection").textContent = `${price(activeTradePlan.trailingStopPrice)}；提前退出：${activeTradePlan.earlyExitCondition}`;
+        const thesis = activeTradePlan.tradeThesis || {};
+        const invalidation = activeTradePlan.invalidationState || {};
+        const soft = thesis.softInvalidation || {};
+        const hard = thesis.hardInvalidation || {};
+        $("position-thesis").textContent = thesis.thesisDescription || "原始交易論點尚未建立";
+        $("position-warning").textContent = price(thesis.warningLevel);
+        $("position-soft-invalidation").textContent = soft.closeCondition
+          ? `${soft.timeframe || "15M"} ${soft.closeCondition}，且 ${soft.reclaimWindow || "固定期限"} 內未收回` : "尚未建立";
+        $("position-hard-invalidation").textContent = hard.condition || price(hard.level);
+        $("position-next-action").textContent = `${invalidation.state || "HEALTHY"}｜${invalidation.holdJustification || "依原計畫管理"}`;
       } else if ((manager.errors || []).length) {
         $("virtual-profit-summary").textContent = `止盈計畫尚未建立：${manager.errors.join("；")}`;
         $("virtual-profit-targets").textContent = "–";
         $("virtual-profit-protection").textContent = "–";
+        ["position-thesis", "position-warning", "position-soft-invalidation",
+          "position-hard-invalidation", "position-next-action"].forEach((id) => { if ($(id)) $(id).textContent = "–"; });
       } else {
         const reached = (tracker.reached_levels || []).join("、") || "尚未到達 TP1";
         $("virtual-profit-summary").textContent = `若你有在 ${price(tracker.entry_price)} 附近進場：${reached}`;
         $("virtual-profit-targets").textContent = `${price(tracker.tp1)}／${price(tracker.tp2)}／${price(tracker.tp3)}`;
         $("virtual-profit-protection").textContent = price(tracker.protection_price);
+        ["position-thesis", "position-warning", "position-soft-invalidation",
+          "position-hard-invalidation", "position-next-action"].forEach((id) => { if ($(id)) $(id).textContent = "舊計畫未提供"; });
       }
     }
   }
+}
+
+function renderDoubleSweep(state) {
+  const card = $("double-sweep-card");
+  if (!card) return;
+  const event = state.event || {};
+  card.hidden = !event.eventId;
+  if (card.hidden) return;
+  const profile = state.profile || {};
+  const lifecycle = state.lifecycle || {};
+  const order = event.order === "HIGH_THEN_LOW" ? "先掃上方，再掃下方" : "先掃下方，再掃上方";
+  $("double-sweep-summary").textContent = state.message || "統計結果僅供背景參考";
+  $("double-sweep-order").textContent = order;
+  $("double-sweep-range").textContent = `${Number(event.referenceLow).toFixed(2)}～${Number(event.referenceHigh).toFixed(2)}`;
+  $("double-sweep-quality").textContent = `${event.reclaimQuality || 0} 分｜${event.reclaimStatus || "–"}`;
+  const sample = Number(profile.sampleSize || 0);
+  $("double-sweep-sample").textContent = sample < 20 ? `${sample} 筆（不足，不納入決策）` : `${sample} 筆`;
+  const edgeLabels = { LOW_CONFIDENCE: "樣本不足", FRESH: "新鮮", ACTIVE: "有效中", DECAYING: "正在衰減", EXHAUSTED: "已耗盡", EXPIRED: "已過期" };
+  $("double-sweep-edge").textContent = edgeLabels[lifecycle.edgeStatus] || lifecycle.edgeStatus || "–";
 }
 
 function renderTrendContinuation(engine) {
@@ -1579,6 +1613,20 @@ async function loadPerformance() {
       market_state: "市場狀態", session: "交易時段", setup_state: "戰術狀態",
       signal_mode: "訊號類型", stop_source: "停損來源" };
     const cards = [];
+    const phase2 = report.phase2_validation || {};
+    const overall2 = phase2.overall || {};
+    const calibration2 = phase2.calibration || {};
+    cards.push(h`<div class="performance-card calibration-card">
+      <h4>Phase 2 驗證（策略已凍結）</h4>
+      <div class="performance-metrics">
+        <span>完整 Setup<b class="num">${overall2.sampleSize || 0}</b></span>
+        <span>方向準確率<b>${overall2.directionAccuracy == null ? "樣本不足" : `${(overall2.directionAccuracy * 100).toFixed(1)}%`}</b></span>
+        <span>平均 R<b>${overall2.averageR == null ? "—" : Number(overall2.averageR).toFixed(2)}</b></span>
+        <span>漏掉進場<b>${overall2.missedEntryRate == null ? "—" : `${(overall2.missedEntryRate * 100).toFixed(1)}%`}</b></span>
+        <span>假停損<b>${overall2.falseStopRate == null ? "—" : `${(overall2.falseStopRate * 100).toFixed(1)}%`}</b></span>
+        <span>校準誤差 ECE<b>${calibration2.ECE == null ? "樣本不足" : Number(calibration2.ECE).toFixed(3)}</b></span>
+      </div><small>${phase2.phase2ValidationPassed ? "Phase 2 驗證已通過" : "目前只顯示 Setup Confidence Score；尚未取得足夠 OOS／walk-forward 證據。"}</small>
+    </div>`);
     const eventPerf = report.decision_events || {};
     cards.push(h`<div class="performance-card calibration-card">
       <h4>實際決策事件追蹤</h4>

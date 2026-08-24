@@ -384,16 +384,45 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
     if consistency_errors:
         base = fail_closed(base, consistency_errors)
     events: list[dict] = []
-    notify = changed and base["notificationSeverity"] in {"CRITICAL", "ACTION", "UPDATE"}
-    if notify:
+    event_types: list[str] = []
+    if changed:
+        if primary == "DATA_STALE":
+            event_types.append("DATA_STALE")
+        elif str(previous.get("primaryReason") or "") == "DATA_STALE":
+            event_types.append("DATA_RECOVERED")
+        if action in {"ENTER_LONG", "ENTER_SHORT"}:
+            event_types.append("ENTRY_READY")
+        elif primary == "OVEREXTENDED":
+            event_types.append("WAIT_RETEST")
+        if action == "MANAGE_POSITION":
+            event_types.append("POSITION_HOLD")
+    meaningful_facts = {
+        "DOUBLE_SWEEP_CONFIRMED", "FAILED_BREAKOUT", "FAILED_BREAKDOWN",
+        "LIQUIDITY_SWEEP_HIGH", "LIQUIDITY_SWEEP_LOW", "SETUP_INVALIDATED",
+        "SETUP_EXPIRED", "MISSED_ENTRY", "POSITION_DEFEND", "POSITION_EXIT",
+        "STOP_TRIGGERED", "TP1_HIT", "TP2_HIT", "TP3_HIT", "TRAIL_UPDATED",
+        "REGIME_MAJOR_CHANGE", "WHIPSAW_DETECTED",
+        "POSITION_WARNING", "SOFT_INVALIDATION_PENDING", "SOFT_INVALIDATED",
+        "HARD_INVALIDATED", "POSITION_RECOVERED", "POSITION_DATA_RISK",
+    }
+    # Lifecycle facts are state transitions in their own right. They must not
+    # disappear merely because the high-level ENTER/WAIT/MANAGE action stayed
+    # unchanged during the same evaluation cycle.
+    event_types.extend(sorted(fact_types & meaningful_facts))
+    if candle_time and candle_time != str(previous.get("sourceCandleCloseTime") or ""):
+        event_types.append("CANDLE_FINALIZED")
+    for canonical_event_type in dict.fromkeys(event_types):
+        canonical_fact = next((fact for fact in data.get("signal_facts") or []
+                               if fact.get("event_type") == canonical_event_type), {})
         published_action = str(base["finalAction"])
         published_state = state_map.get(published_action, str(base.get("state") or "NO_TRADE"))
         event_id = hashlib.sha256(
-            f"{decision_id}|{published_action}|{candle_time}".encode()).hexdigest()[:32]
-        canonical_event_type = ("REGIME_MAJOR_CHANGE" if fact_types & {
-            "BULLISH_RESTORED", "BEARISH_CONFIRMED"} else published_action)
+            f"{decision_id}|{canonical_event_type}|{candle_time}".encode()).hexdigest()[:32]
         events.append({
             "eventId": event_id, "event_type": canonical_event_type,
+            "eventVersion": 1, "snapshotId": str(data.get("version") or ""),
+            "positionId": str((data.get("position_management") or {}).get("position_id") or ""),
+            "eventTimeUtc": candle_time or evaluated_at, "generatedAtUtc": evaluated_at,
             "previousState": str(previous.get("state") or "WAIT"),
             "currentState": published_state, "transitionReason": base["humanSummary"],
             "marketState": str(assistant.get("regime") or ""),
@@ -401,6 +430,8 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
             "entryZone": base.get("entryZone"), "chaseLimit": base.get("chaseLimit"),
             "stopLoss": base.get("invalidationPrice"), "targets": base.get("targets") or [],
             "candleCloseTime": candle_time,
+            "latestClosedCandlePrice": (data.get("normalized_analysis") or {}).get(
+                "lastClosedCandlePrice"),
             "calculatedAt": str(data.get("timestamp_utc") or datetime.now(timezone.utc).isoformat()),
             "dataVersion": int(data.get("version") or 0), "direction": (
                 "LONG" if published_action == "ENTER_LONG" else
@@ -414,6 +445,10 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
             "effectiveRR": base.get("effectiveRR"),
             "signalFacts": list(data.get("signal_facts") or []),
             "notificationEligible": True,
+            **{key: canonical_fact.get(key) for key in (
+                "tradePlanId", "tradeThesis", "warningLevel", "hardInvalidation",
+                "emergencyStop", "reclaimDeadline", "reasonCode", "closedPrice")
+               if canonical_fact.get(key) is not None},
         })
     base["events"] = events
     return base, events

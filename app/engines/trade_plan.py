@@ -6,9 +6,14 @@ import hashlib
 import logging
 from datetime import datetime, timedelta, timezone
 
+from app.engines.thesis_invalidation import (
+    build_trade_thesis,
+    evaluate_invalidation,
+    initial_invalidation_state,
+)
 from app.engines.trading_invariants import validate_stop_update, validate_trade_prices
 
-CALCULATION_VERSION = "trade-plan-v1"
+CALCULATION_VERSION = "trade-plan-v2-thesis"
 DEFAULT_TP_PERCENTAGES = (30, 30, 40)
 logger = logging.getLogger(__name__)
 
@@ -88,12 +93,19 @@ def build_trade_plan(entry_plan: dict, *, symbol: str, created_at: str) -> tuple
                        + timedelta(hours=12)).isoformat()
         except ValueError:
             expires = (datetime.now(timezone.utc) + timedelta(hours=12)).isoformat()
+    thesis = build_trade_thesis(entry_plan, created_at=created_at)
+    thesis["tradePlanId"] = plan_id
+    effective_rr = abs(targets[0] - entry) / float(thesis["stopDistance"])
     return {
         "tradePlanId": plan_id, "setupId": setup_id, "symbol": symbol,
         "direction": direction, "referenceEntry": entry,
         "entryZoneLow": float(entry_plan.get("zone_low") or entry),
         "entryZoneHigh": float(entry_plan.get("zone_high") or entry),
-        "initialStop": stop, "riskDistance": round(risk, 4),
+        # strategyStop is a warning/close-confirmation input. initialStop is
+        # retained for API compatibility but now means the deterministic
+        # emergency stop, never a movable single-price strategy stop.
+        "strategyStop": stop, "initialStop": thesis["emergencyStop"],
+        "riskDistance": thesis["stopDistance"],
         "tp1Price": targets[0], "tp1Percent": DEFAULT_TP_PERCENTAGES[0],
         "tp2Price": targets[1], "tp2Percent": DEFAULT_TP_PERCENTAGES[1],
         "tp3Price": targets[2], "tp3Percent": DEFAULT_TP_PERCENTAGES[2],
@@ -101,10 +113,16 @@ def build_trade_plan(entry_plan: dict, *, symbol: str, created_at: str) -> tuple
             "最新已收盤 15M 跌破追蹤支撐" if direction == "LONG"
             else "最新已收盤 15M 站回追蹤壓力"
         ),
-        "trailingStopPrice": stop, "createdAt": created_at,
+        "trailingStopPrice": thesis["emergencyStop"], "createdAt": created_at,
         "expiresAt": expires, "status": "ACTIVE", "completedEvents": [],
         "calculationBasis": basis, "calculationVersion": CALCULATION_VERSION,
         "lastEvent": "", "currentR": 0.0,
+        "tradeThesis": thesis,
+        "invalidationState": initial_invalidation_state(thesis),
+        "riskBudget": thesis["riskBudget"],
+        "positionSize": thesis["positionSize"],
+        "effectiveRR": round(effective_rr, 3),
+        "riskQuality": "PASS" if effective_rr >= 1.5 else "RR_COLLAPSED",
     }, ""
 
 
@@ -115,7 +133,8 @@ def _reached(direction: str, price: float, level: float) -> bool:
 def evaluate_trade_plans(
     entry_plan: dict, previous: dict | None, *, symbol: str, current_price: float,
     closed_price: float | None, latest_structure_protection: float | None,
-    candle_close_time: str, calculated_at: str,
+    candle_close_time: str, calculated_at: str, atr15: float = 0.0,
+    regime: str = "", data_status: str = "GOOD",
 ) -> tuple[dict, list[dict]]:
     """Persist progress and emit each tradePlanId/event/target only once."""
     state = dict(previous or {})
@@ -135,6 +154,31 @@ def evaluate_trade_plans(
     for plan in plans.values():
         if plan.get("status") != "ACTIVE":
             continue
+        if not plan.get("tradeThesis"):
+            # Forward-only migration: freeze the legacy stop as the structural
+            # hard level and derive a closer warning. Never leave a persisted
+            # active plan without deterministic protection after deployment.
+            legacy_entry = {
+                "setup_id": plan["setupId"], "direction": plan["direction"],
+                "suggested_entry": plan["referenceEntry"],
+                "stop_loss": plan["initialStop"],
+                "hard_invalidation": plan["initialStop"],
+                "take_profit_1": plan.get("tp1Price"),
+                "take_profit_2": plan.get("tp2Price"),
+                "take_profit_3": plan.get("tp3Price"),
+                "strategy_type": "LEGACY_MIGRATED",
+            }
+            migrated_thesis = build_trade_thesis(
+                legacy_entry, created_at=str(plan.get("createdAt") or calculated_at))
+            migrated_thesis["tradePlanId"] = plan["tradePlanId"]
+            plan["tradeThesis"] = migrated_thesis
+            plan["invalidationState"] = initial_invalidation_state(migrated_thesis)
+            plan["strategyStop"] = migrated_thesis["warningLevel"]
+            plan["initialStop"] = migrated_thesis["emergencyStop"]
+            plan["riskDistance"] = migrated_thesis["stopDistance"]
+            plan["riskBudget"] = migrated_thesis["riskBudget"]
+            plan["positionSize"] = migrated_thesis["positionSize"]
+            plan["migrationSource"] = "trade-plan-v1"
         try:
             expired = bool(plan.get("expiresAt")) and (
                 datetime.fromisoformat(str(plan["expiresAt"]).replace("Z", "+00:00"))
@@ -151,14 +195,25 @@ def evaluate_trade_plans(
         plan["currentR"] = round(
             sign * (current_price - float(plan["referenceEntry"]))
             / float(plan["riskDistance"]), 2)
-        stop_hit = _reached("SHORT" if direction == "LONG" else "LONG",
-                            current_price, float(plan["initialStop"]))
-        if stop_hit and "STOP_TRIGGERED" not in completed:
-            completed.append("STOP_TRIGGERED")
-            plan["status"] = "STOPPED"
-            events.append(_event(plan, "STOP_TRIGGERED", current_price,
-                                 candle_close_time, target_index=0,
-                                 percent=100, next_level=None))
+        thesis = dict(plan.get("tradeThesis") or {})
+        if thesis:
+            invalidation, risk_events = evaluate_invalidation(
+                thesis, plan.get("invalidationState"), current_price=current_price,
+                closed_price=closed_price, candle_close_time=candle_close_time,
+                atr15=atr15, regime=regime, data_status=data_status)
+            plan["invalidationState"] = invalidation
+            for risk_event in risk_events:
+                risk_event.update({
+                    "tradePlanId": plan["tradePlanId"],
+                    "side": direction,
+                    "currentPrice": current_price,
+                    "topic": (f"trade-plan:{plan['tradePlanId']}:"
+                              f"{risk_event['event_type']}"),
+                })
+            events.extend(risk_events)
+            if invalidation["state"] in {"SOFT_INVALIDATED", "HARD_INVALIDATED"}:
+                plan["status"] = "EXITED"
+                completed.append(invalidation["state"])
         if plan["status"] != "ACTIVE":
             plan["completedEvents"] = completed
             continue
@@ -192,7 +247,9 @@ def evaluate_trade_plans(
                     events.append(_event(plan, "TRAILING_STOP_UPDATE", current_price,
                                          candle_close_time, target_index=3,
                                          percent=0, next_level=updated))
-        early_hit = isinstance(closed_price, (int, float)) and (
+        # Trailing profit protection remains separate from thesis invalidation
+        # and only activates after at least TP1 has completed.
+        early_hit = "TAKE_PROFIT_1" in completed and isinstance(closed_price, (int, float)) and (
             (direction == "LONG" and closed_price < float(plan["trailingStopPrice"]))
             or (direction == "SHORT" and closed_price > float(plan["trailingStopPrice"]))
         )
