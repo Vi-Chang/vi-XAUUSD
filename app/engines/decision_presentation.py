@@ -147,6 +147,40 @@ def format_decision_message(event: dict) -> str:
             f"目前：{float(event.get('currentPrice') or 0):.2f}",
             "下一步：等待第一次合理回踩，不是等待更遠的新突破。",
         ])
+    if canonical_type in {
+        "POSITION_WARNING", "SOFT_INVALIDATION_PENDING", "SOFT_INVALIDATED",
+        "HARD_INVALIDATED", "POSITION_RECOVERED",
+        "POSITION_DATA_RISK",
+    }:
+        thesis = event.get("tradeThesis") or {}
+        warning = event.get("warningLevel") or thesis.get("warningLevel")
+        hard = event.get("hardInvalidation") or (thesis.get("hardInvalidation") or {}).get("level")
+        current = float(event.get("currentPrice") or 0)
+        direction = "多單" if event.get("direction") == "LONG" else "空單"
+        common = [
+            f"現價：{current:.2f}",
+            f"交易論點：{thesis.get('thesisDescription') or '依原始結構建立的交易論點'}",
+            f"警戒線：{float(warning):.2f}" if isinstance(warning, (int, float)) else "警戒線：—",
+            f"結構硬失效：{float(hard):.2f}" if isinstance(hard, (int, float)) else "結構硬失效：—",
+        ]
+        if canonical_type == "POSITION_WARNING":
+            return "\n".join(["⚠️【持倉進入警戒｜尚未正式失效】", *common,
+                              f"若你持有{direction}：禁止加碼，等待15M收盤確認。"])
+        if canonical_type == "POSITION_DATA_RISK":
+            return "\n".join(["🔴【持倉資料風險】", *common,
+                              "行情資料已過期；停止新進場，保留既定 emergency stop 與券商端保護。"])
+        if canonical_type == "SOFT_INVALIDATION_PENDING":
+            return "\n".join(["🟠【交易論點受壓｜等待有限時間收復】", *common,
+                              f"收復期限：{event.get('reclaimDeadline') or '下一根15M'}",
+                              "尚未退出，但期限不會再延長。"])
+        if canonical_type == "POSITION_RECOVERED":
+            return "\n".join(["✅【防守成功｜原交易論點仍有效】", *common,
+                              f"若你持有{direction}：恢復依原計畫管理，不代表建立新進場。"])
+        if canonical_type == "SOFT_INVALIDATED":
+            return "\n".join(["🔴【交易論點明顯受損】", *common,
+                              f"若你持有{direction}：依原風控退出／減倉，不得把防守線移遠。"])
+        return "\n".join(["⛔【原交易論點正式失效】", *common,
+                          f"若你持有{direction}：立即依風控退出。"])
     if canonical_type in {"POSITION_DEFEND", "STOP_TRIGGERED", "POSITION_EXIT"}:
         return "\n".join([
             "⚠️【XAUUSD 持倉條件提醒】",

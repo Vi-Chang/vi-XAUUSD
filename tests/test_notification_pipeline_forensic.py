@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 
+from app.engines.decision_presentation import format_decision_message
 from app.services.heartbeat import _market_reopen_grace
 from app.services.notification_policy import (
     canonical_dedupe_key,
@@ -45,3 +46,15 @@ def test_sunday_reopen_has_first_candle_grace_but_later_time_does_not():
         datetime(2026, 8, 23, 22, 9, tzinfo=timezone.utc)) is True
     assert _market_reopen_grace(
         datetime(2026, 8, 23, 22, 21, tzinfo=timezone.utc)) is False
+
+
+def test_thesis_warning_and_recovery_are_plain_language_position_events():
+    base = {
+        "direction": "LONG", "currentPrice": 4613.0, "warningLevel": 4615.0,
+        "hardInvalidation": 4594.73,
+        "tradeThesis": {"thesisDescription": "4594.73 掃低後 reclaim 多單"},
+    }
+    warning = format_decision_message({**base, "event_type": "POSITION_WARNING"})
+    recovered = format_decision_message({**base, "event_type": "POSITION_RECOVERED"})
+    assert "尚未正式失效" in warning and "禁止加碼" in warning
+    assert "防守成功" in recovered and "不代表建立新進場" in recovered

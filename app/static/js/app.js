@@ -644,15 +644,29 @@ function renderMarketMonitors(a) {
         $("virtual-profit-summary").textContent = `若你持有${side}｜目前 ${Number(activeTradePlan.currentR || 0).toFixed(2)}R｜下一目標 ${next}`;
         $("virtual-profit-targets").textContent = `TP1 ${price(activeTradePlan.tp1Price)} 平30%／TP2 ${price(activeTradePlan.tp2Price)} 再平30%／TP3 ${price(activeTradePlan.tp3Price)} 剩餘40%移動止盈`;
         $("virtual-profit-protection").textContent = `${price(activeTradePlan.trailingStopPrice)}；提前退出：${activeTradePlan.earlyExitCondition}`;
+        const thesis = activeTradePlan.tradeThesis || {};
+        const invalidation = activeTradePlan.invalidationState || {};
+        const soft = thesis.softInvalidation || {};
+        const hard = thesis.hardInvalidation || {};
+        $("position-thesis").textContent = thesis.thesisDescription || "原始交易論點尚未建立";
+        $("position-warning").textContent = price(thesis.warningLevel);
+        $("position-soft-invalidation").textContent = soft.closeCondition
+          ? `${soft.timeframe || "15M"} ${soft.closeCondition}，且 ${soft.reclaimWindow || "固定期限"} 內未收回` : "尚未建立";
+        $("position-hard-invalidation").textContent = hard.condition || price(hard.level);
+        $("position-next-action").textContent = `${invalidation.state || "HEALTHY"}｜${invalidation.holdJustification || "依原計畫管理"}`;
       } else if ((manager.errors || []).length) {
         $("virtual-profit-summary").textContent = `止盈計畫尚未建立：${manager.errors.join("；")}`;
         $("virtual-profit-targets").textContent = "–";
         $("virtual-profit-protection").textContent = "–";
+        ["position-thesis", "position-warning", "position-soft-invalidation",
+          "position-hard-invalidation", "position-next-action"].forEach((id) => { if ($(id)) $(id).textContent = "–"; });
       } else {
         const reached = (tracker.reached_levels || []).join("、") || "尚未到達 TP1";
         $("virtual-profit-summary").textContent = `若你有在 ${price(tracker.entry_price)} 附近進場：${reached}`;
         $("virtual-profit-targets").textContent = `${price(tracker.tp1)}／${price(tracker.tp2)}／${price(tracker.tp3)}`;
         $("virtual-profit-protection").textContent = price(tracker.protection_price);
+        ["position-thesis", "position-warning", "position-soft-invalidation",
+          "position-hard-invalidation", "position-next-action"].forEach((id) => { if ($(id)) $(id).textContent = "舊計畫未提供"; });
       }
     }
   }

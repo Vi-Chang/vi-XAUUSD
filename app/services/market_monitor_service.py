@@ -104,7 +104,7 @@ def evaluate_market_monitors(
     )
     _save(symbol, "bullish_breakout", asdict(breakout_state))
 
-    entry = data.get("entry_engine") or {}
+    entry = dict(data.get("entry_engine") or {})
     support = next(
         (
             x
@@ -114,6 +114,39 @@ def evaluate_market_monitors(
         None,
     )
     structure_protection = float(support["price"]) if support else None
+    # Detect sweep context before freezing a new trade thesis. Statistical
+    # context may select the initial structural level, but can never mutate it
+    # after the trade plan is created.
+    timeframe_data = data.get("timeframes") or {}
+    generated = str(data.get("timestamp_utc") or datetime.now(timezone.utc).isoformat())
+    try:
+        evaluation_time = datetime.fromisoformat(generated.replace("Z", "+00:00"))
+    except ValueError:
+        evaluation_time = datetime.now(timezone.utc)
+    double_sweep_state, double_sweep_events = evaluate_double_sweep_monitor(
+        m15_closed, symbol=symbol,
+        current_price=float(normalized.get("currentPrice") or 0),
+        regime4h=str((timeframe_data.get("h4") or {}).get("trend")
+                    or data.get("market_state") or "UNKNOWN"),
+        structure1h=str((timeframe_data.get("h1") or {}).get("structure") or "UNKNOWN"),
+        macro_context=str((data.get("event_risk") or {}).get("status") or "UNKNOWN"),
+        now=evaluation_time, previous=_load(symbol, "double_sweep"))
+    _save(symbol, "double_sweep", double_sweep_state)
+    sweep = double_sweep_state.get("event") or {}
+    if entry.get("status") == "ENTRY_TRIGGERED" and sweep:
+        entry.update({
+            "strategy_type": ("SWEEP_RECLAIM_LONG" if entry.get("direction") == "LONG"
+                              else "SWEEP_RECLAIM_SHORT"),
+            "sweep_low": sweep.get("referenceLow"),
+            "sweep_high": sweep.get("referenceHigh"),
+            "atr15": normalized.get("atr15"),
+            "thesis_description": (
+                f"{float(sweep.get('referenceLow')):.2f} 下方掃低後重新收回，多方 reclaim 成立"
+                if entry.get("direction") == "LONG" else
+                f"{float(sweep.get('referenceHigh')):.2f} 上方掃高後重新跌回，空方 reclaim 成立"),
+            "thesis_evidence": ["LIQUIDITY_SWEEP", "RECLAIM", "CLOSED_CANDLE"],
+            "mae_profile": double_sweep_state.get("profile") or {},
+        })
     virtual_state, virtual_events = evaluate_virtual_profit(
         entry,
         _load(symbol, "virtual_profit"),
@@ -137,6 +170,9 @@ def evaluate_market_monitors(
         latest_structure_protection=structure_protection,
         candle_close_time=str(normalized.get("lastClosedCandleTimestamp") or ""),
         calculated_at=str(data.get("timestamp_utc") or ""),
+        atr15=float(normalized.get("atr15") or 0),
+        regime=str(normalized.get("marketRegime") or data.get("market_state") or ""),
+        data_status=str(normalized.get("marketDataStatus") or "FAILED"),
     )
     _save(symbol, "trade_plans", trade_plan_state)
     stored_breakout_setups = _load(symbol, "breakout_setups")
@@ -159,20 +195,6 @@ def evaluate_market_monitors(
         m15=m15_closed, h1=h1_closed, h4=h4_closed,
         previous=_load(symbol, "trend_continuation"))
     _save(symbol, "trend_continuation", continuation_state)
-    timeframe_data = data.get("timeframes") or {}
-    generated = str(data.get("timestamp_utc") or datetime.now(timezone.utc).isoformat())
-    try:
-        evaluation_time = datetime.fromisoformat(generated.replace("Z", "+00:00"))
-    except ValueError:
-        evaluation_time = datetime.now(timezone.utc)
-    double_sweep_state, double_sweep_events = evaluate_double_sweep_monitor(
-        m15_closed, symbol=symbol,
-        current_price=float(normalized.get("currentPrice") or 0),
-        regime4h=str((timeframe_data.get("h4") or {}).get("trend") or data.get("market_state") or "UNKNOWN"),
-        structure1h=str((timeframe_data.get("h1") or {}).get("structure") or "UNKNOWN"),
-        macro_context=str((data.get("event_risk") or {}).get("status") or "UNKNOWN"),
-        now=evaluation_time, previous=_load(symbol, "double_sweep"))
-    _save(symbol, "double_sweep", double_sweep_state)
     plans = {plan.side: asdict(plan) for plan in build_hypothetical_exit_plans(data)}
     monitor_result = {
         "hypothetical_exit_advisor": {"plans": plans, "events": exit_events},

@@ -396,17 +396,24 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
             event_types.append("WAIT_RETEST")
         if action == "MANAGE_POSITION":
             event_types.append("POSITION_HOLD")
-        meaningful_facts = {
-            "DOUBLE_SWEEP_CONFIRMED", "FAILED_BREAKOUT", "FAILED_BREAKDOWN",
-            "LIQUIDITY_SWEEP_HIGH", "LIQUIDITY_SWEEP_LOW", "SETUP_INVALIDATED",
-            "SETUP_EXPIRED", "MISSED_ENTRY", "POSITION_DEFEND", "POSITION_EXIT",
-            "STOP_TRIGGERED", "TP1_HIT", "TP2_HIT", "TP3_HIT", "TRAIL_UPDATED",
-            "REGIME_MAJOR_CHANGE", "WHIPSAW_DETECTED",
-        }
-        event_types.extend(sorted(fact_types & meaningful_facts))
+    meaningful_facts = {
+        "DOUBLE_SWEEP_CONFIRMED", "FAILED_BREAKOUT", "FAILED_BREAKDOWN",
+        "LIQUIDITY_SWEEP_HIGH", "LIQUIDITY_SWEEP_LOW", "SETUP_INVALIDATED",
+        "SETUP_EXPIRED", "MISSED_ENTRY", "POSITION_DEFEND", "POSITION_EXIT",
+        "STOP_TRIGGERED", "TP1_HIT", "TP2_HIT", "TP3_HIT", "TRAIL_UPDATED",
+        "REGIME_MAJOR_CHANGE", "WHIPSAW_DETECTED",
+        "POSITION_WARNING", "SOFT_INVALIDATION_PENDING", "SOFT_INVALIDATED",
+        "HARD_INVALIDATED", "POSITION_RECOVERED", "POSITION_DATA_RISK",
+    }
+    # Lifecycle facts are state transitions in their own right. They must not
+    # disappear merely because the high-level ENTER/WAIT/MANAGE action stayed
+    # unchanged during the same evaluation cycle.
+    event_types.extend(sorted(fact_types & meaningful_facts))
     if candle_time and candle_time != str(previous.get("sourceCandleCloseTime") or ""):
         event_types.append("CANDLE_FINALIZED")
     for canonical_event_type in dict.fromkeys(event_types):
+        canonical_fact = next((fact for fact in data.get("signal_facts") or []
+                               if fact.get("event_type") == canonical_event_type), {})
         published_action = str(base["finalAction"])
         published_state = state_map.get(published_action, str(base.get("state") or "NO_TRADE"))
         event_id = hashlib.sha256(
@@ -438,6 +445,10 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
             "effectiveRR": base.get("effectiveRR"),
             "signalFacts": list(data.get("signal_facts") or []),
             "notificationEligible": True,
+            **{key: canonical_fact.get(key) for key in (
+                "tradePlanId", "tradeThesis", "warningLevel", "hardInvalidation",
+                "emergencyStop", "reclaimDeadline", "reasonCode", "closedPrice")
+               if canonical_fact.get(key) is not None},
         })
     base["events"] = events
     return base, events

@@ -129,6 +129,21 @@ def test_micro_price_change_does_not_create_new_decision_version():
     assert second["decisionChanged"] is False and events == []
 
 
+def test_position_risk_transition_emits_even_when_high_level_action_is_unchanged():
+    first, _ = evaluate_final_decision(market())
+    unchanged = market()
+    unchanged["signal_facts"] = [{
+        "event_type": "POSITION_WARNING", "setupId": "BO-v1",
+        "warningLevel": 99.0, "currentState": "WARNING",
+        "tradeThesis": {"thesisDescription": "固定交易論點"},
+    }]
+    second, events = evaluate_final_decision(unchanged, previous=first)
+    assert second["decisionChanged"] is False
+    warning = next(event for event in events
+                   if event["event_type"] == "POSITION_WARNING")
+    assert warning["warningLevel"] == 99.0
+
+
 def test_scenario_version_change_creates_new_decision_version():
     first, _ = evaluate_final_decision(market())
     changed = market()

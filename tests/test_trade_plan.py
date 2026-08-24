@@ -35,7 +35,7 @@ def test_conditional_long_plan_has_fixed_complete_targets_and_percentages():
     assert plan["direction"] == "LONG"
     assert (plan["tp1Price"], plan["tp2Price"], plan["tp3Price"]) == (4510, 4520, 4530)
     assert (plan["tp1Percent"], plan["tp2Percent"], plan["tp3Percent"]) == (30, 30, 40)
-    assert plan["calculationVersion"] == "trade-plan-v1"
+    assert plan["calculationVersion"] == "trade-plan-v2-thesis"
 
 
 def test_missed_entry_does_not_stop_existing_position_management():
@@ -66,13 +66,13 @@ def test_closed_15m_below_trailing_support_emits_early_exit():
     assert state["activePlans"] == []
 
 
-def test_short_stop_is_defense_not_take_profit():
+def test_short_intrabar_warning_is_not_mistaken_for_stop_or_take_profit():
     state, _ = evaluate(SHORT, price=4550, closed=4550)
     _state, events = evaluate({**SHORT, "status": "INVALIDATED"}, state,
                               price=4560, closed=4558)
-    assert [event["event_type"] for event in events] == ["STOP_TRIGGERED"]
+    assert [event["event_type"] for event in events] == ["POSITION_WARNING"]
     assert events[0]["side"] == "SHORT"
-    assert events[0]["percent"] == 100
+    assert events[0]["currentState"] == "WARNING"
 
 
 def test_restart_keeps_completed_tp_and_does_not_repeat():
@@ -111,3 +111,17 @@ def test_legacy_completed_tp_progress_is_migrated_without_realerting():
     plan = migrated["activePlans"][0]
     assert plan["completedEvents"] == ["TAKE_PROFIT_1"]
     assert plan["migrationSource"] == "virtual_profit_v0"
+
+
+def test_active_v1_plan_is_forward_migrated_without_losing_protection():
+    state, _ = evaluate()
+    legacy = dict(state["activePlans"][0])
+    legacy.pop("tradeThesis")
+    legacy.pop("invalidationState")
+    legacy["initialStop"] = 4490.0
+    migrated, _ = evaluate(previous={"plans": {legacy["tradePlanId"]: legacy}},
+                           price=4500, closed=4500)
+    plan = migrated["activePlans"][0]
+    assert plan["migrationSource"] == "trade-plan-v1"
+    assert plan["tradeThesis"]["hardInvalidation"]["level"] == 4490
+    assert plan["initialStop"] < 4490
