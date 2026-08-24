@@ -37,14 +37,39 @@ def _critical_jobs() -> dict[str, int]:
     return {
         "quote_l1": max(l1 * 3, 300),
         "structure_l2": s.tier2_check_seconds * 2 + 100,
-        "full_analysis": s.tier3_max_age_minutes * 60 + s.tier2_check_seconds * 2,
+        # A decision cycle is expected after every finalized 15M candle. The
+        # former ~70 minute tolerance hid exactly the kind of silent gap users
+        # cannot distinguish from "no signal".
+        "full_analysis": min(s.tier3_max_age_minutes * 60, 20 * 60),
+        "candle_close_refresh": 20 * 60,
+        "telegram_outbox": max(s.alert_aggregation_window_seconds * 6, 300),
     }
+
+
+def telegram_outbox_health(now: datetime | None = None) -> list[str]:
+    """Return durable delivery failures and stuck pending notifications."""
+    try:
+        from app.db.models import TelegramNotification
+        from app.db.session import db_session
+        current = now or datetime.now(timezone.utc)
+        stale_before = current - timedelta(minutes=5)
+        with db_session() as db:
+            rows = db.execute(select(TelegramNotification).where(
+                (TelegramNotification.status.in_(("FAILED", "DELIVERY_UNKNOWN"))) |
+                ((TelegramNotification.status.in_(("PENDING", "RETRYING"))) &
+                 (TelegramNotification.updated_at < stale_before))
+            ).order_by(TelegramNotification.updated_at).limit(10)).scalars().all()
+        return [f"{row.event_id}:{row.status}" for row in rows]
+    except Exception as exc:  # noqa: BLE001
+        logger.error("telegram outbox watchdog failed: %s", exc)
+        return ["outbox_watchdog_query_failed"]
 
 
 
 
 def check_liveness(last_job_run: dict[str, datetime],
-                   started_at: datetime | None = None) -> list[str]:
+                   started_at: datetime | None = None,
+                   *, require_extended: bool = False) -> list[str]:
     """回傳停止運作的元件清單。
 
     開機寬限期:started_at 提供時,尚未執行過的 job 在「開機後未滿容忍時間」內
@@ -53,6 +78,8 @@ def check_liveness(last_job_run: dict[str, datetime],
     now = datetime.now(timezone.utc)
     dead = []
     for job, tolerance in _critical_jobs().items():
+        if job in {"candle_close_refresh", "telegram_outbox"} and not require_extended:
+            continue
         last = last_job_run.get(job)
         if last is not None:
             if (now - last).total_seconds() > tolerance:
@@ -132,11 +159,29 @@ async def run_monitor(state) -> None:
         return
 
     # 1) 元件死亡偵測(最嚴重)→ ERROR(含開機寬限期)
-    dead = check_liveness(state.last_job_run, getattr(state, "started_at", None))
+    started_at = getattr(state, "started_at", None)
+    dead = check_liveness(
+        state.last_job_run, started_at,
+        require_extended=bool(getattr(state, "scheduler_started", False)))
     if dead:
         await state.notifier.notify(
             "RISK", "component_down",
             f"元件停止運作:{', '.join(dead)}", severity="ERROR")
+        return
+
+    in_startup_grace = (started_at is not None and
+                        (datetime.now(timezone.utc) - started_at).total_seconds()
+                        <= _startup_grace_seconds())
+    delivery_failures = ([] if in_startup_grace or
+                         not bool(getattr(state, "scheduler_started", False))
+                         else telegram_outbox_health())
+    if delivery_failures:
+        logger.error("telegram delivery unhealthy: %s", delivery_failures)
+        await state.notifier.notify(
+            "RISK", "telegram_delivery_failure",
+            "Telegram 傳送異常，系統仍持續分析；待送事件："
+            + "、".join(delivery_failures[:3]),
+            severity="ERROR", force_push=True, bypass_cooldown=True)
         return
 
     # 2) 資料延遲 → WARN

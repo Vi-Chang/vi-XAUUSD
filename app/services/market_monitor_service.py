@@ -28,6 +28,7 @@ from app.engines.hypothetical_exit_advisor import (
 )
 from app.engines.market_behavior import evaluate_market_behavior
 from app.engines.regime_state_machine import evaluate_regime_state
+from app.engines.signal_lifecycle import evaluate_signal_lifecycle
 from app.engines.trade_plan import evaluate_trade_plans, migrate_legacy_virtual_profit
 from app.engines.trend_continuation_engine import evaluate_trend_continuation
 from app.engines.virtual_profit_tracker import evaluate_virtual_profit
@@ -244,6 +245,21 @@ def evaluate_market_monitors(
     for event in final_events:
         event["canonicalDecision"] = canonical
         event["nextTriggerCondition"] = canonical["canonicalNextTrigger"]
+    lifecycle_input = {**final_state,
+                       "entryZone": final_state.get("entryZone") or canonical.get("entryZone"),
+                       "triggerLevel": (canonical.get("canonicalNextTrigger") or {}).get("level")
+                       if isinstance(canonical.get("canonicalNextTrigger"), dict) else None}
+    lifecycle_state, lifecycle_events = evaluate_signal_lifecycle(
+        lifecycle_input, _load(symbol, "signal_lifecycle"))
+    _save(symbol, "signal_lifecycle", lifecycle_state)
+    for event in lifecycle_events:
+        event.update({
+            "symbol": symbol, "decisionId": final_state.get("decisionId"),
+            "decisionVersion": final_state.get("decisionVersion"),
+            "dataVersion": int(data.get("version") or 0),
+            "marketState": lifecycle_state.get("bias"),
+        })
+    final_events.extend(lifecycle_events)
     final_state["events"] = final_events
     if final_events:
         final_state["latest_event"] = final_events[-1]
@@ -312,6 +328,18 @@ def evaluate_live_quote_state(
     if presentation["defenseState"] == "POSITION_DEFENSE_TRIGGERED":
         current["canEnter"] = False
         current["positionDefenseState"] = "POSITION_DEFENSE_TRIGGERED"
+    lifecycle_state, lifecycle_events = evaluate_signal_lifecycle(
+        current, _load(symbol, "signal_lifecycle"), live_quote=True)
+    _save(symbol, "signal_lifecycle", lifecycle_state)
+    for event in lifecycle_events:
+        event.update({
+            "symbol": symbol, "decisionId": current.get("decisionId"),
+            "decisionVersion": current.get("decisionVersion"),
+            "dataVersion": int(candidate.get("version") or 0),
+            "marketState": lifecycle_state.get("bias"),
+        })
+    events.extend(lifecycle_events)
+    current["events"] = events
     from app.services.current_decision_store import publish_current_final_decision
     current, published = publish_current_final_decision(symbol, current)
     events = list(current.get("events") or []) if published else []

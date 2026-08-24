@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 CRITICAL = {"STOP_TRIGGERED", "POSITION_EXIT", "HARD_INVALIDATED"}
 ACTION = {
     "ENTRY_READY", "ENTRY_NOW", "POSITION_DEFEND", "SETUP_INVALIDATED",
-    "SOFT_INVALIDATED",
+    "SOFT_INVALIDATED", "EXIT_NOW", "ENTRY_INVALIDATED",
 }
 IMPORTANT = {
     "DATA_STALE", "DATA_RECOVERED", "DOUBLE_SWEEP_CONFIRMED",
@@ -16,6 +16,10 @@ IMPORTANT = {
     "WHIPSAW_DETECTED", "MARKET_REOPENED",
     "POSITION_WARNING", "SOFT_INVALIDATION_PENDING", "POSITION_RECOVERED",
     "POSITION_DATA_RISK",
+    "BIAS_CHANGE", "SETUP_FORMING", "ENTRY_APPROACHING", "PRICE_RAN_AWAY",
+    "RETRACE_APPROACHING", "RETRACE_ZONE_ENTERED", "SETUP_WEAKENING",
+    "REENTRY_AVAILABLE", "TARGET_UPDATED", "TP_APPROACHING", "TP_HIT",
+    "TRAILING_STOP_UPDATE", "EXIT_WARNING", "NEW_STRUCTURE",
 }
 INFO = {"REGIME_MAJOR_CHANGE", "MARKET_CLOSED", "SETUP_CREATED", "SETUP_ARMED"}
 WAIT_STATES = {"WAIT", "NO_TRADE", "WAIT_CONFIRMATION"}
@@ -76,10 +80,7 @@ def is_expired(payload: dict, *, now: datetime | None = None) -> bool:
 
 
 def canonical_dedupe_key(payload: dict) -> str:
-    return "|".join((
-        str(payload.get("symbol") or "XAUUSD"),
-        str(payload.get("setupId") or "-"),
-        str(payload.get("positionId") or "-"),
-        str(payload.get("event_type") or "DECISION_UPDATED"),
-        str(payload.get("eventVersion") or 1),
-    ))
+    # Delegate to the meaningful market fingerprint. It deliberately excludes
+    # quote/calculation time, but includes action-changing prices and state.
+    from app.services.alert_aggregator import notification_fingerprint
+    return notification_fingerprint(payload)

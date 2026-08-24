@@ -161,6 +161,15 @@ def persist_decision_events(symbol: str, events: list[dict]) -> list[dict]:
                     payload.get("setupId") or event_id,
                     reason,
                 )
+                db.add(NotificationAudit(
+                    event_id=event_id,
+                    event_type=str(payload.get("event_type") or ""),
+                    eligible=False,
+                    reason_code="SKIP_NO_MEANINGFUL_DECISION_CHANGE",
+                    dedupe_key=semantic_key,
+                    payload={"meaningfulChangeReason": reason},
+                    created_at=now,
+                ))
                 continue
             payload["meaningfulChangeReason"] = reason
             exists = db.execute(
