@@ -24,6 +24,7 @@ const S = {
   prevBid: null, countdownTarget: null,
   showAllMarkers: false,
   authed: false, privWs: null,   // 管理登入狀態 + 私人 WebSocket
+  liveTick: null, realtimeFacts: null,
 };
 
 // 私人面板(登入後才載入;登出/過期時清空 DOM)
@@ -32,7 +33,15 @@ const PRIVATE_PANELS = ["position-list"];
 const $ = (id) => document.getElementById(id);
 const unskel = (el) => el && el.classList.remove("skel");
 const fmt = (v, d = 2) => (v == null ? "–" : Number(v).toFixed(d));
-const fmtTs = (v) => v ? String(v).slice(0, 16).replace("T", " ") : "–";
+const fmtTs = (v) => {
+  if (!v) return "–";
+  const parsed = new Date(v);
+  if (Number.isNaN(parsed.getTime())) return "–";
+  return new Intl.DateTimeFormat("zh-TW", {
+    timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", hour12: false,
+  }).format(parsed);
+};
 
 /* ═══ 圖表初始化 ═══ */
 function initChart() {
@@ -243,9 +252,11 @@ function switchTF(tf) {
 
 /* ═══ 即時 tick → 未收線 K 棒跳動 + 價格區 ═══ */
 function onTick(t) {
+  S.liveTick = { price: Number(t.mid), at: Number(t.time) * 1000 };
   updatePricePanel(t.bid, t.ask, t.spread);
   if ($("quick-live-price")) $("quick-live-price").textContent = fmt(t.mid);
   if ($("quick-live-time")) $("quick-live-time").textContent = new Date(t.time * 1000).toLocaleTimeString("zh-TW", { hour12: false });
+  updateRealtimeFacts(Number(t.mid));
   if (!S.lastBar) return;
   const sec = TF_SEC[S.tf];
   const boundary = S.lastBar.time + sec;
@@ -259,6 +270,22 @@ function onTick(t) {
     S.lastBar.low = Math.min(S.lastBar.low, t.mid);
   }
   S.candles.update(S.lastBar);
+}
+
+function updateRealtimeFacts(livePrice) {
+  const p = S.realtimeFacts;
+  if (!p) return;
+  const trigger = Number(p.triggerPrice);
+  const low = Number(p.entryZoneLow), high = Number(p.entryZoneHigh);
+  const bullish = ((S.analysis && S.analysis.final_decision_state || {}).direction || "LONG") !== "SHORT";
+  const crossed = Number.isFinite(trigger) && (bullish ? livePrice >= trigger : livePrice <= trigger);
+  const delta = Number.isFinite(trigger) ? (bullish ? livePrice - trigger : trigger - livePrice) : null;
+  if ($("quick-live-trigger")) $("quick-live-trigger").textContent = Number.isFinite(trigger)
+    ? `${fmt(trigger)}｜${crossed ? `已越過 ${delta >= 0 ? "+" : ""}${fmt(delta)}` : `還差 ${fmt(Math.abs(delta))}`}` : "尚未形成";
+  if ($("v3-entry-zone") && Number.isFinite(low) && Number.isFinite(high)) {
+    const distance = livePrice < low ? low - livePrice : livePrice > high ? livePrice - high : 0;
+    $("v3-entry-zone").title = `現價距離 ${fmt(distance)}`;
+  }
 }
 
 function updatePricePanel(bid, ask, spread) {
@@ -496,17 +523,23 @@ function renderFinalDecision(finalState, snapshot) {
     LONG_MANAGE: "多方獲利管理", SHORT_MANAGE: "空方獲利管理",
     MISSED_ENTRY: "已錯過進場", INVALIDATED: "舊劇本已失效", DATA_STALE: "資料過期",
   };
+  const realtime = finalState.realtimePresentation || (S.analysis && S.analysis.realtime_presentation) || {};
+  S.realtimeFacts = realtime;
   const presentation = finalState.presentation || event.presentation || {};
   $("quick-final-state").textContent = labels[finalState.state] || "等待";
   $("quick-flat-action").textContent = finalState.flat_action || "等待下一個明確條件";
   $("quick-position-action").textContent = finalState.direction === "SHORT"
     ? finalState.short_manage : finalState.long_manage;
   $("quick-trigger").textContent = finalState.confirmation || "等待下一根 15 分鐘 K 線";
-  $("quick-freshness").textContent = finalState.state === "DATA_STALE" ? "資料過期，禁止進場" : "資料正常";
-  $("quick-live-price").textContent = finalState.source_price == null ? "–" : fmt(finalState.source_price);
-  $("quick-live-time").textContent = fmtTs(finalState.quote_time);
-  $("quick-closed-price").textContent = finalState.latest_closed_price == null ? "–" : fmt(finalState.latest_closed_price);
-  $("quick-closed-time").textContent = fmtTs(finalState.last_closed_candle_time);
+  const marketFresh = ((realtime.freshnessState || finalState.freshnessState || {}).marketFreshness || {});
+  $("quick-freshness").textContent = marketFresh.status === "stale" ? "資料過期，禁止進場" : marketFresh.status === "degraded" ? "資料稍有延遲" : "資料正常";
+  const livePrice = realtime.currentPrice ?? finalState.source_price;
+  $("quick-live-price").textContent = livePrice == null ? "–" : fmt(livePrice);
+  $("quick-live-time").textContent = fmtTs(realtime.quoteTimeUtc || finalState.quote_time);
+  $("quick-closed-price").textContent = realtime.latestClosed15mPrice == null ? (finalState.latest_closed_price == null ? "–" : fmt(finalState.latest_closed_price)) : fmt(realtime.latestClosed15mPrice);
+  $("quick-closed-time").textContent = fmtTs(realtime.latestClosed15mTimeUtc || finalState.last_closed_candle_time);
+  $("quick-candle-state").textContent = realtime.closedConfirmed ? "收盤已確認" : realtime.intrabarCrossed ? "盤中已越過，尚未收盤" : "尚未確認";
+  updateRealtimeFacts(Number(livePrice));
   $("quick-action-title").textContent = finalState.humanSummary || presentation.title || finalState.action || labels[finalState.state] || "等待";
   $("quick-action-why").textContent = finalState.humanSummary || finalState.reason || "等待條件一致";
   $("quick-action-next").textContent = finalState.flat_action || "等待下一個明確條件";
@@ -532,8 +565,7 @@ function renderDecisionAssistant(v3, finalDecision = {}) {
   $("v3-why-list").replaceChildren(...items.slice(0, 10).map((text) => {
     const li = document.createElement("li"); li.textContent = text; return li;
   }));
-  $("quick-action-title").textContent = finalDecision.humanSummary || v3.actionSummary;
-  $("quick-action-why").textContent = finalDecision.humanSummary || (v3.noTradeReasons || [])[0] || (v3.regimeReasons || []).join("；");
+  // 最上方決策卡由 deterministic finalDecision 統一管理；AI/助理只補充進階理由。
 }
 
 async function refreshTelegramStatus() {
@@ -585,12 +617,15 @@ function renderMarketMonitors(a) {
     if (!exitCard.hidden) {
       const longPlan = plans.LONG || {};
       const shortPlan = plans.SHORT || {};
+      const current = Number((a.realtime_presentation || {}).currentPrice ?? (a.normalized_analysis || {}).currentPrice);
+      const longDefenseHit = Number.isFinite(current) && Number.isFinite(Number(longPlan.defense_price)) && current < Number(longPlan.defense_price);
+      const shortDefenseHit = Number.isFinite(current) && Number.isFinite(Number(shortPlan.defense_price)) && current > Number(shortPlan.defense_price);
       $("hypothetical-long-exit").textContent = longPlan.partial_exit && longPlan.full_exit
         ? `若持有多單：進入 ${price(longPlan.partial_exit.low)}–${price(longPlan.partial_exit.high)} 建議先平倉30%；${price(longPlan.full_exit.low)}–${price(longPlan.full_exit.high)} 評估剩餘部位` : "止盈計畫尚未建立：缺少有效壓力區";
-      $("hypothetical-long-defense").textContent = price(longPlan.defense_price);
+      $("hypothetical-long-defense").textContent = longDefenseHit ? `${price(longPlan.defense_price)} 已觸發，依風控退出` : price(longPlan.defense_price);
       $("hypothetical-short-exit").textContent = shortPlan.partial_exit && shortPlan.full_exit
         ? `若持有空單：進入 ${price(shortPlan.partial_exit.low)}–${price(shortPlan.partial_exit.high)} 建議先平倉30%；${price(shortPlan.full_exit.low)}–${price(shortPlan.full_exit.high)} 評估剩餘部位` : "止盈計畫尚未建立：缺少有效支撐區";
-      $("hypothetical-short-defense").textContent = price(shortPlan.defense_price);
+      $("hypothetical-short-defense").textContent = shortDefenseHit ? `${price(shortPlan.defense_price)} 已觸發，依風控退出` : price(shortPlan.defense_price);
     }
   }
 
@@ -651,7 +686,8 @@ function renderBreakoutSetupLedger(manager) {
   const card = $("breakout-setup-ledger-card");
   const list = $("breakout-setup-list");
   if (!card || !list) return;
-  const setups = manager.setups || [];
+  const canonical = (S.analysis && S.analysis.realtime_presentation || {}).dedupedScenarios;
+  const setups = canonical || manager.setups || [];
   card.hidden = setups.length === 0;
   if (card.hidden) return;
   const stateZh = {
@@ -667,6 +703,8 @@ function renderBreakoutSetupLedger(manager) {
     PULLBACK_INVALIDATED: "回踩劇本已取消",
     PULLBACK_BREACH_PENDING_CLOSE: "盤中跌穿，等待收盤判定",
     INVALIDATED: "已失效", EXPIRED: "已到期",
+    WATCHING: "尚未成立", ARMED: "接近確認價", READY: "訊號已確認",
+    ENTER: "可以進場", MANAGE: "訊號進行中", MISSED: "已錯過，等待回踩",
   };
   const ready = setups.find((s) => String(s.status).includes("ENTRY_READY"));
   $("breakout-setup-summary").textContent = ready
@@ -677,10 +715,11 @@ function renderBreakoutSetupLedger(manager) {
     box.className = "scenario-item";
     const side = s.direction === "LONG" ? "多方" : "空方";
     const confirmed = s.breakoutConfirmedAt ? "收盤確認已完成" : "正在等 15 分鐘收盤確認";
-    const plainState = stateZh[s.status] || "正在重新計算市場條件";
+    const plainState = stateZh[s.tradeState] || stateZh[s.status] || "正在重新計算市場條件";
     const pullbackLow = s.pullbackEntryZoneLow ?? s.retestZoneLow;
     const pullbackHigh = s.pullbackEntryZoneHigh ?? s.retestZoneHigh;
-    box.textContent = `${side}劇本｜🚀 突破：${Number(s.breakoutTrigger).toFixed(2)}（${confirmed}，超過 ${Number(s.maxChasePrice).toFixed(2)} 不追）｜↩️ 回踩：${Number(pullbackLow).toFixed(2)}–${Number(pullbackHigh).toFixed(2)}，進區後仍要等止跌｜現在：${plainState}`;
+    const execution = s.executionZoneLow != null ? `${Number(s.executionZoneLow).toFixed(2)}–${Number(s.executionZoneHigh).toFixed(2)}` : "尚未建立";
+    box.textContent = `${side}劇本｜原始確認價：${Number(s.primaryTrigger ?? s.breakoutTrigger).toFixed(2)}（${confirmed}）｜可執行區：${execution}｜超過 ${Number(s.maxChasePrice).toFixed(2)} 不追｜現在：${plainState}`;
     return box;
   }));
 }
@@ -1610,6 +1649,22 @@ setInterval(() => {
   cd.classList.toggle("urgent", ms > 0 && ms < 30 * 60000);
 }, 1000);
 
+setInterval(() => {
+  const now = Date.now();
+  if ($("quick-tick-age")) {
+    const age = S.liveTick ? Math.max(0, (now - S.liveTick.at) / 1000)
+      : Number(((S.realtimeFacts || {}).freshnessState || {}).marketFreshness?.ageSeconds);
+    $("quick-tick-age").textContent = Number.isFinite(age) ? `${age.toFixed(age < 10 ? 1 : 0)} 秒` : "–";
+  }
+  if ($("quick-candle-countdown")) {
+    const closeAt = Date.parse((S.realtimeFacts || {}).nextCandleCloseAtUtc || "");
+    if (Number.isFinite(closeAt)) {
+      const seconds = Math.max(0, Math.floor((closeAt - now) / 1000));
+      $("quick-candle-countdown").textContent = `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
+    }
+  }
+}, 1000);
+
 /* ═══ WebSocket ═══ */
 let wsRetry = 0;
 function connectWS() {
@@ -1746,11 +1801,11 @@ async function boot() {
 
   try { await loadCandles(S.tf, false); } catch (e) { console.error(e); }
 
-  // 保險輪詢:WS 斷線期間每 5 分鐘補一次分析
+  // 保險輪詢：WebSocket 斷線時仍在合理時間內同步 freshness 與即時決策。
   setInterval(async () => {
     try { applyAnalysis(await (await fetch("/api/analysis/latest")).json()); }
     catch (e) { /* noop */ }
-  }, 300000);
+  }, 15000);
 }
 
 boot();

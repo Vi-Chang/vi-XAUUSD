@@ -13,6 +13,8 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from app.config import get_settings
+from app.engines.freshness_state import evaluate_freshness_state
+from app.utils.timeutils import parse_utc
 
 logger = logging.getLogger(__name__)
 
@@ -92,13 +94,17 @@ def annotate_freshness(result: dict, current_mid: float | None = None,
                        now: datetime | None = None) -> dict:
     """回傳附時效標記(且已剝除失效價位)的結果副本。所有讀取路徑必經。"""
     s = get_settings()
-    now = now or datetime.now(timezone.utc)
+    now = parse_utc(now or datetime.now(timezone.utc)) or datetime.now(timezone.utc)
     out = copy.deepcopy(result)
+    canonical = evaluate_freshness_state(out, now=now)
+    out["freshness_state"] = canonical
 
     # 快照年齡
     age_min: float | None = None
     try:
-        ts = datetime.fromisoformat(out.get("timestamp_utc", ""))
+        ts = parse_utc(out.get("timestamp_utc", ""))
+        if ts is None:
+            raise ValueError("missing timestamp")
         age_min = (now - ts).total_seconds() / 60.0
     except (TypeError, ValueError):
         pass
@@ -115,9 +121,9 @@ def annotate_freshness(result: dict, current_mid: float | None = None,
     refresh_pending = False
     expected_candle = _expected_closed_15m(now, s.candle_close_refresh_delay_seconds)
     try:
-        last_closed = datetime.fromisoformat(normalized.get("lastClosedCandleTimestamp", ""))
-        if last_closed.tzinfo is None:
-            last_closed = last_closed.replace(tzinfo=timezone.utc)
+        last_closed = parse_utc(normalized.get("lastClosedCandleTimestamp", ""))
+        if last_closed is None:
+            raise ValueError("missing candle timestamp")
         from app.services.market_calendar import market_is_open
         refresh_pending = market_is_open(now) and last_closed < expected_candle
     except (TypeError, ValueError):

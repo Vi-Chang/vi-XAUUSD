@@ -6,6 +6,8 @@ import hashlib
 import logging
 from datetime import datetime, timedelta, timezone
 
+from app.engines.trading_invariants import validate_stop_update, validate_trade_prices
+
 CALCULATION_VERSION = "trade-plan-v1"
 DEFAULT_TP_PERCENTAGES = (30, 30, 40)
 logger = logging.getLogger(__name__)
@@ -56,6 +58,10 @@ def build_trade_plan(entry_plan: dict, *, symbol: str, created_at: str) -> tuple
     if direction not in ("LONG", "SHORT"):
         return {}, "缺少有效 direction 資料"
     entry, stop = float(entry_plan["suggested_entry"]), float(entry_plan["stop_loss"])
+    try:
+        validate_trade_prices(direction, entry=entry, stop=stop)
+    except ValueError as exc:
+        return {}, str(exc)
     risk = abs(entry - stop)
     if risk <= 0:
         return {}, "進場價與防守價距離無效"
@@ -163,6 +169,9 @@ def evaluate_trade_plans(
                 completed.append(event_type)
                 protection = (float(plan["referenceEntry"]) if index == 1
                               else float(plan[f"tp{index - 1}Price"]))
+                validate_stop_update(direction,
+                                     previous_stop=float(plan["trailingStopPrice"]),
+                                     new_stop=protection)
                 plan["trailingStopPrice"] = protection
                 next_level = (float(plan[f"tp{index + 1}Price"])
                               if index < 3 else None)
@@ -175,6 +184,7 @@ def evaluate_trade_plans(
             updated = (max(old, latest_structure_protection) if direction == "LONG"
                        else min(old, latest_structure_protection))
             if updated != old:
+                validate_stop_update(direction, previous_stop=old, new_stop=updated)
                 plan["trailingStopPrice"] = round(updated, 2)
                 key = f"TRAILING_STOP_UPDATE:{updated:.2f}"
                 if key not in completed:

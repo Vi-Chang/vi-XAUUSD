@@ -360,6 +360,8 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
         atr15=atr15, event_timestamp=ev.data_updated_at,
         event_risk=(ev.time_risk or "UNKNOWN").lower(), event_lockout=ev.event_lockout)
     result.normalized_analysis = normalized
+    from app.engines.freshness_state import evaluate_freshness_state
+    result.freshness_state = evaluate_freshness_state(result.model_dump(), now=now)
     from app.services.tactical_shadow import build_tactical_shadow
     result.tactical_shadow = build_tactical_shadow(
         normalized, current_price=tick.mid, created_at=now.isoformat(), settings=s)
@@ -559,6 +561,11 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
     result.trend_continuation_engine = monitors["trend_continuation_engine"]
     result.decision_assistant = monitors["decision_assistant"]
     result.final_decision_state = monitors["final_decision_state"]
+    from app.engines.realtime_presentation import build_realtime_presentation
+    result.realtime_presentation = build_realtime_presentation(
+        result.model_dump(), price=tick.mid, quote_time=tick.quote_time.isoformat(), now=now)
+    result.final_decision_state["realtimePresentation"] = result.realtime_presentation
+    result.final_decision_state["freshnessState"] = result.freshness_state
     final_state = result.final_decision_state.get("state", "WAIT")
     from app.engines.unified_decision_state import enforce_scenario_consistency
     result.long_scenario, result.short_scenario = enforce_scenario_consistency(

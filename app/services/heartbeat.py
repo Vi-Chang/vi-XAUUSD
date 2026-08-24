@@ -274,6 +274,7 @@ def health_payload(state) -> dict:
     from app.llm import health as llm_health
     readiness = compute_readiness(state)
     started = getattr(state, "started_at", None)
+    quote_cache = getattr(state, "quote_cache", None)
     return {
         "status": "degraded" if (dead or data_lagging) else "ok",
         "ready": readiness["ready"],
@@ -303,6 +304,12 @@ def health_payload(state) -> dict:
         "last_15m_candle": last_t.isoformat() if last_t else None,
         "data_lag_minutes": round(age_min, 1) if age_min is not None else None,
         "last_job_run": {k: v.isoformat() for k, v in state.last_job_run.items()},
+        "reliability_metrics": {
+            "duplicate_event_count": getattr(quote_cache, "duplicate_tick_count", 0),
+            "out_of_order_event_count": getattr(
+                quote_cache, "out_of_order_tick_count", 0),
+            "stale_write_rejected_count": 0,
+        },
         "notify_level": s.notify_level,
         "llm_cost_usd_today": 0.0,
     }

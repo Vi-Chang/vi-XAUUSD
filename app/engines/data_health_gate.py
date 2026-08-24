@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from app.config import get_settings
+from app.engines.freshness_state import evaluate_freshness_state
 
 
 def evaluate_data_health(data: dict) -> dict:
@@ -18,25 +19,19 @@ def evaluate_data_health(data: dict) -> dict:
     now = datetime.now(timezone.utc)
     quote_time = str(price.get("last_update") or "")
     data_age_seconds: float | None = None
-    try:
-        parsed = datetime.fromisoformat(quote_time.replace("Z", "+00:00"))
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        data_age_seconds = max(0.0, (now - parsed.astimezone(timezone.utc)).total_seconds())
-    except ValueError:
-        pass
+    canonical_supplied = bool(data.get("freshness_state"))
+    freshness = data.get("freshness_state") or evaluate_freshness_state(data, now=now)
+    market_freshness = freshness["marketFreshness"]
+    data_age_seconds = market_freshness.get("ageSeconds")
     if current is None or float(current) <= 0:
         status, reasons = "INVALID_PRICE", ["即時價格缺失或無效"]
     elif not candle_time:
         status, reasons = "MISSING_CANDLE", ["缺少最新已收盤 K 線時間"]
     elif market_status in {"FAILED", "ERROR", "INSUFFICIENT"}:
         status, reasons = "MISSING_CANDLE", ["行情資料不足"]
-    elif market_status in {"STALE", "DEGRADED"}:
-        status, reasons = "STALE", ["行情或已收盤 K 線已過期"]
-    elif (str(price.get("provider") or "").lower() in {"capital_com", "twelve_data", "finnhub"}
-          and data_age_seconds is not None
-          and data_age_seconds > get_settings().stale_price_seconds):
-        status, reasons = "STALE", [f"即時報價已延遲 {data_age_seconds:.0f} 秒"]
+    elif (market_status in {"STALE", "DEGRADED"}
+          or (canonical_supplied and market_freshness["status"] == "stale")):
+        status, reasons = "STALE", [market_freshness["reason"]]
     quality = data.get("data_quality") or {}
     if quality.get("source_mismatch") is True:
         status, reasons = "SOURCE_DIVERGENCE", ["行情來源價格差異超出允許範圍"]
@@ -70,5 +65,5 @@ def evaluate_data_health(data: dict) -> dict:
         "dataAgeSeconds": round(data_age_seconds, 3) if data_age_seconds is not None else None,
         "currentPrice": current, "provider": price.get("provider") or "",
         "lastClosedCandlePrice": closed,
-        "evaluatedAt": now.isoformat(),
+        "evaluatedAt": now.isoformat(), "freshnessState": freshness,
     }

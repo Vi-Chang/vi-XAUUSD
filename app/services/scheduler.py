@@ -53,6 +53,8 @@ class AppState:
         # ── 監控用(readiness/health)──
         self.last_quote_ok_at: datetime | None = None  # 最後一次成功取得報價
         self.scheduler_started = False  # 排程是否已啟動
+        self.last_market_freshness: str | None = None
+        self.last_trigger_cross_key: str | None = None
 
     def mark(self, job: str) -> None:
         self.last_job_run[job] = datetime.now(timezone.utc)
@@ -241,6 +243,9 @@ async def job_quote_l1() -> None:
                 quote_time=tick.quote_time.isoformat(),
             )
             state.latest_result["final_decision_state"] = final_state
+            presentation = final_state.get("realtimePresentation") or {}
+            state.latest_result["realtime_presentation"] = presentation
+            state.latest_result["freshness_state"] = final_state.get("freshnessState") or {}
             latest_price = dict(state.latest_result.get("current_price") or {})
             latest_price.update({
                 "bid": tick.bid, "ask": tick.ask, "mid": tick.mid,
@@ -251,14 +256,39 @@ async def job_quote_l1() -> None:
             latest_normalized.update({
                 "currentPrice": tick.mid,
                 "marketDataTimestamp": tick.quote_time.isoformat(),
+                "sourceTimestamps": {
+                    key: tick.quote_time.isoformat()
+                    for key in (latest_normalized.get("sourceTimestamps") or {"market": ""})
+                },
+                "sourcePrices": {
+                    key: tick.mid
+                    for key in (latest_normalized.get("sourcePrices") or {"market": 0})
+                },
             })
             state.latest_result["normalized_analysis"] = latest_normalized
+            state.latest_result["snapshot_ts"] = tick.quote_time.isoformat()
             from app.engines.decision_snapshot import build_decision_snapshot
             state.latest_result["decision_snapshot"] = build_decision_snapshot(
                 state.latest_result)
             await broadcast_all({"type": "decision_state", "data": final_state})
             for event in events:
                 await broadcast_all({"type": "decision_event", "data": event})
+            freshness_now = ((final_state.get("freshnessState") or {})
+                             .get("marketFreshness") or {}).get("status")
+            recovered = state.last_market_freshness == "stale" and freshness_now == "fresh"
+            state.last_market_freshness = freshness_now
+            trigger_key = None
+            if presentation.get("intrabarCrossed") and not presentation.get("closedConfirmed"):
+                trigger_key = f"{presentation.get('activeSetupId')}:{presentation.get('triggerPrice')}"
+            crossed_new = bool(trigger_key and trigger_key != state.last_trigger_cross_key)
+            if trigger_key:
+                state.last_trigger_cross_key = trigger_key
+            if recovered:
+                await run_full_analysis(
+                    trigger="freshness_recovered", reason_zh="行情資料恢復，立即重新判斷")
+            elif crossed_new:
+                await run_full_analysis(
+                    trigger="breakout_crossed", reason_zh="即時價格穿越突破線，檢查盤中狀態")
         # 首次 provider session 可能耗時超過 APScheduler 的 misfire grace，導致原定
         # 第 10 秒執行的 L2 被跳過。首次報價成功後直接補一筆完整分析，避免新部署
         # 長時間停在 analysis_refresh_required；後續仍由 L2 事件／定時規則接手。

@@ -151,6 +151,8 @@ def modify_stop(position_id: int, new_stop: float) -> tuple[Position, str | None
         if pos is None or not pos.is_open:
             raise ValueError("持倉不存在或已平倉")
         old = pos.stop_loss
+        from app.engines.trading_invariants import validate_stop_update
+        validate_stop_update(pos.side, previous_stop=old, new_stop=new_stop)
         widening = (old is not None and
                     ((pos.side == "LONG" and new_stop < old) or
                      (pos.side == "SHORT" and new_stop > old)))

@@ -36,9 +36,12 @@ def test_stop_modification_history_is_preserved():
     _, flag = ps.modify_stop(pos.id, 3995.0)
     assert flag is None
     # 往虧損方向移動只保存客觀歷史，不建立教練標籤。
-    updated, flag = ps.modify_stop(pos.id, 3985.0)
-    assert flag is None
-    assert updated.stop_modification_history[-1]["widening"] is True
+    # 多單停損不得因虧損往下放寬；錯誤寫入必須在服務層被拒絕。
+    with pytest.raises(ValueError, match="多單停損不得往下放寬"):
+        ps.modify_stop(pos.id, 3985.0)
+    updated = next(item for item in ps.list_positions() if item.id == pos.id)
+    assert updated.stop_loss == 3995.0
+    assert len(updated.stop_modification_history) == 1
     # R 分母使用「初始停損」3990,不因移動而漂移
     assert ps.r_multiple(updated, 4020.0) == 2.0
 

@@ -44,6 +44,10 @@ def _plain_lifecycle(state: str) -> str:
         "SETUP_EXPIRED": "原本的進場條件已失效，已重新計算",
         "INVALIDATED": "原本判斷已失效，等待新的機會",
         "NO_ENTRY": "目前沒有合格的進場機會",
+        "ARMED": "接近原始確認價，等待 15 分鐘收盤",
+        "ENTER": "原始確認已完成，目前仍在可執行距離",
+        "MANAGE": "訊號已進入管理，後續價位用於止盈與保護",
+        "HOLD": "訊號進行中，依目標與保護價管理",
     }.get(state, "等待新的市場條件")
 
 
@@ -67,6 +71,10 @@ def build_decision_presentation(event: dict) -> dict:
         "SHORT_TERM_RECOVERING": "⚪【短線正在恢復，還差最後確認】",
         "SHORT_TERM_BULLISH_RESTORED": "🟢【短線重新轉強】",
         "BEARISH_CONFIRMED": "🔴【短線已正式轉空】",
+        "ARMED": "🟡【接近原始確認價｜等待收盤】",
+        "ENTER": "🟢【原始進場條件成立｜可以進場】",
+        "MANAGE": "🔵【訊號進行中｜持倉管理】",
+        "HOLD": "🔵【訊號進行中｜依計畫管理】",
     }
     if state.endswith("BIAS"):
         action = "等待，尚未到進場區，請勿追價。"
@@ -302,11 +310,13 @@ def _format_breakout_setup_event(event: dict, breakout_event: dict) -> str:
         if entry_type == "回踩進場":
             zone = (f"{float(setup.get('pullbackEntryZoneLow') or setup.get('entryZoneLow') or 0):.2f}–"
                     f"{float(setup.get('pullbackEntryZoneHigh') or setup.get('entryZoneHigh') or 0):.2f}")
-        risk = abs(float(setup.get("entryZoneHigh") or trigger) -
-                   float(setup.get("stopPrice") or trigger))
-        reward = abs(float(setup.get("tp1") or trigger) -
-                     float(setup.get("entryZoneHigh") or trigger))
-        rr = reward / risk if risk else 0
+        from app.engines.scenario_safety import calculate_risk_reward
+        entry_for_rr = float(setup.get("entryZoneHigh") or trigger)
+        rr_details = calculate_risk_reward(
+            direction, evaluation_entry_price=entry_for_rr,
+            stop_loss=float(setup.get("stopPrice") or trigger),
+            target_price=float(setup.get("tp1") or trigger))
+        rr = float(rr_details["ratio"] or 0)
         return "\n".join([
             "🟢🟢【進場條件成立】",
             f"方向：{'做多' if direction == 'LONG' else '做空'}",

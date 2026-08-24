@@ -5,8 +5,23 @@ from __future__ import annotations
 import hashlib
 from datetime import datetime, timedelta, timezone
 
-SETUP_VERSION = "breakout-pullback-v2"
+SETUP_VERSION = "confirmation-ladder-v3"
 TERMINAL = {"MISSED_ENTRY", "INVALIDATED", "EXPIRED", "PULLBACK_INVALIDATED"}
+
+
+def _chase_factor(data: dict) -> float:
+    score = int((data.get("decision") or {}).get("signal_score") or
+                (data.get("normalized_analysis") or {}).get("entryQualityScore") or 50)
+    return 1.0 if score >= 80 else 0.8 if score >= 65 else 0.6
+
+
+def assert_trigger_frozen(previous: dict, current: dict) -> None:
+    """CI/runtime invariant: one setup id can never move its primary trigger."""
+    if (previous.get("setupId") == current.get("setupId")
+            and previous.get("triggerLocked")
+            and float(previous.get("primaryTrigger") or previous.get("breakoutTrigger"))
+            != float(current.get("primaryTrigger") or current.get("breakoutTrigger"))):
+        raise AssertionError("MOVING_GOALPOST: primaryTrigger changed for locked setup")
 
 
 def _level(normalized: dict, kind: str) -> dict | None:
@@ -89,6 +104,8 @@ def build_breakout_setup(data: dict, *, direction: str, previous_setup_id: str =
     pullback, pullback_error = _pullback_zone(
         normalized, direction=direction, trigger=trigger, atr=atr, buffer=buffer)
     risk = abs(trigger - stop)
+    chase_factor = _chase_factor(data)
+    max_chase = trigger + sign * atr * chase_factor
     entry_engine = data.get("entry_engine") or {}
     raw_targets = [entry_engine.get(f"take_profit_{i}") for i in range(1, 4)]
     targets: list[float] = []
@@ -104,39 +121,60 @@ def build_breakout_setup(data: dict, *, direction: str, previous_setup_id: str =
         "setupId": setup_id, "setupVersion": SETUP_VERSION,
         "scenarioVersion": 1,
         "direction": direction, "createdAt": created,
+        "primaryTrigger": round(trigger, 2), "triggerLocked": True,
+        "triggerType": ("15M_RECOVERY_CONFIRMATION" if direction == "LONG"
+                        else "15M_BREAKDOWN_CONFIRMATION"),
+        "confirmationTimeframe": "15M", "primaryTriggerConfirmed": False,
+        "confirmedPrice": None,
         "breakoutTrigger": round(trigger, 2), "breakoutConfirmedAt": None,
         "confirmedCandleTime": None,
         "retestZoneLow": round(entry_low, 2), "retestZoneHigh": round(entry_high, 2),
         "entryZoneLow": round(entry_low, 2), "entryZoneHigh": round(entry_high, 2),
-        "maxChasePrice": round(trigger + sign * atr * 0.35, 2),
+        "maxChasePrice": round(max_chase, 2),
+        "maxChaseDistance": round(atr * chase_factor, 4),
+        "chaseFactor": chase_factor,
+        "executionZoneLow": round(min(trigger, max_chase), 2),
+        "executionZoneHigh": round(max(trigger, max_chase), 2),
         "atr15": round(atr, 4),
         "stopPrice": round(stop, 2), "tp1": targets[0], "tp2": targets[1],
         "tp3": targets[2], "expiresAt": expires,
-        "status": "WAIT_BREAKOUT_OR_PULLBACK", "blockedReason": (
+        "status": "WAIT_BREAKOUT_OR_PULLBACK", "tradeState": "WATCHING",
+        "entryStyle": None, "blockedReason": (
             "同步等待15M收盤突破，或價格回到有效回踩區後止跌確認"),
         "previousSetupId": previous_setup_id or None,
         "triggerChangeReason": reason, "oldTrigger": None, "newTrigger": round(trigger, 2),
         "createdFromCandleTime": candle_time, "pullbackSourceCandleTime": candle_time,
         "entryType": None,
+        "invalidation": round(stop, 2),
+        "entryZone": {"low": round(min(trigger, max_chase), 2),
+                      "high": round(max(trigger, max_chase), 2)},
+        "levelRoles": {
+            "primaryTrigger": "PRIMARY_TRIGGER", "entryZone": "ENTRY",
+            "stopPrice": "INVALIDATION", "tp1": "TP1", "tp2": "TP2", "tp3": "TP3",
+        },
         "pullbackZoneError": pullback_error,
         **pullback,
     }, ""
 
 
 def _rr_ok(setup: dict) -> bool:
-    risk = abs(float(setup["entryZoneHigh"] if setup["direction"] == "LONG"
-                     else setup["entryZoneLow"]) - float(setup["stopPrice"]))
-    reward = abs(float(setup["tp1"]) - float(setup["entryZoneHigh"]
-                 if setup["direction"] == "LONG" else setup["entryZoneLow"]))
-    return risk > 0 and reward / risk >= 1.5
+    from app.engines.scenario_safety import calculate_risk_reward
+    entry = float(setup["entryZoneHigh"] if setup["direction"] == "LONG"
+                  else setup["entryZoneLow"])
+    rr = calculate_risk_reward(setup["direction"], evaluation_entry_price=entry,
+                               stop_loss=float(setup["stopPrice"]),
+                               target_price=float(setup["tp1"]))
+    return bool(rr["available"] and rr["ratio"] >= 1.5)
 
 
 def _pullback_rr_ok(setup: dict) -> bool:
     entry = _number(setup.get("pullbackEntryZoneHigh") if setup["direction"] == "LONG"
                     else setup.get("pullbackEntryZoneLow"))
     stop = float(setup.get("pullbackInvalidationPrice") or setup["stopPrice"])
-    reward = abs(float(setup["tp1"]) - entry)
-    return abs(entry - stop) > 0 and reward / abs(entry - stop) >= 1.5
+    from app.engines.scenario_safety import calculate_risk_reward
+    rr = calculate_risk_reward(setup["direction"], evaluation_entry_price=entry,
+                               stop_loss=stop, target_price=float(setup["tp1"]))
+    return bool(rr["available"] and rr["ratio"] >= 1.5)
 
 
 def _htf_valid(normalized: dict, direction: str) -> bool:
@@ -181,6 +219,31 @@ def _evaluate_setup(setup: dict, data: dict) -> tuple[dict, list[dict]]:
     candle_time = str(normalized.get("lastClosedCandleTimestamp") or "")
     price = float(normalized.get("currentPrice") or 0)
     result, events = dict(setup), []
+    result.setdefault("primaryTrigger", result.get("breakoutTrigger"))
+    result.setdefault("triggerLocked", True)
+    result.setdefault("primaryTriggerConfirmed", bool(result.get("breakoutConfirmedAt")))
+    result.setdefault("tradeState", "READY" if result.get("breakoutConfirmedAt") else "WATCHING")
+    if result.get("setupVersion") != SETUP_VERSION:
+        frozen_trigger = float(result["primaryTrigger"])
+        sign = 1 if result.get("direction") == "LONG" else -1
+        atr = max(float(result.get("atr15") or normalized.get("atr15") or 0), .01)
+        factor = _chase_factor(data)
+        chase = frozen_trigger + sign * atr * factor
+        result.update(
+            setupVersion=SETUP_VERSION,
+            triggerType=("15M_RECOVERY_CONFIRMATION" if sign == 1
+                         else "15M_BREAKDOWN_CONFIRMATION"),
+            confirmationTimeframe="15M", maxChaseDistance=round(atr * factor, 4),
+            chaseFactor=factor, maxChasePrice=round(chase, 2),
+            executionZoneLow=round(min(frozen_trigger, chase), 2),
+            executionZoneHigh=round(max(frozen_trigger, chase), 2),
+            invalidation=result.get("stopPrice"),
+            entryZone={"low": round(min(frozen_trigger, chase), 2),
+                       "high": round(max(frozen_trigger, chase), 2)},
+            levelRoles={"primaryTrigger": "PRIMARY_TRIGGER", "entryZone": "ENTRY",
+                        "stopPrice": "INVALIDATION", "tp1": "TP1",
+                        "tp2": "TP2", "tp3": "TP3"},
+        )
     old = str(result["status"])
     try:
         if datetime.fromisoformat(now.replace("Z", "+00:00")) >= datetime.fromisoformat(
@@ -253,6 +316,8 @@ def _evaluate_setup(setup: dict, data: dict) -> tuple[dict, list[dict]]:
     if waiting and confirmed:
         result.update(status="BREAKOUT_CONFIRMED", breakoutConfirmedAt=now,
                       confirmedCandleTime=candle_time,
+                      primaryTriggerConfirmed=True, confirmedAt=now,
+                      confirmedPrice=float(closed), tradeState="READY",
                       blockedReason="突破已由15M收盤確認，評估突破進場或回踩")
         events.append(_event(result, old, result["status"], "BREAKOUT_CONFIRMED"))
         old = "BREAKOUT_CONFIRMED"
@@ -261,20 +326,30 @@ def _evaluate_setup(setup: dict, data: dict) -> tuple[dict, list[dict]]:
                         else price >= float(result["maxChasePrice"]))
         in_entry = float(result["entryZoneLow"]) <= price <= float(result["entryZoneHigh"])
         if (within_chase or in_entry) and _rr_ok(result) and normalized.get("marketDataStatus") == "GOOD":
+            move = abs(price - trigger)
+            aggressive = move <= float(result.get("maxChaseDistance") or 0) * 0.45
             result.update(status="BREAKOUT_ENTRY_READY", entryType="BREAKOUT",
-                          blockedReason="")
+                          tradeState="ENTER", entryStyle=("AGGRESSIVE" if aggressive else "STANDARD"),
+                          immediateEntry=True, entryReadyAt=now, blockedReason="")
         else:
-            result.update(status="WAIT_BREAKOUT_OR_PULLBACK", blockedReason=(
+            result.update(status="WAIT_RETEST", tradeState="MISSED", blockedReason=(
                 f"突破已確認但超過追價上限；改等回踩 "
                 f"{_number(pullback_low):.2f}–{_number(pullback_high):.2f} 止跌確認"
                 if has_pullback else "突破已確認但超過追價上限；等待新結構"))
+    elif old in {"BREAKOUT_ENTRY_READY", "PULLBACK_ENTRY_READY"}:
+        if result.get("tradeState") == "ENTER":
+            result.update(tradeState="MANAGE", managementState="HOLD",
+                          blockedReason="訊號已確認，後續關鍵價用於持倉管理，不再新增進場門檻")
+            events.append(_event(result, "ENTER", "MANAGE", "HOLD"))
     elif old == "WAIT_RETEST":
+        result["tradeState"] = "MISSED"
         in_retest = float(result["retestZoneLow"]) <= price <= float(result["retestZoneHigh"])
         retest_holds = in_retest and isinstance(closed, (int, float)) and (
             (direction == "LONG" and float(closed) >= trigger)
             or (direction == "SHORT" and float(closed) <= trigger))
         if retest_holds and _rr_ok(result) and normalized.get("marketDataStatus") == "GOOD":
             result.update(status="PULLBACK_ENTRY_READY", entryType="PULLBACK",
+                          tradeState="ENTER", entryStyle="RETEST", entryReadyAt=now,
                           blockedReason="")
     elif waiting and not confirmed:
         in_pullback = has_pullback and _number(pullback_low) <= price <= _number(pullback_high)
@@ -285,6 +360,11 @@ def _evaluate_setup(setup: dict, data: dict) -> tuple[dict, list[dict]]:
                                      "同步等待15M收盤突破，或價格回到有效回踩區"))
     if result["status"] != old:
         events.append(_event(result, old, result["status"], result["status"]))
+    if (not result.get("primaryTriggerConfirmed") and trigger
+            and result.get("tradeState") in {"WATCHING", "ARMED"}):
+        distance = abs(price - trigger)
+        result["tradeState"] = "ARMED" if distance <= max(float(result.get("atr15") or 0) * .5, .01) else "WATCHING"
+    assert_trigger_frozen(setup, result)
     return result, events
 
 
@@ -300,7 +380,9 @@ def evaluate_breakout_setups(data: dict, previous: dict | None = None) -> tuple[
     trigger_item = _level(normalized, "resistance" if direction == "LONG" else "support") if direction else None
     latest = next((item for item in reversed(setups) if item["direction"] == direction), None)
     trigger = float(trigger_item["price"]) if trigger_item else None
-    may_create = not latest or latest["status"] != "WAIT_BREAKOUT_CONFIRMATION"
+    # A new structure level may update targets/management context, but it cannot
+    # become another mandatory confirmation while the current setup is alive.
+    may_create = not latest or latest["status"] in TERMINAL
     if trigger is not None and (not latest or float(latest["breakoutTrigger"]) != trigger) and may_create:
         reason = "NEW_CONFIRMED_15M_STRUCTURE" if latest else "INITIAL_15M_STRUCTURE"
         created, error = build_breakout_setup(

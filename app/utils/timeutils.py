@@ -26,6 +26,27 @@ def ensure_utc(dt: datetime) -> datetime:
     return dt.astimezone(UTC)
 
 
+def parse_utc(value: str | datetime | None) -> datetime | None:
+    """Parse an API/DB timestamp into one timezone-aware UTC instant.
+
+    Legacy naive values are interpreted as UTC at the compatibility boundary;
+    newly generated values must always include an offset.
+    """
+    if isinstance(value, datetime):
+        return ensure_utc(value)
+    if not value:
+        return None
+    try:
+        return ensure_utc(datetime.fromisoformat(str(value).replace("Z", "+00:00")))
+    except (TypeError, ValueError):
+        return None
+
+
+def iso_utc(value: str | datetime | None) -> str:
+    parsed = parse_utc(value)
+    return parsed.isoformat().replace("+00:00", "Z") if parsed else ""
+
+
 def to_taipei(dt: datetime) -> datetime:
     return ensure_utc(dt).astimezone(TAIPEI)
 
