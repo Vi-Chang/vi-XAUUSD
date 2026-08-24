@@ -168,7 +168,8 @@ def validate_api_payload(payload: dict, *, strict: bool = False) -> dict:
     api_errors = list(checked.consistencyErrors)
     for key in ("long_scenario", "short_scenario"):
         sc = payload.get(key) or {}
-        if checked.entryReadiness == "no_trade" and any(sc.get(x) for x in
+        actionable = sc.get("status") in {"PREPARE", "TRIGGERED"}
+        if checked.entryReadiness == "no_trade" and actionable and any(sc.get(x) for x in
                 ("entry_zone_id", "stop_loss_id", "target_ids")):
             api_errors.append("no_trade 卻產生立即進場或停損價")
     if api_errors and strict:

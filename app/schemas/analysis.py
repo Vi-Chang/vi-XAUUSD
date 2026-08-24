@@ -546,6 +546,8 @@ class AnalysisResult(BaseModel):
     symbol: str = "XAUUSD"
     current_price: CurrentPrice = CurrentPrice()
     data_quality: DataQuality = DataQuality()
+    freshness_state: dict = Field(default_factory=dict)
+    realtime_presentation: dict = Field(default_factory=dict)
     event_risk: EventRisk = EventRisk()
     cross_market_context: CrossMarketContext = CrossMarketContext()
     market_state: str = "INSUFFICIENT_DATA"

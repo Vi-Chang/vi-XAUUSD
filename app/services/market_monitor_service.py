@@ -209,9 +209,20 @@ def evaluate_live_quote_state(
     normalized = dict(data.get("normalized_analysis") or {})
     normalized["currentPrice"] = price
     normalized["marketDataTimestamp"] = quote_time
+    normalized["sourceTimestamps"] = {
+        key: quote_time for key in (normalized.get("sourceTimestamps") or {"market": quote_time})
+    }
+    normalized["sourcePrices"] = {
+        key: price for key in (normalized.get("sourcePrices") or {"market": price})
+    }
     candidate = {**data, "normalized_analysis": normalized,
+                 "snapshot_ts": quote_time,
                  "current_price": {**(data.get("current_price") or {}),
                                    "mid": price, "last_update": quote_time}}
+    from app.engines.freshness_state import evaluate_freshness_state
+    from app.utils.timeutils import parse_utc
+    candidate["freshness_state"] = evaluate_freshness_state(
+        candidate, now=parse_utc(quote_time))
     health = evaluate_data_health(candidate)
     if not health["healthy"]:
         normalized["marketDataStatus"] = "STALE"
@@ -225,6 +236,18 @@ def evaluate_live_quote_state(
         {**candidate, "normalized_analysis": normalized,
          "regime_state_machine": regime_state}, _load(symbol, "final_decision")
     )
+    from app.engines.realtime_presentation import build_realtime_presentation
+    presentation = build_realtime_presentation(
+        candidate, price=price, quote_time=quote_time, now=parse_utc(quote_time))
+    current["realtimePresentation"] = presentation
+    current["freshnessState"] = candidate["freshness_state"]
+    if presentation["opportunityState"] == "WAIT_RETEST":
+        current["canEnter"] = False
+        current["finalAction"] = "WAIT"
+        current["humanSummary"] = "突破已確認，但目前離原進場區過遠；不追價，等待回踩。"
+    if presentation["defenseState"] == "POSITION_DEFENSE_TRIGGERED":
+        current["canEnter"] = False
+        current["positionDefenseState"] = "POSITION_DEFENSE_TRIGGERED"
     from app.services.current_decision_store import publish_current_final_decision
     current, published = publish_current_final_decision(symbol, current)
     events = list(current.get("events") or []) if published else []
