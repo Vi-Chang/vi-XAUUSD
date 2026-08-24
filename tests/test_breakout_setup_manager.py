@@ -95,22 +95,22 @@ def test_breakout_above_chase_switches_to_pullback_instead_of_entry():
     state, events = advance(snapshot(price=4580, closed=4569,
         at="2026-08-21T10:01:00+00:00"), state)
     setup = state["activeSetup"]
-    assert setup["status"] == "WAIT_BREAKOUT_OR_PULLBACK"
+    assert setup["status"] == "WAIT_RETEST"
+    assert setup["tradeState"] == "MISSED"
     assert "超過追價上限" in setup["blockedReason"]
     assert not any(event["event_type"].endswith("ENTRY_READY") for event in events)
 
 
-def test_new_structure_gets_new_id_and_old_trigger_is_immutable():
+def test_new_structure_does_not_move_locked_active_trigger():
     state, _ = advance(snapshot())
     old = deepcopy(state["activeSetup"])
-    newer = snapshot(trigger=4601.09, price=4590, closed=4590,
+    newer = snapshot(trigger=4601.09, price=4590, closed=4560,
                      at="2026-08-21T10:15:00+00:00", candle="2026-08-21T10:00:00+00:00")
     state, events = advance(newer, state)
-    assert len(state["setups"]) == 2
+    assert len(state["setups"]) == 1
     assert state["setups"][0]["breakoutTrigger"] == old["breakoutTrigger"]
-    assert state["setups"][1]["breakoutTrigger"] == 4601.09
-    assert state["setups"][1]["previousSetupId"] == old["setupId"]
-    assert events[-1]["event_type"] == "NEW_SETUP_CREATED"
+    assert state["setups"][0]["primaryTrigger"] == old["breakoutTrigger"]
+    assert events == []
 
 
 def test_higher_timeframe_invalidation_disables_pullback_long():

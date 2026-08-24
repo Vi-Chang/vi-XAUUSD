@@ -153,6 +153,7 @@ def evaluate_decision_assistant(data: dict, *, latest_candle: dict | None = None
     quality_grade = _grade(score)
     rr_passed = rr >= settings.decision_assistant_min_rr
     status = str(selected.get("status") or "NO_SETUP")
+    execution_state = str(selected.get("tradeState") or "")
     can_enter = (status in READY or status.startswith("ENTRY_READY_")) and rr_passed and score >= 50
     no_trade_reasons = []
     if regime in {"NO_EDGE", "RANGE", "SHORT_WEAK_HTF_BULLISH", "SHORT_TERM_RECOVERING",
@@ -163,7 +164,10 @@ def evaluate_decision_assistant(data: dict, *, latest_candle: dict | None = None
         no_trade_reasons.append(f"賺賠比 {rr:.2f}，低於門檻 {settings.decision_assistant_min_rr:.2f}")
     if score < 50:
         no_trade_reasons.append(f"進場品質 {score} 分，未達通知門檻 50 分")
-    if distance_atr >= settings.decision_assistant_missed_entry_atr:
+    if execution_state == "MANAGE":
+        can_enter = False
+        action, trade_state = "管理已成立訊號", "MANAGE"
+    elif distance_atr >= settings.decision_assistant_missed_entry_atr:
         can_enter = False
         action = "不要追價"
         trade_state = "MISSED_ENTRY" if status in READY else "NO_TRADE"
@@ -193,6 +197,7 @@ def evaluate_decision_assistant(data: dict, *, latest_candle: dict | None = None
         "ENTRY_READY": "entry_ready", "ENTRY_APPROACHING": "approach_entry",
         "MISSED_ENTRY": "missed_entry", "WEAK_BREAKOUT": "breakout_confirmed",
         "SCENARIO_INVALIDATED": "scenario_invalidated", "NO_TRADE": "no_trade",
+        "MANAGE": "hold",
     }.get(trade_state, "")
     changed = (previous.get("tradeState") != trade_state or previous.get("regime") != regime
                or previous.get("scenarioId") != scenario_id)

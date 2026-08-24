@@ -703,6 +703,8 @@ function renderBreakoutSetupLedger(manager) {
     PULLBACK_INVALIDATED: "回踩劇本已取消",
     PULLBACK_BREACH_PENDING_CLOSE: "盤中跌穿，等待收盤判定",
     INVALIDATED: "已失效", EXPIRED: "已到期",
+    WATCHING: "尚未成立", ARMED: "接近確認價", READY: "訊號已確認",
+    ENTER: "可以進場", MANAGE: "訊號進行中", MISSED: "已錯過，等待回踩",
   };
   const ready = setups.find((s) => String(s.status).includes("ENTRY_READY"));
   $("breakout-setup-summary").textContent = ready
@@ -713,10 +715,11 @@ function renderBreakoutSetupLedger(manager) {
     box.className = "scenario-item";
     const side = s.direction === "LONG" ? "多方" : "空方";
     const confirmed = s.breakoutConfirmedAt ? "收盤確認已完成" : "正在等 15 分鐘收盤確認";
-    const plainState = stateZh[s.status] || "正在重新計算市場條件";
+    const plainState = stateZh[s.tradeState] || stateZh[s.status] || "正在重新計算市場條件";
     const pullbackLow = s.pullbackEntryZoneLow ?? s.retestZoneLow;
     const pullbackHigh = s.pullbackEntryZoneHigh ?? s.retestZoneHigh;
-    box.textContent = `${side}劇本｜🚀 突破：${Number(s.breakoutTrigger).toFixed(2)}（${confirmed}，超過 ${Number(s.maxChasePrice).toFixed(2)} 不追）｜↩️ 回踩：${Number(pullbackLow).toFixed(2)}–${Number(pullbackHigh).toFixed(2)}，進區後仍要等止跌｜現在：${plainState}`;
+    const execution = s.executionZoneLow != null ? `${Number(s.executionZoneLow).toFixed(2)}–${Number(s.executionZoneHigh).toFixed(2)}` : "尚未建立";
+    box.textContent = `${side}劇本｜原始確認價：${Number(s.primaryTrigger ?? s.breakoutTrigger).toFixed(2)}（${confirmed}）｜可執行區：${execution}｜超過 ${Number(s.maxChasePrice).toFixed(2)} 不追｜現在：${plainState}`;
     return box;
   }));
 }
