@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import pandas as pd
 
 from app.config import get_settings
+from app.engines.directional_wording import format_level_cross
 
 
 def _num(value, default=0.0):
@@ -115,9 +116,17 @@ def evaluate_break_lifecycle(
                                            "LIQUIDITY_SWEEP_CANDIDATE"} for x in history)
     regime = "WHIPSAW" if whipsaw_count >= settings.whipsaw_failed_break_count else "NORMAL"
     now = str(data.get("timestamp_utc") or datetime.now(timezone.utc).isoformat())
+    directional_state = {
+        ("BREAK_CONFIRMED", "DOWN"): "BEAR_BREAKOUT_CONFIRMED",
+        ("BREAK_CONFIRMED", "UP"): "BULL_BREAKOUT_CONFIRMED",
+        ("FAILED_BREAKDOWN", "DOWN"): "BEAR_BREAKOUT_FAILED",
+        ("FAILED_BREAKOUT", "UP"): "BULL_BREAKOUT_FAILED",
+    }.get((state, direction), state)
     output = {
         "schemaVersion": "break-lifecycle-v1", "state": state,
-        "break_type": break_type, "direction": direction, "level": round(level, 2),
+        "directionalState": directional_state,
+        "break_type": break_type, "direction": direction, "levelKind": kind,
+        "level": round(level, 2),
         "break_confidence": break_score, "follow_through_score": follow,
         "follow_through": "SUFFICIENT" if follow >= 65 else "INSUFFICIENT",
         "reclaim_level": round(level, 2) if reclaimed else None,
@@ -148,19 +157,28 @@ def evaluate_break_lifecycle(
         seed = f"XAUUSD|{event_type}|{level:.2f}|{sample.index[-1]}"
         events.append({"eventId": hashlib.sha256(seed.encode()).hexdigest()[:32],
                        "event_type": event_type, "previousState": old_state,
-                       "currentState": state, "breakLifecycle": output,
+                       "currentState": state, "directionalState": directional_state,
+                       "breakLifecycle": output,
                        "currentPrice": price, "triggerLevel": round(level, 2),
                        "candleCloseTime": str(sample.index[-1]), "calculatedAt": now,
-                       "transitionReason": _message(state, level)})
+                       "transitionReason": _message(state, level, kind)})
     return output, events
 
 
-def _message(state: str, level: float) -> str:
+def _message(state: str, level: float, kind: str) -> str:
+    down = format_level_cross(
+        level_kind=kind, movement="DOWN", level=level,
+        role="多方防守位" if kind == "support" else None)
+    up = format_level_cross(
+        level_kind=kind, movement="UP", level=level,
+        role="空方防守位" if kind == "resistance" else None)
     return {
-        "BREAK_CONFIRMATION_PENDING": f"價格已收破 {level:.2f}，等待後續延續確認",
+        "BREAK_CONFIRMATION_PENDING": (
+            f"{down if kind == 'support' else up}，等待後續延續確認"),
         "FAILED_BREAKDOWN": f"下方跌破沒有延續，價格快速收復 {level:.2f}，疑似流動性掃盤",
         "FAILED_BREAKOUT": f"上方突破缺乏延續，價格快速跌回 {level:.2f}，警戒多頭陷阱",
-        "BREAK_CONFIRMED": f"收盤突破 {level:.2f} 且後續延續，結構突破確認",
+        "BREAK_CONFIRMED": (
+            f"{down if kind == 'support' else up}且後續延續，結構確認"),
         "RECLAIM_FAILED": f"收復 {level:.2f} 後再次有效失守，突破可信度提高",
         "LIQUIDITY_SWEEP_CANDIDATE": f"影線越過 {level:.2f} 後收回，疑似流動性掃盤",
     }.get(state, f"關鍵價 {level:.2f} 正在測試")

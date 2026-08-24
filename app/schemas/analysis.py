@@ -570,6 +570,7 @@ class AnalysisResult(BaseModel):
     breakout_setup_manager: dict = Field(default_factory=dict)
     trend_continuation_engine: dict = Field(default_factory=dict)
     double_sweep_statistical: dict = Field(default_factory=dict)
+    fake_breakout_recovery: dict = Field(default_factory=dict)
     market_behavior_engine: dict = Field(default_factory=dict)
     wick_rejection_engine: dict = Field(default_factory=dict)
     decision_assistant: dict = Field(default_factory=dict)

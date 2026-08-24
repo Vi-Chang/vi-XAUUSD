@@ -137,6 +137,58 @@ def _closed_candle_text(candle: dict) -> str:
 
 def format_decision_message(event: dict) -> str:
     canonical_type = str(event.get("event_type") or "")
+    recovery = event.get("fakeBreakoutRecovery") or {}
+    if canonical_type in {
+        "FAKE_BREAKOUT_CONFIRMED", "OPPOSITE_SETUP_CONFIRMED",
+        "RECOVERY_SETUP_INVALIDATED",
+    } or recovery:
+        next_action = event.get("nextAction") or recovery.get("nextAction") or {}
+        failed_direction = str(recovery.get("invalidatedBreakoutDirection") or "")
+        opposite = str(recovery.get("oppositeDirection") or "")
+        price = float(event.get("currentPrice") or 0)
+        trigger = next_action.get("triggerLevel")
+        strong = next_action.get("strongConfirmationLevel")
+        invalidation = next_action.get("invalidationLevel")
+        targets = next_action.get("targets") or []
+        if canonical_type == "RECOVERY_SETUP_INVALIDATED":
+            return "\n".join([
+                "⚪【快速收復劇本已取消】",
+                f"現價：{price:.2f}",
+                "原因：價格沒有守住收復條件，這次反向觀察不再使用。",
+                "現在：先不要進場，等待系統重新建立市場結構。",
+            ])
+        failed_text = "空頭跌破" if failed_direction == "SHORT" else "多頭突破"
+        bias_text = "多方" if opposite == "LONG" else "空方"
+        title = (
+            f"🟢【{failed_text}失敗｜{bias_text}重新取得優勢】"
+            if opposite == "LONG" else
+            f"🔴【{failed_text}失敗｜{bias_text}重新取得優勢】"
+        )
+        confirmed = canonical_type == "OPPOSITE_SETUP_CONFIRMED"
+        lines = [
+            title,
+            f"現價：{price:.2f}",
+            ("發生什麼事：關鍵位跌破後快速站回，且下跌沒有延續。"
+             if failed_direction == "SHORT" else
+             "發生什麼事：關鍵位突破後快速跌回，且上漲沒有延續。"),
+            ("現在：反向觀察條件已由收盤確認，仍需通過進場位置、停損與盈虧比。"
+             if confirmed else
+             "現在：先不要追價，等待下一根已收盤 15 分鐘 K 棒確認。"),
+        ]
+        if failed_direction:
+            lines.insert(3, f"原{'空方' if failed_direction == 'SHORT' else '多方'}劇本：已取消")
+        if isinstance(trigger, (int, float)):
+            verb = "站上" if opposite == "LONG" else "跌破"
+            lines.append(f"下一觸發：15M 收盤{verb} {float(trigger):.2f}")
+        if isinstance(strong, (int, float)):
+            verb = "站穩" if opposite == "LONG" else "跌破並站穩"
+            lines.append(f"較強確認：15M 收盤{verb} {float(strong):.2f}")
+        if isinstance(invalidation, (int, float)):
+            verb = "跌破" if opposite == "LONG" else "站上"
+            lines.append(f"取消條件：15M 收盤{verb} {float(invalidation):.2f}")
+        if targets:
+            lines.append("參考目標：" + "、".join(f"{float(item):.2f}" for item in targets[:3]))
+        return "\n".join(lines)
     break_state = event.get("breakLifecycle") or {}
     if canonical_type in {"BREAK_PENDING", "LIQUIDITY_SWEEP_CANDIDATE",
                           "FAILED_BREAKDOWN", "FAILED_BREAKOUT",

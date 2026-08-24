@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 #   6. legacy fallback 政策(_unavailable / 版本閘門)
 # 此常數為唯一真實來源(single source of truth):analysis_service 蓋章時 import 本常數,
 # 不得各處硬編碼數字(見 tests/test_privacy_boundary.py 的 invariant test)。
-PRIVACY_BOUNDARY_VERSION = 8
+PRIVACY_BOUNDARY_VERSION = 9
 
 # 公開允許的頂層欄位(白名單)。決策另由 market_decision 映射為 decision。
 PUBLIC_ALLOWLIST: tuple[str, ...] = (
@@ -46,6 +46,7 @@ PUBLIC_ALLOWLIST: tuple[str, ...] = (
     "trade_plan_manager",
     "breakout_setup_manager",
     "trend_continuation_engine",
+    "fake_breakout_recovery",
     "market_behavior_engine",
     "wick_rejection_engine",
     # Position-free market decision only: no account, trade, PnL or broker data.

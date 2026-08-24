@@ -185,6 +185,11 @@ def notification_fingerprint(event: dict) -> str:
 
 def alert_category(event: dict) -> str:
     event_type = str(event.get("event_type") or "")
+    if event_type in {
+        "FAKE_BREAKOUT_CONFIRMED", "OPPOSITE_SETUP_CONFIRMED",
+        "RECOVERY_SETUP_INVALIDATED",
+    }:
+        return "MEANINGFUL_SCENARIO_UPDATE"
     if event_type in {"DOUBLE_SWEEP_CONFIRMED", "DOUBLE_SWEEP_EDGE_CONSUMED"}:
         return "MEANINGFUL_SCENARIO_UPDATE"
     if event.get("tradePlanId"):

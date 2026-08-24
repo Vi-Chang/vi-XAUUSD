@@ -574,6 +574,7 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
     result.breakout_setup_manager = monitors["breakout_setup_manager"]
     result.trend_continuation_engine = monitors["trend_continuation_engine"]
     result.double_sweep_statistical = monitors["double_sweep_statistical"]
+    result.fake_breakout_recovery = monitors["fake_breakout_recovery"]
     result.market_behavior_engine = monitors["market_behavior_engine"]
     result.wick_rejection_engine = monitors["wick_rejection_engine"]
     result.decision_assistant = monitors["decision_assistant"]

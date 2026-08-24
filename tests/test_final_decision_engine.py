@@ -195,3 +195,24 @@ def test_same_decision_has_stable_id_after_restart_like_recalculation():
     })
     assert recreated["decisionId"] == first["decisionId"]
     assert not recreated["decisionChanged"]
+
+
+def test_confirmed_opposite_setup_still_requires_and_can_pass_canonical_risk_gates():
+    data = market()
+    data["fake_breakout_recovery"] = {
+        "active": True,
+        "state": "LONG_SETUP_CONFIRMED",
+        "sourceFailureId": "failed-short-1",
+        "invalidatedBreakoutDirection": "SHORT",
+        "oppositeDirection": "LONG",
+        "oppositeBiasBoost": 12,
+        "nextAction": {
+            "triggerLevel": 100.0,
+            "invalidationLevel": 98.0,
+            "targets": [104.0, 106.0, 108.0],
+        },
+    }
+    decision, _ = evaluate_final_decision(data)
+    assert decision["finalAction"] == "ENTER_LONG"
+    assert decision["canEnter"] is True
+    assert decision["entrySignal"] == "READY"

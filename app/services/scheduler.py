@@ -56,6 +56,12 @@ class AppState:
         self.scheduler_started = False  # 排程是否已啟動
         self.last_market_freshness: str | None = None
         self.last_trigger_cross_key: str | None = None
+        # Full-analysis failures are handled as one persistent incident.  Quote
+        # monitoring continues while the last known-good market structure is
+        # exposed in fail-closed mode.
+        from app.services.analysis_failure_recovery import AnalysisFailureRecovery
+
+        self.analysis_recovery = AnalysisFailureRecovery()
 
     def mark(self, job: str) -> None:
         self.last_job_run[job] = datetime.now(timezone.utc)
@@ -432,9 +438,25 @@ async def run_full_analysis(*, trigger: str, reason_zh: str | None) -> None:
 
         tick = state.quote_cache.fresh_tick(max_age_seconds=l1_interval_seconds() * 3)
         # single-flight:與手動 API / 首載共用同一道鎖,並發只實際跑一次
-        result = await run_analysis_shared(
-            state.provider, trigger=trigger, tick=tick, cached_only=degraded
+        async def _run_analysis():
+            return await run_analysis_shared(
+                state.provider, trigger=trigger, tick=tick, cached_only=degraded
+            )
+
+        result, degraded_result = await state.analysis_recovery.execute(
+            _run_analysis,
+            notifier=state.notifier,
+            current=state.latest_result,
+            symbol="XAUUSD",
+            module="full_analysis",
         )
+        if result is None:
+            if degraded_result:
+                state.latest_result = degraded_result
+                await broadcast_all(
+                    {"type": "analysis_degraded", "data": degraded_result}
+                )
+            return
         state.latest_result = result.model_dump()
         state.last_full_analysis = datetime.now(timezone.utc)
 
@@ -469,10 +491,17 @@ async def run_full_analysis(*, trigger: str, reason_zh: str | None) -> None:
         await broadcast_private({"type": "analysis", "data": full})
     except Exception as exc:
         logger.exception("full_analysis failed")
-        if state.notifier:
-            await state.notifier.notify(
-                "RISK", "analysis_error", f"分析失敗:{exc}", severity="ERROR"
-            )
+        # Failures after the analysis call (projection, presentation, broadcast,
+        # etc.) share the same incident policy: one durable alert per fingerprint
+        # and a last-known-good snapshot.  Never emit the raw exception to users.
+        degraded_result = await state.analysis_recovery.report_failure(
+            exc,
+            notifier=state.notifier,
+            current=state.latest_result,
+            symbol="XAUUSD",
+            module="full_analysis_postprocess",
+        )
+        state.latest_result = degraded_result
 
 
 # ═══ 其他既有 jobs ═════════════════════════════════════════

@@ -139,6 +139,7 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
     raw_opportunities = opportunity_engine.get("opportunities") or []
     dynamic_profit = data.get("dynamic_profit_protection") or {}
     break_lifecycle = data.get("break_lifecycle_engine") or {}
+    fake_recovery = data.get("fake_breakout_recovery") or {}
     current = _number(health.get("currentPrice"))
     all_candidates = [_candidate_view(item, current, minimum_rr)
                       for item in final.get("signalCandidates") or []]
@@ -232,6 +233,22 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
                       f"並收盤守住；成立後重新計算 RR，≥ {minimum_rr:.2f} 才允許"
                       f" {'BUY' if direction == 'LONG' else 'SELL'}"),
         }
+    if not can_enter and fake_recovery.get("active"):
+        recovery_action = fake_recovery.get("nextAction") or {}
+        recovery_trigger = _number(recovery_action.get("triggerLevel"))
+        recovery_direction = str(fake_recovery.get("oppositeDirection") or direction)
+        if recovery_trigger is not None:
+            canonical_trigger = {
+                "setupId": f"FBR-{fake_recovery.get('sourceFailureId')}",
+                "direction": recovery_direction, "level": recovery_trigger,
+                "timeframe": "15M",
+                "condition": ("closeAbove" if recovery_direction == "LONG"
+                              else "closeBelow"),
+                "source": "CLOSED_CANDLE", "sourceCandleTime": candle_time,
+                "status": "PENDING",
+                "label": (f"15M 收盤{'站穩' if recovery_direction == 'LONG' else '跌破'} "
+                          f"{recovery_trigger:.2f}；確認後仍須通過位置、停損與 RR 閘門"),
+            }
     primary_reason = str(final.get("humanSummary") or "等待條件一致")
     if stale:
         primary_reason = "行情資料延遲，等待最新資料確認。"
@@ -462,6 +479,7 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
                 "FAILED_BREAKDOWN", "FAILED_BREAKOUT"},
             "reclaimScore": break_lifecycle.get("reclaim_confidence"),
         },
+        "fakeBreakoutRecovery": fake_recovery,
         "dataStale": stale,
         "newEntryDecision": {
             "action": entry_action, "canEnter": can_enter, "direction": direction,

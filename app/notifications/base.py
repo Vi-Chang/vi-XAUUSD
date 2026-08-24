@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from app.config import get_settings
 from app.db.models import Alert
@@ -54,7 +54,8 @@ class NotificationManager:
     async def notify(self, level: str, topic: str, message: str, *,
                      severity: str | None = None, bypass_cooldown: bool = False,
                      force_push: bool = False, mention: bool | None = None,
-                     exact_once: bool = False) -> bool:
+                     exact_once: bool = False,
+                     persistent_cooldown_seconds: int | None = None) -> bool:
         """發送分級通知。
 
         severity:覆寫類別預設嚴重度(如 data_lag 用 RISK 類別但只算 WARN)。
@@ -65,9 +66,22 @@ class NotificationManager:
         s = get_settings()
         sev = (severity or LEVEL_SEVERITY.get(level, "INFO")).upper()
         now = datetime.now(timezone.utc)
-        if level in ("RISK", "EXIT"):
+        if level in ("RISK", "EXIT") and persistent_cooldown_seconds is None:
             bypass_cooldown = True
         key = f"{level}:{topic}"
+        if persistent_cooldown_seconds:
+            try:
+                from sqlalchemy import select
+                cutoff = now - timedelta(seconds=max(0, persistent_cooldown_seconds))
+                with db_session() as db:
+                    recent = db.execute(select(Alert.id).where(
+                        Alert.level == level, Alert.topic == topic,
+                        Alert.sent_at >= cutoff).limit(1)).scalar_one_or_none()
+                if recent is not None:
+                    logger.debug("notification suppressed by persistent cooldown: %s", key)
+                    return False
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("persistent notification cooldown failed: %s", exc)
         if exact_once:
             try:
                 from sqlalchemy import select
