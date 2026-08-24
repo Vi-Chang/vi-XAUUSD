@@ -93,6 +93,24 @@ def test_freshness_recovers_when_new_quote_arrives():
     assert evaluate_freshness_state(fixture(), now=NOW)["marketFreshness"]["status"] == "fresh"
 
 
+def test_health_state_distinguishes_disconnect_and_recovery(monkeypatch):
+    monkeypatch.setattr("app.engines.freshness_state.market_is_open", lambda _now: True)
+    missing = fixture()
+    missing["current_price"] = {}
+    missing["normalized_analysis"]["marketDataTimestamp"] = ""
+    assert evaluate_freshness_state(missing, now=NOW)["healthState"] == "DISCONNECTED"
+    recovered = evaluate_freshness_state(
+        fixture(), now=NOW, previous_health_state="STALE")
+    assert recovered["healthState"] == "RECOVERING"
+
+
+def test_market_closed_is_not_reported_as_stale(monkeypatch):
+    monkeypatch.setattr("app.engines.freshness_state.market_is_open", lambda _now: False)
+    state = evaluate_freshness_state(fixture(), now=NOW)
+    assert state["healthState"] == "MARKET_CLOSED"
+    assert state["marketFreshness"]["healthState"] == "MARKET_CLOSED"
+
+
 def test_duplicate_scenarios_are_suppressed_deterministically():
     data = fixture()
     duplicate = dict(data["breakout_setup_manager"]["setups"][0])
@@ -130,7 +148,7 @@ def test_stale_ai_snapshot_cannot_override_realtime_price():
 
 def test_effective_rr_is_computed_from_frozen_setup():
     state = build_realtime_presentation(fixture(), now=NOW)
-    expected = round((4648 - 4626.13) / (4626.13 - 4615.1), 3)
+    expected = round((4648 - 4626.13) / (4626.13 - 4615.1), 2)
     assert state["effectiveRR"] == expected
 
 

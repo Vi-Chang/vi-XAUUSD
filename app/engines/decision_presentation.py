@@ -310,11 +310,13 @@ def _format_breakout_setup_event(event: dict, breakout_event: dict) -> str:
         if entry_type == "回踩進場":
             zone = (f"{float(setup.get('pullbackEntryZoneLow') or setup.get('entryZoneLow') or 0):.2f}–"
                     f"{float(setup.get('pullbackEntryZoneHigh') or setup.get('entryZoneHigh') or 0):.2f}")
-        risk = abs(float(setup.get("entryZoneHigh") or trigger) -
-                   float(setup.get("stopPrice") or trigger))
-        reward = abs(float(setup.get("tp1") or trigger) -
-                     float(setup.get("entryZoneHigh") or trigger))
-        rr = reward / risk if risk else 0
+        from app.engines.scenario_safety import calculate_risk_reward
+        entry_for_rr = float(setup.get("entryZoneHigh") or trigger)
+        rr_details = calculate_risk_reward(
+            direction, evaluation_entry_price=entry_for_rr,
+            stop_loss=float(setup.get("stopPrice") or trigger),
+            target_price=float(setup.get("tp1") or trigger))
+        rr = float(rr_details["ratio"] or 0)
         return "\n".join([
             "🟢🟢【進場條件成立】",
             f"方向：{'做多' if direction == 'LONG' else '做空'}",

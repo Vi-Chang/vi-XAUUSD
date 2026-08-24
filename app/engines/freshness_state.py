@@ -9,6 +9,8 @@ from app.services.market_calendar import market_is_open
 from app.utils.timeutils import iso_utc, parse_utc
 
 FreshnessStatus = Literal["fresh", "degraded", "stale"]
+HEALTH_STATES = {"FRESH", "DEGRADED", "STALE", "RECOVERING",
+                 "DISCONNECTED", "MARKET_CLOSED"}
 
 
 def _item(value: str | datetime | None, *, now: datetime, fresh_seconds: int,
@@ -31,7 +33,8 @@ def _item(value: str | datetime | None, *, now: datetime, fresh_seconds: int,
             "ageSeconds": round(age, 3), "reason": reason}
 
 
-def evaluate_freshness_state(data: dict, *, now: datetime | None = None) -> dict:
+def evaluate_freshness_state(data: dict, *, now: datetime | None = None,
+                             previous_health_state: str | None = None) -> dict:
     now = parse_utc(now or datetime.now(timezone.utc)) or datetime.now(timezone.utc)
     settings = get_settings()
     normalized = data.get("normalized_analysis") or {}
@@ -67,6 +70,19 @@ def evaluate_freshness_state(data: dict, *, now: datetime | None = None) -> dict
         "latestClosedCandleAtUtc": candle["lastUpdatedAtUtc"],
         "closedCandleAgeSeconds": candle["ageSeconds"],
     }
+    if not market_open:
+        health_state = "MARKET_CLOSED"
+    elif not market["lastUpdatedAtUtc"]:
+        health_state = "DISCONNECTED"
+    elif market_status == "stale":
+        health_state = "STALE"
+    elif previous_health_state in {"STALE", "DISCONNECTED", "MARKET_CLOSED"}:
+        health_state = "RECOVERING"
+    elif market_status == "degraded":
+        health_state = "DEGRADED"
+    else:
+        health_state = "FRESH"
+    market_combined["healthState"] = health_state
     events = _item(event_stamp, now=now, fresh_seconds=24 * 3600,
                    degraded_seconds=7 * 24 * 3600,
                    missing_reason="事件資料時間缺失")
@@ -90,4 +106,5 @@ def evaluate_freshness_state(data: dict, *, now: datetime | None = None) -> dict
     }
     return {"marketFreshness": market_combined, "eventFreshness": events,
             "calendarFreshness": calendar, "strategyFreshness": strategy,
-            "evaluatedAtUtc": iso_utc(now), "marketOpen": market_open}
+            "evaluatedAtUtc": iso_utc(now), "marketOpen": market_open,
+            "healthState": health_state}

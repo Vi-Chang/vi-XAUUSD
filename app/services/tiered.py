@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from app.config import get_settings
+from app.engines.trading_invariants import normalized_event_time, validate_quote
 from app.providers.base import PriceTick
 
 logger = logging.getLogger(__name__)
@@ -39,8 +40,24 @@ class QuoteCache:
         self._bucket_hi: float | None = None
         self._bucket_lo: float | None = None
         self._closed_ranges: deque[float] = deque(maxlen=max_buckets)
+        self.duplicate_tick_count = 0
+        self.out_of_order_tick_count = 0
 
-    def add(self, tick: PriceTick) -> None:
+    def add(self, tick: PriceTick) -> bool:
+        """Accept only a valid, forward-moving quote; return whether it was stored."""
+        validate_quote(bid=tick.bid, ask=tick.ask)
+        event_time = normalized_event_time(tick.quote_time)
+        if self.last_tick is not None:
+            previous_time = normalized_event_time(self.last_tick.quote_time)
+            if event_time < previous_time:
+                self.out_of_order_tick_count += 1
+                logger.warning("out-of-order quote rejected: %s < %s", event_time,
+                               previous_time)
+                return False
+            if (event_time == previous_time and tick.bid == self.last_tick.bid
+                    and tick.ask == self.last_tick.ask):
+                self.duplicate_tick_count += 1
+                return False
         now = datetime.now(timezone.utc)
         self.previous_tick = self.last_tick
         self.last_tick = tick
@@ -55,11 +72,15 @@ class QuoteCache:
         else:
             self._bucket_hi = max(self._bucket_hi, tick.mid)
             self._bucket_lo = min(self._bucket_lo, tick.mid)
+        return True
 
     def fresh_tick(self, max_age_seconds: int) -> PriceTick | None:
         if self.last_tick is None or self.last_update is None:
             return None
-        age = (datetime.now(timezone.utc) - self.last_update).total_seconds()
+        now = datetime.now(timezone.utc)
+        received_age = (now - self.last_update).total_seconds()
+        event_age = (now - normalized_event_time(self.last_tick.quote_time)).total_seconds()
+        age = max(received_age, event_age)
         return self.last_tick if age <= max_age_seconds else None
 
     def current_bucket_range(self) -> float | None:

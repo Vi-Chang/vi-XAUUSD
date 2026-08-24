@@ -41,3 +41,12 @@ jobs:
 
       - name: Run test suite
         run: python -m pytest -q
+
+      - name: Reliability invariants and fault injection gate
+        run: >-
+          python -m pytest -q
+          tests/test_reliability_invariants.py
+          tests/test_moving_goalpost.py
+          tests/test_setup_lifecycle.py
+          tests/test_decision_conflict_guards.py
+          tests/test_decision_outbox.py

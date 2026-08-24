@@ -158,19 +158,23 @@ def build_breakout_setup(data: dict, *, direction: str, previous_setup_id: str =
 
 
 def _rr_ok(setup: dict) -> bool:
-    risk = abs(float(setup["entryZoneHigh"] if setup["direction"] == "LONG"
-                     else setup["entryZoneLow"]) - float(setup["stopPrice"]))
-    reward = abs(float(setup["tp1"]) - float(setup["entryZoneHigh"]
-                 if setup["direction"] == "LONG" else setup["entryZoneLow"]))
-    return risk > 0 and reward / risk >= 1.5
+    from app.engines.scenario_safety import calculate_risk_reward
+    entry = float(setup["entryZoneHigh"] if setup["direction"] == "LONG"
+                  else setup["entryZoneLow"])
+    rr = calculate_risk_reward(setup["direction"], evaluation_entry_price=entry,
+                               stop_loss=float(setup["stopPrice"]),
+                               target_price=float(setup["tp1"]))
+    return bool(rr["available"] and rr["ratio"] >= 1.5)
 
 
 def _pullback_rr_ok(setup: dict) -> bool:
     entry = _number(setup.get("pullbackEntryZoneHigh") if setup["direction"] == "LONG"
                     else setup.get("pullbackEntryZoneLow"))
     stop = float(setup.get("pullbackInvalidationPrice") or setup["stopPrice"])
-    reward = abs(float(setup["tp1"]) - entry)
-    return abs(entry - stop) > 0 and reward / abs(entry - stop) >= 1.5
+    from app.engines.scenario_safety import calculate_risk_reward
+    rr = calculate_risk_reward(setup["direction"], evaluation_entry_price=entry,
+                               stop_loss=stop, target_price=float(setup["tp1"]))
+    return bool(rr["available"] and rr["ratio"] >= 1.5)
 
 
 def _htf_valid(normalized: dict, direction: str) -> bool:

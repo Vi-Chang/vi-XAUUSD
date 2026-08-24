@@ -126,9 +126,14 @@ def build_realtime_presentation(data: dict, *, price: float | None = None,
     freshness = evaluate_freshness_state(freshness_input, now=now_utc)
     distance_trigger = None if trigger is None else round((trigger - current) if bullish else (current - trigger), 4)
     reference_entry = entry_high if bullish else entry_low
-    risk = abs(reference_entry - invalidation) if reference_entry is not None and invalidation is not None else 0
-    reward = abs(targets[0] - reference_entry) if targets and reference_entry is not None else 0
-    rr = round(reward / risk, 3) if risk > 0 else None
+    rr = None
+    if reference_entry is not None and invalidation is not None and targets:
+        from app.engines.scenario_safety import calculate_risk_reward
+        details = calculate_risk_reward(
+            direction, evaluation_entry_price=reference_entry,
+            stop_loss=invalidation, target_price=targets[0],
+            spread=_num((data.get("current_price") or {}).get("spread")) or 0.0)
+        rr = details["ratio"]
     payload = {
         "currentPrice": current, "quoteTimeUtc": iso_utc(quote_time or normalized.get("marketDataTimestamp")),
         "latestClosed15mPrice": closed_price, "latestClosed15mTimeUtc": iso_utc(closed_at),

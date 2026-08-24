@@ -170,14 +170,12 @@ def validate_pre_delivery(db: Session, *, symbol: str, queued_payload: dict,
     if tick.spread > max(settings.gate_spread_max_abs,
                          settings.gate_spread_max_atr15_mult * atr):
         return _blocked("SPREAD_TOO_HIGH", snapshot, current)
-    slippage = settings.estimated_slippage_abs
-    if action == "ENTER_LONG":
-        risk = delivery_price + slippage - stop
-        reward = target - slippage - delivery_price
-    else:
-        risk = stop - (delivery_price - slippage)
-        reward = delivery_price - slippage - target
-    effective_rr = reward / risk if risk > 0 else 0.0
+    from app.engines.scenario_safety import calculate_risk_reward
+    rr_details = calculate_risk_reward(
+        "LONG" if action == "ENTER_LONG" else "SHORT",
+        evaluation_entry_price=delivery_price, stop_loss=stop, target_price=target,
+        spread=tick.spread, slippage=settings.estimated_slippage_abs)
+    effective_rr = float(rr_details["ratio"] or 0.0)
     snapshot["effective_entry"] = delivery_price
     snapshot["effective_stop"] = stop
     snapshot["effective_target"] = target
