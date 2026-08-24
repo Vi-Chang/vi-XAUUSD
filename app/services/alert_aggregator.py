@@ -107,7 +107,7 @@ def notification_fingerprint_parts(event: dict) -> dict[str, str]:
     """Stable decision identity; excludes quote time, price, text and dataVersion."""
     wrapper = event.get("breakoutSetupEvent") or event.get("trendContinuationEvent") or {}
     setup = wrapper.get("setup") or {}
-    scenario_id = (setup.get("setupId") or wrapper.get("setupId")
+    scenario_id = (event.get("opportunityId") or setup.get("setupId") or wrapper.get("setupId")
                    or event.get("scenario_id") or event.get("setupId") or "")
     status = (setup.get("status") or wrapper.get("currentState")
               or event.get("currentState") or "WAIT")
@@ -137,6 +137,10 @@ def notification_fingerprint_parts(event: dict) -> dict[str, str]:
         "invalidationPrice": _price(invalidation),
         "sourceCandleTime": str(source_time),
     }
+    if str(event.get("event_type") or "") in {"DATA_STALE", "DATA_RECOVERED"}:
+        # Freshness alerts are transitions, not candle-scoped market setups.
+        parts["scenarioId"] = "DATA_HEALTH"
+        parts["sourceCandleTime"] = ""
     if pullback_zone:
         parts["pullbackZone"] = pullback_zone
     return parts

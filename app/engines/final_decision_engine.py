@@ -38,6 +38,7 @@ class SignalCandidate:
     lineage_id: str = ""
     setup_type: str = "OTHER"
     risk_reward: float | None = None
+    estimated_risk_reward: float | None = None
     level_sources: dict[str, dict] = field(default_factory=dict)
     lifecycle_state: str = "SETUP"
 
@@ -53,6 +54,8 @@ def _zone(item: dict) -> tuple[float, float] | None:
 
 
 def _lifecycle(status: str) -> str:
+    if status == "ALTERNATIVE_READY":
+        return "CONFIRMED"
     if "READY" in status:
         return "ENTRY_READY"
     if "CONFIRMED" in status:
@@ -87,12 +90,38 @@ def collect_signal_candidates(data: dict) -> list[SignalCandidate]:
     candidates: list[SignalCandidate] = []
     assistant = data.get("decision_assistant") or {}
     setup_ledgers: list[dict] = []
+    opportunity_engine = data.get("entry_opportunity_engine") or {}
+    unified_opportunities = list(opportunity_engine.get("opportunities") or [])
+    for opportunity in unified_opportunities:
+        zone = opportunity.get("entry_zone") or {}
+        setup_ledgers.append({
+            "setupId": opportunity.get("opportunity_id"),
+            "lineageId": opportunity.get("setup_id"),
+            "direction": opportunity.get("side"),
+            "status": opportunity.get("state"),
+            "signalScore": opportunity.get("opportunity_score"),
+            "entryZoneLow": zone.get("lower"), "entryZoneHigh": zone.get("upper"),
+            "stopPrice": opportunity.get("tactical_stop"),
+            "tp1": opportunity.get("target1"),
+            "expiresAt": opportunity.get("expires_at"),
+            "type": opportunity.get("type"),
+            # Only the post-confirmation, current execution RR can grant entry.
+            "riskReward": opportunity.get("executable_rr"),
+            "estimatedRR": opportunity.get("estimated_rr"),
+            "reasonCodes": opportunity.get("confirmation_evidence") or [],
+        })
     continuation = data.get("trend_continuation_engine") or {}
-    setup_ledgers.extend(continuation.get("candidates") or [])
+    continuation_candidates = list(continuation.get("candidates") or [])
+    if unified_opportunities:
+        continuation_candidates = [item for item in continuation_candidates
+                                   if "PULLBACK" not in str(item.get("type") or "")
+                                   and "RETEST" not in str(item.get("type") or "")]
+    setup_ledgers.extend(continuation_candidates)
     breakout = data.get("breakout_setup_manager") or {}
-    setup_ledgers.extend(breakout.get("setups") or [])
+    if not unified_opportunities:
+        setup_ledgers.extend(breakout.get("setups") or [])
     active = breakout.get("activeSetup") or {}
-    if active:
+    if active and not unified_opportunities:
         setup_ledgers.append(active)
     entry = data.get("entry_engine") or {}
     if entry:
@@ -136,7 +165,9 @@ def collect_signal_candidates(data: dict) -> list[SignalCandidate]:
             expires_at=str(item.get("expiresAt") or "") or None,
             scenario_id=scenario, scenario_version=version, lineage_id=lineage,
             setup_type=str(item.get("type") or "OTHER"),
-            risk_reward=_number(item.get("riskReward")), lifecycle_state=_lifecycle(status),
+            risk_reward=_number(item.get("riskReward")),
+            estimated_risk_reward=_number(item.get("estimatedRR")),
+            lifecycle_state=_lifecycle(status),
             level_sources={
                 "trigger": _level_source(trigger, "15M_confirmed_structure", data),
                 "invalidation": _level_source(invalidation, "15M_structure_invalidation", data),

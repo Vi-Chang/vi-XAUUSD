@@ -26,6 +26,7 @@ from app.engines.hypothetical_exit_advisor import (
     build_hypothetical_exit_plans,
     evaluate_hypothetical_exits,
 )
+from app.engines.entry_opportunity import evaluate_entry_opportunities
 from app.engines.market_behavior import evaluate_market_behavior
 from app.engines.regime_state_machine import evaluate_regime_state
 from app.engines.signal_lifecycle import evaluate_signal_lifecycle
@@ -193,6 +194,11 @@ def evaluate_market_monitors(
         {**data, "entry_engine": entry, "latest_closed_15m": latest_closed_15m},
         stored_breakout_setups)
     _save(symbol, "breakout_setups", breakout_setup_state)
+    opportunity_state, opportunity_events = evaluate_entry_opportunities(
+        {**data, "latest_closed_15m": latest_closed_15m,
+         "breakout_setup_manager": breakout_setup_state},
+        _load(symbol, "entry_opportunities"))
+    _save(symbol, "entry_opportunities", opportunity_state)
     continuation_state, continuation_events = evaluate_trend_continuation(
         {**data, "breakout_setup_manager": breakout_setup_state},
         m15=m15_closed, h1=h1_closed, h4=h4_closed,
@@ -206,6 +212,8 @@ def evaluate_market_monitors(
         "trade_plan_manager": {**trade_plan_state, "events": trade_plan_events},
         "breakout_setup_manager": {
             **breakout_setup_state, "events": breakout_setup_events},
+        "entry_opportunity_engine": {
+            **opportunity_state, "events": opportunity_events},
         "trend_continuation_engine": {
             **continuation_state, "events": continuation_events},
         "double_sweep_statistical": {
@@ -233,7 +241,7 @@ def evaluate_market_monitors(
     signal_facts = (exit_events + ([breakout_event] if breakout_event else []) + wick_events
                     + virtual_events + trade_plan_events + breakout_setup_events
                     + continuation_events + regime_events + behavior_events
-                    + assistant_events)
+                    + assistant_events + opportunity_events)
     signal_facts += double_sweep_events
     final_input = {**data, **monitor_result, "signal_facts": signal_facts}
     final_state, final_events = evaluate_final_decision(
@@ -258,6 +266,7 @@ def evaluate_market_monitors(
             "decisionVersion": final_state.get("decisionVersion"),
             "dataVersion": int(data.get("version") or 0),
             "marketState": lifecycle_state.get("bias"),
+            "canonicalDecision": canonical,
         })
     final_events.extend(lifecycle_events)
     final_state["events"] = final_events

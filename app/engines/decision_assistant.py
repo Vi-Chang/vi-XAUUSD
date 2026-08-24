@@ -7,7 +7,8 @@ from typing import Any
 from app.engines.entry_location import classify_entry_location, stop_is_valid
 
 ENGINE_VERSION = "decision-assistant-v3"
-READY = {"LONG_READY", "SHORT_READY", "BREAKOUT_ENTRY_READY", "PULLBACK_ENTRY_READY"}
+READY = {"ENTRY_READY", "LONG_READY", "SHORT_READY", "BREAKOUT_ENTRY_READY",
+         "PULLBACK_ENTRY_READY"}
 
 
 def _num(value: Any, default: float = 0.0) -> float:
@@ -118,11 +119,27 @@ def evaluate_decision_assistant(data: dict, *, latest_candle: dict | None = None
     regime, regime_reasons = classify_regime(data)
     continuation = data.get("trend_continuation_engine") or {}
     ledger = data.get("breakout_setup_manager") or {}
+    opportunity_engine = data.get("entry_opportunity_engine") or {}
     candidates = list(continuation.get("candidates") or [])
     active = ledger.get("activeSetup") or {}
     if active:
         candidates.append(active)
-    selected = next((x for x in candidates if str(x.get("status")) in READY
+    primary_opportunity = opportunity_engine.get("bestReachableOpportunity") or {}
+    selected = ({
+        "setupId": primary_opportunity.get("opportunity_id"),
+        "direction": primary_opportunity.get("side"),
+        "status": primary_opportunity.get("state"),
+        "entryZoneLow": (primary_opportunity.get("entry_zone") or {}).get("lower"),
+        "entryZoneHigh": (primary_opportunity.get("entry_zone") or {}).get("upper"),
+        "stopPrice": primary_opportunity.get("tactical_stop"),
+        "tp1": primary_opportunity.get("target1"),
+        "riskReward": primary_opportunity.get("executable_rr"),
+        "estimatedRR": primary_opportunity.get("estimated_rr"),
+        "signalScore": primary_opportunity.get("opportunity_score"),
+        "type": primary_opportunity.get("type"),
+        "expiresAt": primary_opportunity.get("expires_at"),
+    } if primary_opportunity else {})
+    selected = selected or next((x for x in candidates if str(x.get("status")) in READY
                      or str(x.get("status", "")).startswith("ENTRY_READY_")), None)
     selected = selected or (active if active else next(iter(candidates), {}))
     direction = str(selected.get("direction") or ("LONG" if "BULL" in regime else
@@ -135,7 +152,8 @@ def evaluate_decision_assistant(data: dict, *, latest_candle: dict | None = None
     distance_atr = distance / atr
     chase_penalty = round(min(35, max(0, distance_atr - .10) * 30))
     rr = _num(selected.get("riskReward"))
-    if not rr and low and high and isinstance(selected.get("stopPrice"), (int, float)) and isinstance(selected.get("tp1"), (int, float)):
+    estimated_rr = _num(selected.get("estimatedRR"))
+    if not rr and not primary_opportunity and low and high and isinstance(selected.get("stopPrice"), (int, float)) and isinstance(selected.get("tp1"), (int, float)):
         from app.engines.scenario_safety import calculate_risk_reward
         entry_edge = high if direction == "LONG" else low
         details = calculate_risk_reward(
@@ -242,7 +260,10 @@ def evaluate_decision_assistant(data: dict, *, latest_candle: dict | None = None
         "entryZone": {"low": low or None, "high": high or None},
         "invalidation": selected.get("stopPrice"),
         "targets": [x for x in (selected.get("tp1"), selected.get("tp2"), selected.get("tp3")) if isinstance(x, (int, float))],
-        "rewardRiskRatio": round(rr, 2), "rrPassed": rr_passed,
+        "estimatedRR": round(estimated_rr, 2) if estimated_rr else None,
+        "executableRR": round(rr, 2) if rr else None,
+        # Compatibility mirror; authorization always uses executableRR above.
+        "rewardRiskRatio": round(rr, 2) if rr else None, "rrPassed": rr_passed,
         "distanceFromOptimalEntry": round(distance, 2), "distanceInAtr": round(distance_atr, 3),
         "entryLocationState": location_state, "confirmationValid": confirmation_valid,
         "stopValid": valid_stop, "dataFresh": market_fresh,

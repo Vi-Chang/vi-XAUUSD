@@ -163,7 +163,10 @@ def format_decision_message(event: dict) -> str:
             f"現在：{action}",
         ])
     canonical = event.get("canonicalDecision") or {}
-    if canonical and canonical_type in {"ENTRY_READY", "CANDLE_FINALIZED", "WAIT_RETEST"}:
+    if canonical and canonical_type in {
+            "ENTRY_READY", "CANDLE_FINALIZED", "WAIT_RETEST", "ENTRY_APPROACHING",
+            "RETRACE_APPROACHING", "RETRACE_ZONE_ENTERED", "SETUP_WEAKENING",
+            "OPPORTUNITY_STATE_CHANGED"}:
         entry = canonical.get("newEntryDecision") or {}
         trigger = canonical.get("canonicalNextTrigger") or {}
         position = canonical.get("positionManagement") or {}
@@ -178,8 +181,19 @@ def format_decision_message(event: dict) -> str:
             zone = chosen.get("entryZone") or {}
             lines.extend([
                 f"{chosen.get('entryZoneLabel')}：{zone.get('low') or '—'}～{zone.get('high') or '—'}",
-                f"盈虧比：{chosen.get('riskReward') if chosen.get('riskReward') is not None else '—'}",
+                (f"可執行 RR：{chosen.get('executableRR')}" if chosen.get('executableRR') is not None
+                 else f"預估 RR：{chosen.get('estimatedRR') if chosen.get('estimatedRR') is not None else '—'}"),
             ])
+        opportunities = canonical.get("entryOpportunities") or []
+        labels = {"SHALLOW_PULLBACK": "第一觀察：淺回踩",
+                  "DEEP_PULLBACK": "第二觀察：深回踩",
+                  "BREAKOUT_RETEST": "突破回測"}
+        for opportunity in opportunities[:3]:
+            zone = opportunity.get("entry_zone") or {}
+            lines.append(
+                f"{labels.get(opportunity.get('type'), opportunity.get('type'))} "
+                f"{zone.get('lower', '—')}～{zone.get('upper', '—')}｜"
+                f"預估 RR {opportunity.get('estimated_rr') if opportunity.get('estimated_rr') is not None else '—'}")
         if not position.get("positionKnown"):
             lines.append("持倉：未取得實際持倉資料")
         else:
