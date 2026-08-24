@@ -260,7 +260,7 @@ def _zh_state(value: str) -> str:
         "SHORT_TERM_BULLISH_RESTORED": "短線重新轉強",
         "BULLISH_RESTORED": "短線重新轉強",
         "BEARISH_CONFIRMED": "短線已正式轉空",
-    }.get(value, "市場決策更新")
+    }.get(value, "市場方向暫無法確認")
 
 
 def format_telegram_event(event: dict) -> str:

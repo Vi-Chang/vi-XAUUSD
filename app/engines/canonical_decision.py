@@ -5,6 +5,7 @@ from typing import Any
 
 from app.config import get_settings
 from app.engines.candle_confirmation_registry import build_confirmation_registry
+from app.engines.confidence import get_confidence_grade
 from app.engines.data_health_gate import evaluate_data_health
 
 TERMINAL_SETUP_STATES = {"INVALIDATED", "ARCHIVED", "EXPIRED", "SETUP_EXPIRED",
@@ -128,6 +129,12 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
     minimum_rr = float(settings.decision_assistant_min_rr)
     health = evaluate_data_health(data)
     normalized = data.get("normalized_analysis") or {}
+    signal_score = _number((data.get("decision") or {}).get("signal_score"))
+    closed_candle = ((data.get("closed_candles") or {}).get("15M") or {})
+    closed_available = (bool(closed_candle.get("available")) if closed_candle else
+                        bool(normalized.get("lastClosedCandleTimestamp") and
+                             normalized.get("lastClosedCandlePrice") is not None))
+    closed_error = closed_candle.get("error_reason")
     opportunity_engine = data.get("entry_opportunity_engine") or {}
     raw_opportunities = opportunity_engine.get("opportunities") or []
     dynamic_profit = data.get("dynamic_profit_protection") or {}
@@ -159,7 +166,8 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
     trigger_level = selected.get("confirmationLevel") if selected else None
     direction = str(selected.get("direction") or final.get("direction") or "NEUTRAL")
     decision_timestamp = str(data.get("timestamp_utc") or health.get("evaluatedAt") or "")
-    candle_time = str(normalized.get("lastClosedCandleTimestamp") or "")
+    candle_time = str(closed_candle.get("close_time") or
+                      normalized.get("lastClosedCandleTimestamp") or "")
     registry = build_confirmation_registry(
         symbol=str(data.get("symbol") or "XAUUSD"), candidates=candidates,
         live_price=current, last_closed_price=_number(normalized.get("lastClosedCandlePrice")),
@@ -188,7 +196,8 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
     rr_ok = bool(selected.get("rrPassed")) if selected else False
     confirmation_closed = (trigger_level is None or
                            (confirmation or {}).get("status") == "CLOSED_CONFIRMED")
-    can_enter = bool(final.get("canEnter")) and rr_ok and not stale and confirmation_closed
+    can_enter = (bool(final.get("canEnter")) and rr_ok and not stale
+                 and closed_available and confirmation_closed)
     conflict = str(rejection.get("momentum_price_conflict") or "NONE")
     rejection_state = str(rejection.get("wick_rejection_state") or "NO_SIGNIFICANT_REJECTION")
     rejection_breakout = str(rejection.get("breakout_state") or "NONE")
@@ -247,8 +256,10 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
                       if item.get("kind") == "support"
                       and isinstance(item.get("price"), (int, float))
                       and (current is None or float(item["price"]) <= current)]
-    known = bool(position.get("has_position") and
-                 float(position.get("position_size") or 0) != 0)
+    raw_positions = list(position.get("positions") or [])
+    known = bool(position.get("has_position") and (
+        any(float(item.get("position_size") or 0) != 0 for item in raw_positions)
+        or float(position.get("position_size") or 0) != 0))
     position_side = str(position.get("position_side") or "").upper() if known else None
     position_action = str(position.get("recommended_action") or "HOLD").upper()
     normalized_position_action = next((name for name in ("EXIT", "REDUCE", "HOLD")
@@ -299,6 +310,61 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
         (best_pullback.get("riskReward") or -1) >
         ((best_breakout or {}).get("riskReward") or -1)
         else "BREAKOUT" if best_breakout else None)
+    if known and not raw_positions:
+        raw_positions = [{
+            "position_id": str(position.get("position_id") or "actual-position"),
+            "side": position_side, "entry_price": actual_entry,
+            "position_size": _number(position.get("position_size")),
+            "position_class": str(position.get("position_class") or "CORE"),
+            "stop_loss": position.get("stop_loss"),
+        }]
+    profit_by_id = {str(item.get("position_id") or ""): item
+                    for item in dynamic_profit.get("positions") or []}
+    per_position = []
+    for item in raw_positions:
+        pid = str(item.get("position_id") or "")
+        profit = profit_by_id.get(pid) or {}
+        item_side = str(item.get("side") or position_side or "").upper()
+        item_entry = _number(item.get("entry_price"))
+        tactical = (_number(profit.get("profit_protection_level")) or
+                    _number(profit.get("hard_risk_stop")) or
+                    _number(item.get("stop_loss")))
+        per_position.append({
+            "positionId": pid, "side": item_side,
+            "positionClass": str(item.get("position_class") or "CORE"),
+            "actualEntryPrice": item_entry,
+            "actualSize": _number(item.get("position_size")),
+            "currentPrice": current,
+            "unrealizedPnl": (round((current - item_entry) * (1 if item_side == "LONG" else -1), 3)
+                              if current is not None and item_entry is not None else None),
+            "positionAction": str(profit.get("position_action") or
+                                  normalized_position_action or "HOLD"),
+            "tacticalDefenseLevel": tactical,
+            "structuralInvalidationLevel": _number(
+                profit.get("structural_exit_confirmation")) or
+                _number(normalized.get("structuralInvalidationLevel")),
+            "peakProfit": profit.get("max_unrealized_profit"),
+            "givebackRatio": profit.get("profit_giveback_ratio"),
+            "targets": profit.get("targets") or [],
+        })
+    notification_route = "POSITION_MANAGEMENT" if known else "NEW_ENTRY"
+    primary_position = per_position[0] if per_position else {}
+    completeness_errors = []
+    market_bias_value = market_bias
+    if not market_bias_value:
+        completeness_errors.append("MARKET_BIAS_MISSING")
+    if signal_score is None:
+        completeness_errors.append("SIGNAL_SCORE_MISSING")
+    if not health.get("status"):
+        completeness_errors.append("DATA_STATUS_MISSING")
+    if not closed_available:
+        completeness_errors.append(str(closed_error or "CLOSED_CANDLE_UNAVAILABLE"))
+    if known:
+        for item in per_position:
+            if item.get("actualEntryPrice") is None:
+                completeness_errors.append("ACTUAL_ENTRY_MISSING")
+            if item.get("tacticalDefenseLevel") is None:
+                completeness_errors.append("TACTICAL_DEFENSE_MISSING")
     return {
         "schemaVersion": "canonical-trading-decision-v2",
         "timestamp": decision_timestamp,
@@ -349,10 +415,19 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
                                if early is not None else None),
         "entryConfirmationLevel": trigger_level,
         "confirmationSource": "CLOSED_CANDLE",
-        "lastClosedCandleTime": str(normalized.get("lastClosedCandleTimestamp") or ""),
-        "lastClosedCandlePrice": normalized.get("lastClosedCandlePrice"),
+        "lastClosedCandleTime": candle_time,
+        "lastClosedCandlePrice": ((closed_candle.get("close_price") if closed_candle else
+                                   normalized.get("lastClosedCandlePrice"))
+                                  if closed_available else None),
+        "closedCandle": closed_candle,
+        "closedCandleAvailable": closed_available,
+        "closedCandleErrorReason": closed_error,
         "marketBias": behavior_state.get("market_bias") or str(
             normalized.get("trendBias") or "neutral").upper(),
+        "signalScore": signal_score,
+        "confidenceGrade": (get_confidence_grade(signal_score)
+                            if signal_score is not None else None),
+        "dataStatus": health.get("status"),
         "marketBehavior": behavior,
         "behaviorConfidence": behavior_state.get("behavior_confidence"),
         "behavior1h": behavior_state.get("behavior_1h"),
@@ -390,7 +465,7 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
         "dataStale": stale,
         "newEntryDecision": {
             "action": entry_action, "canEnter": can_enter, "direction": direction,
-            "tradeStatus": ("WAIT_DATA_CONFIRMATION" if stale else
+            "tradeStatus": ("WAIT_DATA_CONFIRMATION" if stale or not closed_available else
                             "WAIT_BEHAVIOR_CONFIRMATION" if direction == "LONG" and
                             behavior in {"SLOW_BEARISH_DRIFT", "STRONG_DECLINE",
                                          "REVERSAL_WARNING", "REVERSAL_CONFIRMED"} else
@@ -420,15 +495,22 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
             "action": normalized_position_action,
             "managementMode": management_mode,
             "riskRewardFromActualEntry": position_rr,
-            "tacticalDefense": selected.get("tacticalStop") if selected else None,
-            "structuralInvalidation": normalized.get("structuralInvalidationLevel"),
+            "tacticalDefense": (primary_position.get("tacticalDefenseLevel")
+                                  if known else selected.get("tacticalStop") if selected else None),
+            "structuralInvalidation": (primary_position.get("structuralInvalidationLevel")
+                                        if known else normalized.get("structuralInvalidationLevel")),
             "structuralInvalidationNote": normalized.get("structuralInvalidationNote") or "",
             "targets": selected.get("targets") if selected else [],
-            "perPositionDecisions": dynamic_profit.get("positions") or [],
+            "perPositionDecisions": per_position,
             "hardRiskStop": ((dynamic_profit.get("positions") or [{}])[0]).get(
                 "hard_risk_stop") if dynamic_profit.get("positions") else None,
             "structuralExitConfirmation": ((dynamic_profit.get("positions") or [{}])[0]).get(
                 "structural_exit_confirmation") if dynamic_profit.get("positions") else None,
+        },
+        "notificationRoute": notification_route,
+        "decisionCompleteness": {
+            "valid": not completeness_errors,
+            "errors": list(dict.fromkeys(completeness_errors)),
         },
         "reversalProtection": {
             "cooldownActive": bool(tp_facts),
