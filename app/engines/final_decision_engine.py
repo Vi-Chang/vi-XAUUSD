@@ -197,6 +197,8 @@ def _summary(reason: str, action: str) -> str:
         "POSITION_ACTIVE": "目前先管理既有部位，不建立互相衝突的新交易。",
         "ENTRY_READY": "進場、失效與目標條件均已完成，可依計畫評估執行。",
         "WAIT_CONFIRMATION": "機會仍在，但目前還不到可以下單的條件。",
+        "BEHAVIOR_WAIT_PULLBACK": "大方向仍偏多，但15M正在緩步下降，暫停追多並等待止跌確認。",
+        "BEHAVIOR_LONG_BLOCK": "15M出現急跌或反轉風險，暫停新的多單進場。",
     }
     return messages.get(reason, "現在沒有足夠優勢，先等待新的市場條件。")
 
@@ -217,6 +219,8 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
     event = data.get("event_risk") or {}
     position_active = bool((data.get("position_management") or {}).get("has_position")
                            or (data.get("trade_plan_manager") or {}).get("activePlans"))
+    behavior = str((data.get("market_behavior_engine") or {}).get(
+        "market_behavior") or "RANGE")
     selected = max(candidates, key=lambda item: (item.lifecycle_state == "ENTRY_READY",
                                                   item.strength), default=None)
     raw_score = int(assistant.get("entryQualityScore") or
@@ -238,6 +242,12 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
         action, primary, risk_gate = "NO_TRADE", "SPREAD_TOO_HIGH", "RISK_BLOCK"
     elif position_active:
         action, primary, risk_gate = "MANAGE_POSITION", "POSITION_ACTIVE", "POSITION_MANAGEMENT"
+    elif (selected and selected.direction == "LONG"
+          and behavior in {"STRONG_DECLINE", "REVERSAL_WARNING", "REVERSAL_CONFIRMED"}):
+        action, primary, risk_gate = "NO_TRADE", "BEHAVIOR_LONG_BLOCK", "RISK_BLOCK"
+    elif (selected and selected.direction == "LONG"
+          and behavior == "SLOW_BEARISH_DRIFT"):
+        action, primary, risk_gate = "WAIT", "BEHAVIOR_WAIT_PULLBACK", "WAIT"
     elif selected and selected.lifecycle_state == "ENTRY_READY" and bool(assistant.get("canEnter")):
         if rr is None or rr < settings.decision_assistant_min_rr:
             action, primary, risk_gate = "NO_TRADE", "RR_TOO_LOW", "RISK_BLOCK"
@@ -402,6 +412,7 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
         "SETUP_EXPIRED", "MISSED_ENTRY", "POSITION_DEFEND", "POSITION_EXIT",
         "STOP_TRIGGERED", "TP1_HIT", "TP2_HIT", "TP3_HIT", "TRAIL_UPDATED",
         "REGIME_MAJOR_CHANGE", "WHIPSAW_DETECTED",
+        "MARKET_BEHAVIOR_CHANGED",
         "POSITION_WARNING", "SOFT_INVALIDATION_PENDING", "SOFT_INVALIDATED",
         "HARD_INVALIDATED", "POSITION_RECOVERED", "POSITION_DATA_RISK",
     }
@@ -444,10 +455,13 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
             "qualityScore": base.get("qualityScore"), "qualityGrade": base.get("qualityGrade"),
             "effectiveRR": base.get("effectiveRR"),
             "signalFacts": list(data.get("signal_facts") or []),
+            "marketBehavior": behavior,
+            "marketBehaviorState": data.get("market_behavior_engine") or {},
             "notificationEligible": True,
             **{key: canonical_fact.get(key) for key in (
                 "tradePlanId", "tradeThesis", "warningLevel", "hardInvalidation",
-                "emergencyStop", "reclaimDeadline", "reasonCode", "closedPrice")
+                "emergencyStop", "reclaimDeadline", "reasonCode", "closedPrice",
+                "previousBehavior", "behaviorConfidence", "marketBias")
                if canonical_fact.get(key) is not None},
         })
     base["events"] = events

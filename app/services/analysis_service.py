@@ -561,6 +561,7 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
     result.breakout_setup_manager = monitors["breakout_setup_manager"]
     result.trend_continuation_engine = monitors["trend_continuation_engine"]
     result.double_sweep_statistical = monitors["double_sweep_statistical"]
+    result.market_behavior_engine = monitors["market_behavior_engine"]
     result.decision_assistant = monitors["decision_assistant"]
     result.final_decision_state = monitors["final_decision_state"]
     from app.engines.realtime_presentation import build_realtime_presentation

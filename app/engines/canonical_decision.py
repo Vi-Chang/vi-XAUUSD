@@ -112,21 +112,49 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
     if early == trigger_level:
         early = None
     stale = not bool(health.get("healthy"))
+    behavior_state = data.get("market_behavior_engine") or {}
+    behavior = str(behavior_state.get("market_behavior") or "RANGE")
     rr_ok = bool(selected.get("rrPassed")) if selected else False
     can_enter = bool(final.get("canEnter")) and rr_ok and not stale
+    if direction == "LONG" and behavior in {
+            "SLOW_BEARISH_DRIFT", "STRONG_DECLINE",
+            "REVERSAL_WARNING", "REVERSAL_CONFIRMED"}:
+        can_enter = False
     entry_action = ("BUY" if can_enter and direction == "LONG" else
               "SELL" if can_enter and direction == "SHORT" else "WAIT")
     primary_reason = str(final.get("humanSummary") or "等待條件一致")
     if stale:
         primary_reason = "行情資料延遲，等待最新資料確認。"
+    elif direction == "LONG" and behavior == "SLOW_BEARISH_DRIFT":
+        primary_reason = "大方向仍偏多，但15M正在緩步下降，暫停追多並等待止跌。"
+    elif direction == "LONG" and behavior in {
+            "STRONG_DECLINE", "REVERSAL_WARNING", "REVERSAL_CONFIRMED"}:
+        primary_reason = "15M價格行為已轉弱，暫停新的多單進場。"
     elif selected and not rr_ok:
         primary_reason = "方向可能正確，但目前進場盈虧比不合格。"
     position = data.get("position_management") or {}
+    levels = list(normalized.get("confirmationLevels") or [])
+    resistance_levels = [float(item["price"]) for item in levels
+                         if item.get("kind") == "resistance"
+                         and isinstance(item.get("price"), (int, float))
+                         and (current is None or float(item["price"]) >= current)]
+    support_levels = [float(item["price"]) for item in levels
+                      if item.get("kind") == "support"
+                      and isinstance(item.get("price"), (int, float))
+                      and (current is None or float(item["price"]) <= current)]
     known = bool(position.get("has_position"))
     position_side = str(position.get("position_side") or "").upper() if known else None
     position_action = str(position.get("recommended_action") or "HOLD").upper()
     normalized_position_action = next((name for name in ("EXIT", "REDUCE", "HOLD")
                                        if name in position_action), "HOLD") if known else None
+    management_mode = None
+    if known and position_side == "LONG":
+        if behavior == "REVERSAL_CONFIRMED":
+            normalized_position_action, management_mode = "EXIT", "REVERSAL_EXIT"
+        elif behavior == "STRONG_DECLINE":
+            normalized_position_action, management_mode = "REDUCE", "DEFENSIVE_MANAGEMENT"
+        elif behavior in {"SLOW_BEARISH_DRIFT", "REVERSAL_WARNING"}:
+            normalized_position_action, management_mode = "HOLD", "HOLD_WITH_CAUTION"
     action = normalized_position_action if known else entry_action
     actual_entry = _number(position.get("entry_price"))
     position_rr = None
@@ -148,10 +176,41 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
         "confirmationSource": "CLOSED_CANDLE",
         "lastClosedCandleTime": str(normalized.get("lastClosedCandleTimestamp") or ""),
         "lastClosedCandlePrice": normalized.get("lastClosedCandlePrice"),
+        "marketBias": behavior_state.get("market_bias") or str(
+            normalized.get("trendBias") or "neutral").upper(),
+        "marketBehavior": behavior,
+        "behaviorConfidence": behavior_state.get("behavior_confidence"),
+        "behavior15m": behavior_state.get("behavior_15m"),
+        "behavior1h": behavior_state.get("behavior_1h"),
+        "behavior4h": behavior_state.get("behavior_4h"),
+        "structureStatus": behavior_state.get("structure_status"),
+        "momentumStatus": behavior_state.get("momentum_status"),
+        "nextBullishConfirmation": (min(resistance_levels) if resistance_levels
+                                    else trigger_level if direction == "LONG" else None),
+        "nextBearishConfirmation": max(support_levels) if support_levels else None,
+        "marketBehaviorDecision": {
+            "market_bias": behavior_state.get("market_bias") or str(
+                normalized.get("trendBias") or "neutral").upper(),
+            "market_behavior": behavior,
+            "behavior_confidence": behavior_state.get("behavior_confidence"),
+            "behavior_15m": behavior_state.get("behavior_15m"),
+            "behavior_1h": behavior_state.get("behavior_1h"),
+            "behavior_4h": behavior_state.get("behavior_4h"),
+            "structure_status": behavior_state.get("structure_status"),
+            "momentum_status": behavior_state.get("momentum_status"),
+            "primary_action": action, "new_entry_action": entry_action,
+            "reason": primary_reason,
+            "next_bullish_confirmation": (min(resistance_levels) if resistance_levels
+                                           else trigger_level if direction == "LONG" else None),
+            "next_bearish_confirmation": max(support_levels) if support_levels else None,
+        },
         "dataStale": stale,
         "newEntryDecision": {
             "action": entry_action, "canEnter": can_enter, "direction": direction,
             "tradeStatus": ("WAIT_DATA_CONFIRMATION" if stale else
+                            "WAIT_BEHAVIOR_CONFIRMATION" if direction == "LONG" and
+                            behavior in {"SLOW_BEARISH_DRIFT", "STRONG_DECLINE",
+                                         "REVERSAL_WARNING", "REVERSAL_CONFIRMED"} else
                             "NO_ENTRY_RR" if selected and not rr_ok else
                             "ENTRY_READY" if can_enter else "WAIT_CONFIRMATION"),
             "selectedSetup": selected or None,
@@ -171,6 +230,7 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
             "currentPrice": current,
             "unrealizedPnl": _number(position.get("unrealized_pnl")),
             "action": normalized_position_action,
+            "managementMode": management_mode,
             "riskRewardFromActualEntry": position_rr,
             "tacticalDefense": selected.get("tacticalStop") if selected else None,
             "structuralInvalidation": normalized.get("structuralInvalidationLevel"),

@@ -26,6 +26,7 @@ from app.engines.hypothetical_exit_advisor import (
     build_hypothetical_exit_plans,
     evaluate_hypothetical_exits,
 )
+from app.engines.market_behavior import evaluate_market_behavior
 from app.engines.regime_state_machine import evaluate_regime_state
 from app.engines.trade_plan import evaluate_trade_plans, migrate_legacy_virtual_profit
 from app.engines.trend_continuation_engine import evaluate_trend_continuation
@@ -208,6 +209,11 @@ def evaluate_market_monitors(
         "double_sweep_statistical": {
             **double_sweep_state, "events": double_sweep_events},
     }
+    behavior_state, behavior_events = evaluate_market_behavior(
+        m15=m15_closed, h1=h1_closed, h4=h4_closed, data=data,
+        previous=_load(symbol, "market_behavior"))
+    _save(symbol, "market_behavior", behavior_state)
+    monitor_result["market_behavior_engine"] = behavior_state
     regime_state, regime_events = evaluate_regime_state(
         data, indicators=indicators, previous=_load(symbol, "regime_state"))
     _save(symbol, "regime_state", regime_state)
@@ -219,7 +225,8 @@ def evaluate_market_monitors(
     monitor_result["decision_assistant"] = assistant_state
     signal_facts = (exit_events + ([breakout_event] if breakout_event else [])
                     + virtual_events + trade_plan_events + breakout_setup_events
-                    + continuation_events + regime_events + assistant_events)
+                    + continuation_events + regime_events + behavior_events
+                    + assistant_events)
     signal_facts += double_sweep_events
     final_input = {**data, **monitor_result, "signal_facts": signal_facts}
     final_state, final_events = evaluate_final_decision(

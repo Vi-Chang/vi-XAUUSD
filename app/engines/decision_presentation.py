@@ -119,6 +119,26 @@ def _local_time(raw: str) -> str:
 
 def format_decision_message(event: dict) -> str:
     canonical_type = str(event.get("event_type") or "")
+    if canonical_type == "MARKET_BEHAVIOR_CHANGED":
+        labels = {
+            "STRONG_RISE": "急漲", "SLOW_RISE": "緩步上升", "RANGE": "盤整",
+            "PULLBACK": "多頭回檔", "SLOW_BEARISH_DRIFT": "緩步下降",
+            "STRONG_DECLINE": "急跌", "REBOUND": "空頭反彈",
+            "REVERSAL_WARNING": "反轉警告", "REVERSAL_CONFIRMED": "反轉已確認",
+        }
+        behavior = str(event.get("marketBehavior") or "RANGE")
+        previous = str(event.get("previousBehavior") or "RANGE")
+        bias = str(event.get("marketBias") or "NEUTRAL")
+        action = ("暫停追多，等待止跌確認。" if bias == "BULLISH" and behavior in {
+            "SLOW_BEARISH_DRIFT", "PULLBACK", "REVERSAL_WARNING"}
+            else "等待下一個已收盤 K 棒確認。")
+        return "\n".join([
+            "⚠️【XAUUSD｜15M 價格行為改變】",
+            f"由「{labels.get(previous, previous)}」變為「{labels.get(behavior, behavior)}」。",
+            f"大方向：{'偏多' if bias == 'BULLISH' else '偏空' if bias == 'BEARISH' else '中立'}（價格行為不會自動改寫大方向）",
+            f"信心分數：{event.get('behaviorConfidence') or 0}/100",
+            f"現在：{action}",
+        ])
     canonical = event.get("canonicalDecision") or {}
     if canonical and canonical_type in {"ENTRY_READY", "CANDLE_FINALIZED", "WAIT_RETEST"}:
         entry = canonical.get("newEntryDecision") or {}

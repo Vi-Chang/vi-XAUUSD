@@ -195,6 +195,10 @@ class Settings(BaseSettings):
     tactical_short_chase_atr_mult: float = 1.5
     tactical_setup_expiry_bars: int = 4
     tactical_min_rr: float = 1.5
+    min_behavior_confidence: int = 55
+    behavior_confirmation_bars: int = 2
+    behavior_immediate_threshold: int = 85
+    behavior_exit_threshold: int = 45
     short_entry_min_quality_score: int = 70
     short_entry_max_chase_atr_mult: float = 0.35
     short_entry_expiry_min_bars: int = 2

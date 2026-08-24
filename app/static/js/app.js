@@ -530,6 +530,18 @@ function renderFinalDecision(finalState, snapshot) {
   const newEntry = canonical.newEntryDecision || {};
   const position = canonical.positionManagement || {};
   const trigger = canonical.canonicalNextTrigger || {};
+  const behaviorLabels = {
+    STRONG_RISE: "🟢 急漲 ↑↑", SLOW_RISE: "🟢 緩步上升 ↗", RANGE: "⚪ 盤整 ↔",
+    PULLBACK: "🟡 多頭回檔 ↘", SLOW_BEARISH_DRIFT: "🟠 緩步下降 ↘",
+    STRONG_DECLINE: "🔴 急跌 ↓↓", REBOUND: "🟡 空頭反彈 ↗",
+    REVERSAL_WARNING: "⚠️ 反轉警告", REVERSAL_CONFIRMED: "🔴 反轉已確認",
+  };
+  $("quick-market-bias").textContent = canonical.marketBias === "BULLISH" ? "🟢 偏多" : canonical.marketBias === "BEARISH" ? "🔴 偏空" : "⚪ 中立";
+  $("quick-behavior-15m").textContent = behaviorLabels[canonical.behavior15m] || "等待資料";
+  $("quick-behavior-1h").textContent = behaviorLabels[canonical.behavior1h] || "等待資料";
+  $("quick-behavior-4h").textContent = behaviorLabels[canonical.behavior4h] || "等待資料";
+  $("quick-structure-status").textContent = canonical.structureStatus || "等待資料";
+  $("quick-momentum-status").textContent = canonical.momentumStatus || "等待資料";
   $("quick-final-state").textContent = labels[finalState.state] || "等待";
   $("quick-flat-action").textContent = newEntry.action || "WAIT";
   $("quick-position-action").textContent = position.positionKnown
