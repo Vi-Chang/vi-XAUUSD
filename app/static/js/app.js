@@ -562,7 +562,7 @@ function renderDecisionHome(canonical, finalState) {
   if (critical) displayState = "INVALID";
   else if (entry.canEnter && entry.action === "BUY") displayState = "BUY";
   else if (entry.canEnter && entry.action === "SELL") displayState = "SELL";
-  else if (entry.tradeStatus === "ENTRY_READY" || canonical.setupState === "ENTRY_READY") displayState = "READY";
+  else if (entry.tradeStatus === "ENTRY_READY") displayState = "READY";
   const icons = {WAIT: "🟡", READY: "🟠", BUY: "🟢", SELL: "🔴", INVALID: "⚫"};
   $("home-live-price").textContent = livePrice == null ? "–" : fmt(livePrice);
   $("home-display-state").textContent = `${icons[displayState]} ${displayState}`;

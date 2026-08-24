@@ -33,6 +33,7 @@ def test_display_layer_uses_canonical_values_without_hardcoded_prices():
 def test_home_has_one_display_action_vocabulary_and_plain_language_state():
     assert 'const icons = {WAIT: "🟡", READY: "🟠", BUY: "🟢", SELL: "🔴", INVALID: "⚫"}' in JS
     assert 'entry.tradeStatus === "ENTRY_READY"' in JS
+    assert 'canonical.setupState === "ENTRY_READY"' not in JS
     assert '["CONFIRMED", "ARMED"].includes(canonical.setupState)' not in JS
     for label in ("強勢偏多", "偏多回踩", "偏多整理", "多空拉鋸", "偏空反彈", "偏空整理", "強勢偏空", "結構失效"):
         assert label in JS
