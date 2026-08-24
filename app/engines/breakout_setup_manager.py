@@ -6,7 +6,7 @@ import hashlib
 from datetime import datetime, timedelta, timezone
 
 SETUP_VERSION = "confirmation-ladder-v3"
-TERMINAL = {"MISSED_ENTRY", "INVALIDATED", "EXPIRED", "PULLBACK_INVALIDATED"}
+TERMINAL = {"MISSED_ENTRY", "INVALIDATED", "ARCHIVED", "EXPIRED", "PULLBACK_INVALIDATED"}
 
 
 def _chase_factor(data: dict) -> float:
@@ -408,7 +408,10 @@ def evaluate_breakout_setups(data: dict, previous: dict | None = None) -> tuple[
             events.append(_event(created, "NONE", created["status"], "NEW_SETUP_CREATED"))
         elif error:
             state["error"] = error
-    return {"setups": setups, "activeSetup": setups[-1] if setups else None,
+    active = next((item for item in reversed(setups)
+                   if item.get("status") not in TERMINAL), None)
+    archived = [item for item in setups if item.get("status") in TERMINAL]
+    return {"setups": setups, "activeSetup": active, "archivedSetups": archived,
             "historyVersion": SETUP_VERSION, "error": state.get("error", "")}, events
 
 

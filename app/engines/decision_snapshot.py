@@ -69,7 +69,8 @@ def build_decision_snapshot(data: dict, *, risk_mode: str = "STANDARD") -> dict:
         "stopLoss": final.get("invalidationPrice"), "targets": final.get("targets") or [],
         "riskReward": final.get("effectiveRR"),
         "actionSummary": final.get("humanSummary") or assistant.get("actionSummary") or action,
-        "nextTrigger": canonical["canonicalNextTrigger"]["label"],
+        "nextTrigger": ((canonical.get("canonicalNextTrigger") or {}).get("label")
+                        or "目前條件已完成，等待新結構"),
         "canonicalDecision": canonical,
         "currentPrice": health["currentPrice"], "marketDataTimestamp": health["marketDataTimestamp"],
         "quoteTime": health["quoteTime"], "calculatedAt": data.get("timestamp_utc") or health["evaluatedAt"],

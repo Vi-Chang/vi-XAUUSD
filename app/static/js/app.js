@@ -542,7 +542,7 @@ function renderFinalDecision(finalState, snapshot) {
   $("quick-behavior-4h").textContent = behaviorLabels[canonical.behavior4h] || "等待資料";
   $("quick-structure-status").textContent = canonical.structureStatus || "等待資料";
   $("quick-momentum-status").textContent = canonical.momentumStatus || "等待資料";
-  $("quick-final-state").textContent = labels[finalState.state] || "等待";
+  $("quick-final-state").textContent = canonical.primaryAction || "WAIT";
   $("quick-flat-action").textContent = newEntry.action || "WAIT";
   $("quick-position-action").textContent = position.positionKnown
     ? `${position.actualSide || "持倉"} 成本 ${position.actualEntryPrice == null ? "–" : fmt(position.actualEntryPrice)}｜${position.action || "HOLD"}`
@@ -555,7 +555,8 @@ function renderFinalDecision(finalState, snapshot) {
   $("quick-live-time").textContent = fmtTs(realtime.quoteTimeUtc || finalState.quote_time);
   $("quick-closed-price").textContent = realtime.latestClosed15mPrice == null ? (finalState.latest_closed_price == null ? "–" : fmt(finalState.latest_closed_price)) : fmt(realtime.latestClosed15mPrice);
   $("quick-closed-time").textContent = fmtTs(realtime.latestClosed15mTimeUtc || finalState.last_closed_candle_time);
-  $("quick-candle-state").textContent = realtime.closedConfirmed ? "收盤已確認" : realtime.intrabarCrossed ? "盤中已越過，尚未收盤" : "尚未確認";
+  const confirmationStatus = canonical.confirmationStatus || "NOT_REACHED";
+  $("quick-candle-state").textContent = confirmationStatus === "CLOSED_CONFIRMED" ? "收盤已確認" : confirmationStatus === "IN_PROGRESS" ? "盤中已越過，尚未收盤" : confirmationStatus === "FAILED" ? "確認失敗" : "尚未確認";
   updateRealtimeFacts(Number(livePrice));
   $("quick-action-title").textContent = canonical.primaryAction || finalState.humanSummary || presentation.title || "WAIT";
   $("quick-action-why").textContent = canonical.primaryReason || finalState.humanSummary || finalState.reason || "等待條件一致";
@@ -574,7 +575,7 @@ function renderDecisionAssistant(v3, finalDecision = {}) {
   const canonical = ((S.analysis || {}).decision_snapshot || {}).canonicalDecision || finalDecision.canonicalDecision || {};
   const selected = ((canonical.newEntryDecision || {}).selectedSetup) || {};
   const canonicalZone = selected.entryZone || zone;
-  $("v3-direction").textContent = `${side}｜${v3.regime || "等待"}`;
+  $("v3-direction").textContent = `${side}｜15M ${canonical.behavior15m || "等待資料"}`;
   $("v3-can-enter").textContent = finalDecision.canEnter ? "可以評估進場" : (finalDecision.humanSummary || v3.actionSummary);
   $("v3-entry-zone-label").textContent = selected.entryZoneLabel || "候選進場區";
   $("v3-entry-zone").textContent = canonicalZone.low != null && canonicalZone.high != null ? `${fmt(canonicalZone.low)}–${fmt(canonicalZone.high)}` : "尚未形成";
@@ -726,10 +727,12 @@ function renderTrendContinuation(engine) {
     RANGE: "區間整理", REVERSAL: "反轉", UNDEFINED: "型態未定" }[engine.marketType] || "型態未定";
   $("trend-shadow-badge").textContent = engine.shadowMode ? "觀察模式" : "正式提示";
   $("trend-continuation-summary").textContent = `${market}｜趨勢評分 ${engine.trendScore || 0}｜15M ATR ${Number(engine.atrValue || 0).toFixed(2)}`;
+  const canonicalDecision = ((S.analysis || {}).decision_snapshot || {}).canonicalDecision || {};
+  const primarySetup = canonicalDecision.primarySetup || {};
   list.replaceChildren(...(engine.candidates || []).map((c) => {
     const box = document.createElement("div");
     box.className = "scenario-item";
-    const ready = String(c.status || "").startsWith("ENTRY_READY_");
+    const ready = canonicalDecision.newEntryDecision?.canEnter === true && c.setupId === primarySetup.setupId;
     const zone = c.entryZoneLow == null ? "尚未建立" : `${Number(c.entryZoneLow).toFixed(2)}–${Number(c.entryZoneHigh).toFixed(2)}`;
     const missing = (c.missingConditions || []).join("；") || "條件完整";
     box.textContent = `${ready ? "🟢 現在可以進場" : "🟡 現在先不要進場"}｜${names[c.type] || "順勢進場機會"}｜進場區 ${zone}｜賺賠比 ${c.riskReward || "–"}｜${missing}`;
@@ -741,13 +744,15 @@ function renderBreakoutSetupLedger(manager) {
   const card = $("breakout-setup-ledger-card");
   const list = $("breakout-setup-list");
   if (!card || !list) return;
+  const canonicalDecision = ((S.analysis || {}).decision_snapshot || {}).canonicalDecision || {};
+  const activeId = canonicalDecision.activeSetupId;
   const canonical = (S.analysis && S.analysis.realtime_presentation || {}).dedupedScenarios;
-  const setups = canonical || manager.setups || [];
+  const setups = (canonical || manager.setups || []).filter((s) => s.setupId === activeId);
   card.hidden = setups.length === 0;
   if (card.hidden) return;
   const stateZh = {
     WAIT_BREAKOUT_CONFIRMATION: "尚未確認", BREAKOUT_CONFIRMED: "突破已確認",
-    SHORT_TERM_WEAK_HTF_BULLISH: "短線轉弱，高週期仍偏多",
+    HTF_BULLISH_LTF_WEAKENING: "短線轉弱，高週期仍偏多",
     SHORT_TERM_RECOVERING: "短線正在恢復，還差最後確認",
     SHORT_TERM_BULLISH_RESTORED: "短線重新轉強",
     BEARISH_CONFIRMED: "短線已正式轉空",
@@ -761,7 +766,7 @@ function renderBreakoutSetupLedger(manager) {
     WATCHING: "尚未成立", ARMED: "接近確認價", READY: "訊號已確認",
     ENTER: "可以進場", MANAGE: "訊號進行中", MISSED: "已錯過，等待回踩",
   };
-  const ready = setups.find((s) => String(s.status).includes("ENTRY_READY"));
+  const ready = canonicalDecision.newEntryDecision?.canEnter ? setups.find((s) => s.setupId === activeId) : null;
   $("breakout-setup-summary").textContent = ready
     ? `${ready.direction === "LONG" ? "多單" : "空單"}${ready.entryType === "RETEST" ? "回踩" : "突破"}條件已成立`
     : "舊劇本與新延續劇本分開顯示；尚未成立時不會誤示可進場。";
@@ -787,11 +792,13 @@ function renderEntryPlan(plan) {
     return;
   }
   card.hidden = false;
-  const contradictoryTriggered = plan.status === "ENTRY_TRIGGERED" && !!plan.missing_condition;
+  const canonicalDecision = ((S.analysis || {}).decision_snapshot || {}).canonicalDecision || {};
+  const entryPermitted = canonicalDecision.newEntryDecision?.canEnter === true;
+  const contradictoryTriggered = plan.status === "ENTRY_TRIGGERED" && !entryPermitted;
   const displayStatus = contradictoryTriggered ? "ENTRY_READY" : plan.status;
   const status = {
     SETUP_WATCH: "機會準備中", ENTRY_READY: "已到觀察區，等待 K 線確認",
-    ENTRY_TRIGGERED: "條件完成，可依計畫執行", INVALIDATED: "計畫已取消",
+    ENTRY_TRIGGERED: entryPermitted ? "條件完成，可依計畫執行" : "劇本已確認，等待可執行價格", INVALIDATED: "計畫已取消",
     EXITED: "計畫已結束", WAIT_CONFIRMATION: "還不能進場，正在等收盤確認",
     WAIT_BREAKOUT_CONFIRMATION: "等 15 分鐘收盤突破後才能進場",
     MISSED_ENTRY: "這個進場點已錯過，現在不要追", MISS_ENTRY: "這個進場點已錯過，現在不要追",

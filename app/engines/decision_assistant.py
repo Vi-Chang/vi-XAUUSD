@@ -31,7 +31,7 @@ def classify_regime(data: dict) -> tuple[str, list[str]]:
     composite = str(regime_state.get("compositeRegime") or "")
     if composite:
         mapped = {
-            "HTF_BULLISH_LTF_WEAKENING": "SHORT_WEAK_HTF_BULLISH",
+            "HTF_BULLISH_LTF_WEAKENING": "HTF_BULLISH_LTF_WEAKENING",
             "HTF_BULLISH_LTF_RECOVERING": "SHORT_TERM_RECOVERING",
             "HTF_BULLISH_LTF_BULLISH_RESTORED": "SHORT_TERM_BULLISH_RESTORED",
             "HTF_BULLISH_LTF_BULLISH": "TREND_BULLISH",
@@ -54,7 +54,7 @@ def classify_regime(data: dict) -> tuple[str, list[str]]:
     if n.get("marketDataStatus") != "GOOD":
         return "NO_EDGE", ["行情資料不完整或過期"]
     if trend == "bullish" and momentum in {"weakening", "pullback", "reversal_risk"}:
-        return "SHORT_WEAK_HTF_BULLISH", reasons
+        return "HTF_BULLISH_LTF_WEAKENING", reasons
     if trend == "bearish" and momentum in {"accelerating", "stable"}:
         return "SHORT_STRONG_HTF_BEARISH", reasons
     if trend == "bullish" and (rsi >= 80 or score >= 90) and n.get("entryTiming") == "chase":
@@ -173,7 +173,7 @@ def evaluate_decision_assistant(data: dict, *, latest_candle: dict | None = None
     can_enter = (confirmation_valid and location_state == "IN_EXECUTABLE_ZONE"
                  and rr_passed and score >= 50 and valid_stop and market_fresh)
     no_trade_reasons = []
-    if regime in {"NO_EDGE", "RANGE", "SHORT_WEAK_HTF_BULLISH", "SHORT_TERM_RECOVERING",
+    if regime in {"NO_EDGE", "RANGE", "HTF_BULLISH_LTF_WEAKENING", "SHORT_TERM_RECOVERING",
                   "OVERHEATED_BULLISH", "OVERSOLD_BEARISH", "REVERSAL_RISK"}:
         no_trade_reasons.append("目前市場型態不適合直接追價")
         can_enter = False

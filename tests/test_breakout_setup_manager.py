@@ -64,7 +64,8 @@ def test_pullback_close_below_invalidation_cancels_setup():
     invalidation = state["activeSetup"]["pullbackInvalidationPrice"]
     state, events = advance(snapshot(price=invalidation - 1, closed=invalidation - 1,
         at="2026-08-21T10:01:00+00:00"), state)
-    assert state["activeSetup"]["status"] == "PULLBACK_INVALIDATED"
+    assert state["activeSetup"] is None
+    assert state["archivedSetups"][-1]["status"] == "PULLBACK_INVALIDATED"
     assert [event["event_type"] for event in events] == ["PULLBACK_INVALIDATED"]
 
 
@@ -120,15 +121,16 @@ def test_higher_timeframe_invalidation_disables_pullback_long():
     assert any(event["event_type"] == "PULLBACK_INVALIDATED" for event in events)
 
 
-def test_new_closed_structure_moves_pullback_zone_without_moving_breakout_trigger():
+def test_new_closed_structure_breaking_invalidation_archives_old_setup():
     state, _ = advance(snapshot())
     old = deepcopy(state["activeSetup"])
     state, events = advance(snapshot(price=4555, closed=4555, support_shift=4,
         candle="2026-08-21T10:00:00+00:00", at="2026-08-21T10:01:00+00:00"), state)
-    setup = state["activeSetup"]
+    assert state["activeSetup"] is None
+    setup = state["archivedSetups"][-1]
     assert setup["breakoutTrigger"] == old["breakoutTrigger"]
-    assert setup["pullbackEntryZoneLow"] > old["pullbackEntryZoneLow"]
-    assert any(event["event_type"] == "PULLBACK_ZONE_UPDATED" for event in events)
+    assert setup["status"] == "PULLBACK_INVALIDATED"
+    assert any(event["event_type"] == "PULLBACK_INVALIDATED" for event in events)
 
 
 def test_same_wait_state_is_panel_only_and_does_not_notify_again():

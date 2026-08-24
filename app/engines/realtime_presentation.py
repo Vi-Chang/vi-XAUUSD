@@ -28,7 +28,7 @@ def _num(value: Any) -> float | None:
 def _active_setup(data: dict) -> dict:
     setups = ((data.get("breakout_setup_manager") or {}).get("setups") or [])
     active = [s for s in setups if s.get("status") in ACTIVE_STATES]
-    return dict(active[-1] if active else (setups[-1] if setups else {}))
+    return dict(active[-1] if active else {})
 
 
 def _zone_distance(price: float, low: float | None, high: float | None) -> float | None:
@@ -53,6 +53,8 @@ def _dedupe_scenarios(data: dict) -> list[dict]:
     seen: set[tuple] = set()
     result: list[dict] = []
     for setup in reversed(setups):
+        if setup.get("status") not in ACTIVE_STATES:
+            continue
         key = (
             data.get("symbol") or "XAUUSD", setup.get("direction"),
             setup.get("entryType") or setup.get("setupType") or "BREAKOUT",

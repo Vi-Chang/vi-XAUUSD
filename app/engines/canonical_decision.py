@@ -4,7 +4,11 @@ from __future__ import annotations
 from typing import Any
 
 from app.config import get_settings
+from app.engines.candle_confirmation_registry import build_confirmation_registry
 from app.engines.data_health_gate import evaluate_data_health
+
+TERMINAL_SETUP_STATES = {"INVALIDATED", "ARCHIVED", "EXPIRED", "SETUP_EXPIRED",
+                         "PULLBACK_INVALIDATED", "MISSED_ENTRY"}
 
 
 def _number(value: Any) -> float | None:
@@ -61,6 +65,16 @@ def _candidate_view(candidate: dict, current: float | None, minimum_rr: float) -
                   "不建議進場區" if quality in {"POOR", "CHASE"} else
                   "回踩觀察區" if route == "PULLBACK" else "突破確認區")
     trigger = _number(candidate.get("trigger_price"))
+    raw_state = str(candidate.get("lifecycle_state") or "WATCHING")
+    setup_state = ({
+        "SETUP": "WATCHING", "WAIT_CONFIRMATION": "WATCHING",
+        "CONFIRMED_WAIT_RETEST": "CONFIRMED", "WAIT_RETEST": "CONFIRMED",
+        "ENTRY_READY": "ENTRY_READY", "MISSED_ENTRY": "MISSED",
+        "EXPIRED": "ARCHIVED", "SETUP_EXPIRED": "ARCHIVED",
+        "INVALIDATED": "INVALIDATED", "PULLBACK_INVALIDATED": "INVALIDATED",
+    }).get(raw_state, raw_state if raw_state in {
+        "WATCHING", "SETUP_VALID", "ARMED", "CONFIRMED", "ENTRY_READY",
+        "MISSED", "INVALIDATED", "ARCHIVED"} else "WATCHING")
     return {
         "setupId": str(candidate.get("scenario_id") or ""),
         "setupVersion": int(candidate.get("scenario_version") or 1),
@@ -76,7 +90,29 @@ def _candidate_view(candidate: dict, current: float | None, minimum_rr: float) -
         "chaseLimit": chase, "canEnter": (
             quality == "IDEAL" and str(candidate.get("lifecycle_state")) == "ENTRY_READY"),
         "blockedReasons": list(candidate.get("reason_codes") or []),
+        "setupState": setup_state,
+        "active": raw_state not in TERMINAL_SETUP_STATES,
     }
+
+
+def _setup_score(item: dict, bias: str) -> int:
+    rr = float(item.get("riskReward") or 0)
+    rr_score = min(100.0, rr / 3.0 * 100.0)
+    quality_score = {"IDEAL": 100, "ACCEPTABLE": 70, "POOR": 25,
+                     "CHASE": 0, "INVALID": 0}.get(str(item.get("entryQuality")), 40)
+    lifecycle_score = {"ENTRY_READY": 100, "CONFIRMED": 85, "ARMED": 70,
+                       "WATCHING": 50}.get(str(item.get("setupState")), 45)
+    aligned = str(item.get("direction")) == ("LONG" if bias == "BULLISH" else "SHORT")
+    score = (lifecycle_score * .25 + rr_score * .25 + quality_score * .20
+             + lifecycle_score * .15 + (100 if aligned else 20) * .10 + 50 * .05)
+    return max(0, min(100, round(score)))
+
+
+def _timeframe_bias(normalized: dict, timeframe: str) -> str:
+    item = next((row for row in normalized.get("timeframeAssessments") or []
+                 if str(row.get("timeframe")) == timeframe), {})
+    trend = str(item.get("trend") or "neutral").upper()
+    return "BULLISH" if "BULL" in trend else "BEARISH" if "BEAR" in trend else "NEUTRAL"
 
 
 def build_canonical_decision(data: dict, final: dict) -> dict:
@@ -86,11 +122,22 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
     health = evaluate_data_health(data)
     normalized = data.get("normalized_analysis") or {}
     current = _number(health.get("currentPrice"))
-    candidates = [_candidate_view(item, current, minimum_rr)
-                  for item in final.get("signalCandidates") or []]
+    all_candidates = [_candidate_view(item, current, minimum_rr)
+                      for item in final.get("signalCandidates") or []]
+    archived_candidates = [item for item in all_candidates if not item["active"]]
+    candidates = [item for item in all_candidates if item["active"]]
+    behavior_state = data.get("market_behavior_engine") or {}
+    market_bias = str(behavior_state.get("market_bias") or
+                      normalized.get("trendBias") or "neutral").upper()
+    market_bias = ("BULLISH" if "BULL" in market_bias else
+                   "BEARISH" if "BEAR" in market_bias else "NEUTRAL")
+    for item in candidates:
+        item["setupScore"] = _setup_score(item, market_bias)
     selected_id = str(final.get("selectedScenarioId") or "")
-    selected = next((item for item in candidates if item["setupId"] == selected_id),
-                    candidates[0] if candidates else {})
+    engine_selected = next((item for item in candidates if item["setupId"] == selected_id), None)
+    ranked = sorted(candidates, key=lambda item: item["setupScore"], reverse=True)
+    selected = (engine_selected if bool(final.get("canEnter")) and engine_selected
+                else ranked[0] if ranked else {})
     pullbacks = [item for item in candidates if item["route"] == "PULLBACK"]
     breakouts = [item for item in candidates if item["route"] == "BREAKOUT"]
     best_pullback = max(pullbacks, key=lambda item: item.get("riskReward") or -1,
@@ -99,23 +146,37 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
                         default=None)
     trigger_level = selected.get("confirmationLevel") if selected else None
     direction = str(selected.get("direction") or final.get("direction") or "NEUTRAL")
+    decision_timestamp = str(data.get("timestamp_utc") or health.get("evaluatedAt") or "")
+    candle_time = str(normalized.get("lastClosedCandleTimestamp") or "")
+    registry = build_confirmation_registry(
+        symbol=str(data.get("symbol") or "XAUUSD"), candidates=candidates,
+        live_price=current, last_closed_price=_number(normalized.get("lastClosedCandlePrice")),
+        candle_close_time=candle_time, decision_timestamp=decision_timestamp)
+    registry_key = (f"{data.get('symbol') or 'XAUUSD'}:15M:{trigger_level:.2f}:"
+                    f"{'ABOVE' if direction == 'LONG' else 'BELOW'}"
+                    if trigger_level is not None else "")
+    confirmation = registry.get(registry_key) if registry_key else None
     canonical_trigger = ({
         "setupId": selected.get("setupId"), "direction": direction,
         "level": trigger_level, "timeframe": "15M", "condition": (
             "closeAbove" if direction == "LONG" else "closeBelow"),
         "source": "CLOSED_CANDLE",
-        "sourceCandleTime": str(normalized.get("lastClosedCandleTimestamp") or ""),
-        "label": (f"15M 收盤{'站上' if direction == 'LONG' else '跌破'} {trigger_level:.2f}"
+        "sourceCandleTime": candle_time,
+        "status": (confirmation or {}).get("status") or "NOT_REACHED",
+        "label": (f"15M 收盤{'站上' if direction == 'LONG' else '跌破'} {trigger_level:.2f}；"
+                  f"成立後重新計算 RR，≥ {minimum_rr:.2f} 才允許"
+                  f"{' BUY' if direction == 'LONG' else ' SELL'}"
                   if trigger_level is not None else "等待新結構形成"),
     })
     early = _number(normalized.get("triggerLevel"))
     if early == trigger_level:
         early = None
     stale = not bool(health.get("healthy"))
-    behavior_state = data.get("market_behavior_engine") or {}
     behavior = str(behavior_state.get("market_behavior") or "RANGE")
     rr_ok = bool(selected.get("rrPassed")) if selected else False
-    can_enter = bool(final.get("canEnter")) and rr_ok and not stale
+    confirmation_closed = (trigger_level is None or
+                           (confirmation or {}).get("status") == "CLOSED_CONFIRMED")
+    can_enter = bool(final.get("canEnter")) and rr_ok and not stale and confirmation_closed
     if direction == "LONG" and behavior in {
             "SLOW_BEARISH_DRIFT", "STRONG_DECLINE",
             "REVERSAL_WARNING", "REVERSAL_CONFIRMED"}:
@@ -128,6 +189,19 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
             can_enter and str(candidate.get("setupId") or "") == selected_id)
     entry_action = ("BUY" if can_enter and direction == "LONG" else
               "SELL" if can_enter and direction == "SHORT" else "WAIT")
+    if can_enter:
+        canonical_trigger = None
+    elif confirmation_closed and selected and selected.get("entryZone"):
+        zone = selected["entryZone"]
+        canonical_trigger = {
+            "setupId": selected.get("setupId"), "direction": direction,
+            "timeframe": "15M", "condition": "retestAndCloseHold",
+            "status": "PENDING", "range": zone, "source": "CLOSED_CANDLE",
+            "sourceCandleTime": candle_time,
+            "label": (f"等待 15M 回到 {zone.get('low'):.2f}–{zone.get('high'):.2f} "
+                      f"並收盤守住；成立後重新計算 RR，≥ {minimum_rr:.2f} 才允許"
+                      f" {'BUY' if direction == 'LONG' else 'SELL'}"),
+        }
     primary_reason = str(final.get("humanSummary") or "等待條件一致")
     if stale:
         primary_reason = "行情資料延遲，等待最新資料確認。"
@@ -148,7 +222,8 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
                       if item.get("kind") == "support"
                       and isinstance(item.get("price"), (int, float))
                       and (current is None or float(item["price"]) <= current)]
-    known = bool(position.get("has_position"))
+    known = bool(position.get("has_position") and
+                 float(position.get("position_size") or 0) != 0)
     position_side = str(position.get("position_side") or "").upper() if known else None
     position_action = str(position.get("recommended_action") or "HOLD").upper()
     normalized_position_action = next((name for name in ("EXIT", "REDUCE", "HOLD")
@@ -171,11 +246,58 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
         risk = actual_entry - stop if position_side == "LONG" else stop - actual_entry
         reward = target - actual_entry if position_side == "LONG" else actual_entry - target
         position_rr = round(reward / risk, 3) if risk > 0 else None
+    tp_facts = [fact for fact in data.get("signal_facts") or []
+                if str(fact.get("event_type") or "").startswith("TAKE_PROFIT_")]
+    reason_codes = []
+    if confirmation and confirmation["status"] != "CLOSED_CONFIRMED":
+        reason_codes.append("CANDLE_NOT_CLOSED" if confirmation["status"] == "IN_PROGRESS"
+                            else "STRUCTURE_NOT_CONFIRMED")
+    if selected and not rr_ok:
+        reason_codes.append("RR_INSUFFICIENT")
+    if selected and selected.get("entryQuality") == "CHASE":
+        reason_codes.append("CHASING")
+    if stale:
+        reason_codes.append("DATA_STALE")
+    if selected and selected.get("entryQuality") == "ACCEPTABLE":
+        reason_codes.append("ENTRY_ZONE_NOT_REACHED")
+    reason_codes = list(dict.fromkeys(reason_codes))[:3]
+    setup_state = str(selected.get("setupState") or "WATCHING")
     return {
-        "schemaVersion": "canonical-decision-v1",
+        "schemaVersion": "canonical-trading-decision-v2",
+        "timestamp": decision_timestamp,
+        "bias4h": _timeframe_bias(normalized, "4H"),
+        "bias1h": _timeframe_bias(normalized, "1H"),
+        "behavior15m": behavior_state.get("behavior_15m") or behavior,
+        "bearishPressure": ("STRONG" if behavior in {"STRONG_DECLINE", "REVERSAL_CONFIRMED"}
+                            else "MODERATE" if behavior in {"SLOW_BEARISH_DRIFT", "REVERSAL_WARNING"}
+                            else "WEAK"),
         "primaryAction": action,
         "primaryReason": primary_reason,
         "canonicalNextTrigger": canonical_trigger,
+        "primaryNextTrigger": canonical_trigger,
+        "activeSetupId": selected.get("setupId") or None,
+        "activeSetupType": selected.get("route") or None,
+        "setupState": setup_state,
+        "confirmationLevel": trigger_level,
+        "confirmationStatus": (confirmation or {}).get("status") or "NOT_REACHED",
+        "confirmationRegistry": registry,
+        "executableZone": selected.get("entryZone") if selected else None,
+        "rr": selected.get("riskReward") if selected else None,
+        "rrValid": rr_ok,
+        "entryQuality": selected.get("entryQuality") if selected else "INVALID",
+        "reasonCodes": reason_codes,
+        "primarySetup": selected or None,
+        "alternativeSetups": [item for item in ranked
+                              if item.get("setupId") != selected.get("setupId")],
+        "archivedSetups": archived_candidates,
+        "bestCurrentOpportunity": (f"等待{'多方' if direction == 'LONG' else '空方'}"
+                                   f"{'回踩' if selected.get('route') == 'PULLBACK' else '突破'}"
+                                   if selected else "目前沒有有效交易機會"),
+        "behaviorTransition": {
+            "previous": behavior_state.get("previous_behavior"),
+            "current": behavior_state.get("market_behavior") or behavior,
+            "changedAt": behavior_state.get("changed_at") or decision_timestamp,
+        },
         "earlyStrengthLevel": ({"level": early, "label": "初步轉強價"}
                                if early is not None else None),
         "entryConfirmationLevel": trigger_level,
@@ -186,7 +308,6 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
             normalized.get("trendBias") or "neutral").upper(),
         "marketBehavior": behavior,
         "behaviorConfidence": behavior_state.get("behavior_confidence"),
-        "behavior15m": behavior_state.get("behavior_15m"),
         "behavior1h": behavior_state.get("behavior_1h"),
         "behavior4h": behavior_state.get("behavior_4h"),
         "structureStatus": behavior_state.get("structure_status"),
@@ -229,6 +350,7 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
         },
         "positionManagement": {
             "positionKnown": known,
+            "collapsedByDefault": not known,
             "message": ("未取得實際持倉資料" if not known else None),
             "actualSide": position_side,
             "actualEntryPrice": actual_entry,
@@ -242,5 +364,10 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
             "structuralInvalidation": normalized.get("structuralInvalidationLevel"),
             "structuralInvalidationNote": normalized.get("structuralInvalidationNote") or "",
             "targets": selected.get("targets") if selected else [],
+        },
+        "reversalProtection": {
+            "cooldownActive": bool(tp_facts),
+            "sourceEvents": [fact.get("event_type") for fact in tp_facts],
+            "requiresIndependentOppositeConfirmation": True,
         },
     }

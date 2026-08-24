@@ -32,7 +32,7 @@ def payload(rr=1.8, *, trigger=4656.14, setup_type="BREAKOUT", price=4655.0):
             "currentPrice": price, "marketDataStatus": "GOOD",
             "marketDataTimestamp": "2026-08-24T13:15:00Z",
             "lastClosedCandleTimestamp": "2026-08-24T13:15:00Z",
-            "lastClosedCandlePrice": 4655.2, "triggerLevel": 4650.08,
+            "lastClosedCandlePrice": 4657.2, "triggerLevel": 4650.08,
             "invalidationLevel": 4625.0,
         },
         "final_decision_state": final, "decision_assistant": {},
@@ -42,10 +42,14 @@ def payload(rr=1.8, *, trigger=4656.14, setup_type="BREAKOUT", price=4655.0):
 
 def test_one_canonical_trigger_is_used_by_snapshot_and_telegram():
     data = payload()
+    data["final_decision_state"].update(
+        state="WAIT", finalAction="WAIT", canEnter=False,
+        humanSummary="等待收盤確認")
+    data["normalized_analysis"]["lastClosedCandlePrice"] = 4650.0
     snapshot = build_decision_snapshot(data)
     canonical = snapshot["canonicalDecision"]
     assert canonical["canonicalNextTrigger"]["level"] == 4656.14
-    assert snapshot["nextTrigger"] == "15M 收盤站上 4656.14"
+    assert snapshot["nextTrigger"].startswith("15M 收盤站上 4656.14")
     event = {"event_type": "ENTRY_READY", "currentPrice": 4655.0,
              "canonicalDecision": canonical}
     message = format_decision_message(event)

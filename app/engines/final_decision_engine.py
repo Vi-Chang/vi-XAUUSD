@@ -288,7 +288,7 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
         action, primary, risk_gate = "NO_TRADE", "RR_TOO_LOW", "RISK_BLOCK"
     else:
         action, primary, risk_gate = "WAIT", "WAIT_CONFIRMATION", "WAIT"
-    if str(assistant.get("regime")) == "SHORT_WEAK_HTF_BULLISH":
+    if str(assistant.get("regime")) == "HTF_BULLISH_LTF_WEAKENING":
         secondary.append("TIMEFRAME_CONFLICT")
 
     candle_time = str((data.get("normalized_analysis") or {}).get(

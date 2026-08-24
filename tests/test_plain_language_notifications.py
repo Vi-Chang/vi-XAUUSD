@@ -88,7 +88,7 @@ def test_short_without_pullback_zone_uses_plain_resistance_copy():
 
 def test_short_term_weak_htf_bullish_is_neutral_plain_language():
     event = {
-        "currentState": "SHORT_TERM_WEAK_HTF_BULLISH", "currentPrice": 4581.84,
+        "currentState": "HTF_BULLISH_LTF_WEAKENING", "currentPrice": 4581.84,
         "confirmation": "重新轉強：15M收盤站上4591.37；轉空確認：15M／1H跌破4572.52",
     }
     message = format_decision_message(event)

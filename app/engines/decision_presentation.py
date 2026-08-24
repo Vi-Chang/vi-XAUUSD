@@ -69,7 +69,7 @@ def build_decision_presentation(event: dict) -> dict:
         "INVALIDATED": "🟠【原交易計畫已失效】",
         "MISSED_ENTRY": "🟡【原進場區已錯過｜禁止追價】",
         "CONFIRMED_WAIT_RETEST": "🟡【突破確認完成｜等待回踩】",
-        "SHORT_TERM_WEAK_HTF_BULLISH": "⚠️【短線轉弱，先觀望】",
+        "HTF_BULLISH_LTF_WEAKENING": "⚠️【短線轉弱，先觀望】",
         "SHORT_TERM_RECOVERING": "⚪【短線正在恢復，還差最後確認】",
         "SHORT_TERM_BULLISH_RESTORED": "🟢【短線重新轉強】",
         "BEARISH_CONFIRMED": "🔴【短線已正式轉空】",
@@ -280,7 +280,7 @@ def format_decision_message(event: dict) -> str:
         return ("🔴【短線已正式轉空】\n"
                 "15分鐘與1小時已收盤結構同步轉空。\n"
                 "目前重新評估空方進場位置、失效價與賺賠比。")
-    if state == "SHORT_TERM_WEAK_HTF_BULLISH":
+    if state == "HTF_BULLISH_LTF_WEAKENING":
         regain = event.get("triggerLevel")
         short_level = event.get("longDefensePrice") or event.get("stopLoss")
         lines = [

@@ -58,7 +58,7 @@ def test_fake_breakout_and_reversal_risk_are_not_entries():
     value = data(); value["normalized_analysis"].update(
         breakoutState="failed", shortTermMomentum="reversal_risk")
     result, _ = evaluate_decision_assistant(value, latest_candle=candle(close=99))
-    assert result["regime"] in {"SHORT_WEAK_HTF_BULLISH", "REVERSAL_RISK"}
+    assert result["regime"] in {"HTF_BULLISH_LTF_WEAKENING", "REVERSAL_RISK"}
     assert result["canEnter"] is False
 
 
@@ -97,7 +97,7 @@ def test_overheated_bullish_does_not_chase():
 def test_htf_bullish_15m_pullback_is_neutral_not_bearish():
     value = data(momentum="pullback")
     result, _ = evaluate_decision_assistant(value, latest_candle=candle())
-    assert result["regime"] == "SHORT_WEAK_HTF_BULLISH"
+    assert result["regime"] == "HTF_BULLISH_LTF_WEAKENING"
     assert result["direction"] != "SHORT"
 
 
