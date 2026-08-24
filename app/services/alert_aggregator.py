@@ -165,6 +165,8 @@ def notification_fingerprint(event: dict) -> str:
 
 def alert_category(event: dict) -> str:
     event_type = str(event.get("event_type") or "")
+    if event_type in {"DOUBLE_SWEEP_CONFIRMED", "DOUBLE_SWEEP_EDGE_CONSUMED"}:
+        return "MEANINGFUL_SCENARIO_UPDATE"
     if event.get("tradePlanId"):
         return "EXIT_WARNING"
     state = str(event.get("currentState") or "WAIT")

@@ -587,6 +587,7 @@ function renderMarketMonitors(a) {
   const price = (value) => value == null ? "–" : Number(value).toFixed(2);
   renderBreakoutSetupLedger(a.breakout_setup_manager || {});
   renderTrendContinuation(a.trend_continuation_engine || {});
+  renderDoubleSweep(a.double_sweep_statistical || {});
   const breakout = a.breakout_alert || {};
   const breakoutCard = $("breakout-alert-card");
   if (breakoutCard) {
@@ -655,6 +656,25 @@ function renderMarketMonitors(a) {
       }
     }
   }
+}
+
+function renderDoubleSweep(state) {
+  const card = $("double-sweep-card");
+  if (!card) return;
+  const event = state.event || {};
+  card.hidden = !event.eventId;
+  if (card.hidden) return;
+  const profile = state.profile || {};
+  const lifecycle = state.lifecycle || {};
+  const order = event.order === "HIGH_THEN_LOW" ? "先掃上方，再掃下方" : "先掃下方，再掃上方";
+  $("double-sweep-summary").textContent = state.message || "統計結果僅供背景參考";
+  $("double-sweep-order").textContent = order;
+  $("double-sweep-range").textContent = `${Number(event.referenceLow).toFixed(2)}～${Number(event.referenceHigh).toFixed(2)}`;
+  $("double-sweep-quality").textContent = `${event.reclaimQuality || 0} 分｜${event.reclaimStatus || "–"}`;
+  const sample = Number(profile.sampleSize || 0);
+  $("double-sweep-sample").textContent = sample < 20 ? `${sample} 筆（不足，不納入決策）` : `${sample} 筆`;
+  const edgeLabels = { LOW_CONFIDENCE: "樣本不足", FRESH: "新鮮", ACTIVE: "有效中", DECAYING: "正在衰減", EXHAUSTED: "已耗盡", EXPIRED: "已過期" };
+  $("double-sweep-edge").textContent = edgeLabels[lifecycle.edgeStatus] || lifecycle.edgeStatus || "–";
 }
 
 function renderTrendContinuation(engine) {

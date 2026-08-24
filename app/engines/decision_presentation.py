@@ -118,6 +118,9 @@ def _local_time(raw: str) -> str:
 
 
 def format_decision_message(event: dict) -> str:
+    double_sweep = event.get("doubleSweepEvent") or {}
+    if double_sweep.get("event"):
+        return _format_double_sweep(event, double_sweep)
     assistant = event.get("decisionAssistant") or {}
     if assistant:
         return _format_decision_assistant(event, assistant)
@@ -207,6 +210,28 @@ def format_decision_message(event: dict) -> str:
         ])
     lines.append(f"資料時間：{data_time}（UTC+8）")
     return "\n".join(lines)
+
+
+def _format_double_sweep(event: dict, state: dict) -> str:
+    item = state["event"]
+    profile = state.get("profile") or {}
+    lifecycle = state.get("lifecycle") or {}
+    order = "先掃上方、再掃下方" if item.get("order") == "HIGH_THEN_LOW" else "先掃下方、再掃上方"
+    sample = int(profile.get("sampleSize") or 0)
+    if sample < 20:
+        statistical = f"歷史同類樣本只有 {sample} 筆，暫不影響買賣判斷"
+    else:
+        bias = {"UP": "偏向後續上行", "DOWN": "偏向後續下行"}.get(
+            profile.get("directionalBias"), "沒有明確方向")
+        statistical = f"歷史同類 {sample} 筆，{bias}；剩餘統計優勢 {float(lifecycle.get('doubleSweepEdgeRemaining') or 0) * 100:.0f}%"
+    return "\n".join([
+        "🔎【XAUUSD｜雙邊掃價已確認】",
+        f"型態：{order}",
+        f"參考區間：{float(item['referenceLow']):.2f}～{float(item['referenceHigh']):.2f}",
+        f"收回品質：{item.get('reclaimQuality', 0)} 分",
+        f"統計說明：{statistical}",
+        "現在怎麼做：這是市場背景資訊，不會單獨叫你進場，也不會改寫停損。",
+    ])
 
 
 def _format_decision_assistant(event: dict, assistant: dict) -> str:

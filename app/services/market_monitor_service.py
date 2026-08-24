@@ -30,6 +30,7 @@ from app.engines.regime_state_machine import evaluate_regime_state
 from app.engines.trade_plan import evaluate_trade_plans, migrate_legacy_virtual_profit
 from app.engines.trend_continuation_engine import evaluate_trend_continuation
 from app.engines.virtual_profit_tracker import evaluate_virtual_profit
+from app.services.double_sweep_service import evaluate_double_sweep_monitor
 
 
 def _load(symbol: str, key: str) -> dict:
@@ -158,6 +159,20 @@ def evaluate_market_monitors(
         m15=m15_closed, h1=h1_closed, h4=h4_closed,
         previous=_load(symbol, "trend_continuation"))
     _save(symbol, "trend_continuation", continuation_state)
+    timeframe_data = data.get("timeframes") or {}
+    generated = str(data.get("timestamp_utc") or datetime.now(timezone.utc).isoformat())
+    try:
+        evaluation_time = datetime.fromisoformat(generated.replace("Z", "+00:00"))
+    except ValueError:
+        evaluation_time = datetime.now(timezone.utc)
+    double_sweep_state, double_sweep_events = evaluate_double_sweep_monitor(
+        m15_closed, symbol=symbol,
+        current_price=float(normalized.get("currentPrice") or 0),
+        regime4h=str((timeframe_data.get("h4") or {}).get("trend") or data.get("market_state") or "UNKNOWN"),
+        structure1h=str((timeframe_data.get("h1") or {}).get("structure") or "UNKNOWN"),
+        macro_context=str((data.get("event_risk") or {}).get("status") or "UNKNOWN"),
+        now=evaluation_time, previous=_load(symbol, "double_sweep"))
+    _save(symbol, "double_sweep", double_sweep_state)
     plans = {plan.side: asdict(plan) for plan in build_hypothetical_exit_plans(data)}
     monitor_result = {
         "hypothetical_exit_advisor": {"plans": plans, "events": exit_events},
@@ -168,6 +183,8 @@ def evaluate_market_monitors(
             **breakout_setup_state, "events": breakout_setup_events},
         "trend_continuation_engine": {
             **continuation_state, "events": continuation_events},
+        "double_sweep_statistical": {
+            **double_sweep_state, "events": double_sweep_events},
     }
     regime_state, regime_events = evaluate_regime_state(
         data, indicators=indicators, previous=_load(symbol, "regime_state"))
@@ -181,6 +198,7 @@ def evaluate_market_monitors(
     signal_facts = (exit_events + ([breakout_event] if breakout_event else [])
                     + virtual_events + trade_plan_events + breakout_setup_events
                     + continuation_events + regime_events + assistant_events)
+    signal_facts += double_sweep_events
     final_input = {**data, **monitor_result, "signal_facts": signal_facts}
     final_state, final_events = evaluate_final_decision(
         final_input, _load(symbol, "final_decision")

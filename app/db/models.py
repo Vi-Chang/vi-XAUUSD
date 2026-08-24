@@ -323,6 +323,26 @@ class MarketMonitorState(Base):
     __table_args__ = (UniqueConstraint("symbol", "monitor_key", name="uq_market_monitor"),)
 
 
+class DoubleSweepRecord(Base):
+    """Immutable DOUBLE_SWEEP event plus its point-in-time research context."""
+    __tablename__ = "double_sweep_events"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    event_id: Mapped[str] = mapped_column(String(64), unique=True)
+    symbol: Mapped[str] = mapped_column(String(32), default="XAUUSD")
+    sweep_order: Mapped[str] = mapped_column(String(24))
+    confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    reference_high: Mapped[float] = mapped_column(Float)
+    reference_low: Mapped[float] = mapped_column(Float)
+    reference_atr: Mapped[float] = mapped_column(Float)
+    detection_version: Mapped[str] = mapped_column(String(32))
+    event_payload: Mapped[dict] = mapped_column(JSON)
+    profile_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    __table_args__ = (
+        Index("ix_double_sweep_lookup", "symbol", "confirmed_at"),
+    )
+
+
 class DecisionEvent(Base):
     """Canonical market decision event consumed by both web and Telegram."""
     __tablename__ = "decision_events"
