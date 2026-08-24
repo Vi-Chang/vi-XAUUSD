@@ -7,7 +7,7 @@ import math
 from app.config import get_settings
 
 ALERT_PRIORITY = {
-    "EXIT_WARNING": 100, "SCENARIO_INVALIDATED": 90, "ENTRY_READY": 80,
+    "SCENARIO_INVALIDATED": 110, "EXIT_WARNING": 100, "ENTRY_READY": 80,
     "WAIT_RETEST": 70, "SETUP_CONFIRMED": 60, "MISSED_ENTRY": 50,
     "PULLBACK_ZONE_CREATED": 40, "MEANINGFUL_SCENARIO_UPDATE": 30,
     "WATCHING": 20, "WAIT": 10,
@@ -173,8 +173,12 @@ def alert_category(event: dict) -> str:
     state = str(event.get("currentState") or "WAIT")
     if state == "DATA_STALE":
         return "DATA_STATUS"
-    if state.endswith("READY") or state.startswith("ENTRY_READY_"):
+    actionable = (bool(event.get("canEnter")) and
+                  str(event.get("finalAction") or "") in {"ENTER_LONG", "ENTER_SHORT"})
+    if (state.endswith("READY") or state.startswith("ENTRY_READY_")) and actionable:
         return "ENTRY_READY"
+    if state.endswith("READY") or state.startswith("ENTRY_READY_"):
+        return "SETUP_CONFIRMED"
     if state.endswith("MANAGE") or event_type in {
             "TAKE_PROFIT_1", "TAKE_PROFIT_2", "TAKE_PROFIT_3", "EARLY_EXIT",
             "STOP_TRIGGERED", "STRUCTURE_INVALIDATED", "EXIT_NOW", "EXIT_ZONE_REACHED"}:

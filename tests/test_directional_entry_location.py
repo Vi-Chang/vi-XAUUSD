@@ -1,7 +1,8 @@
 from app.engines.decision_assistant import evaluate_decision_assistant
+from app.engines.decision_presentation import build_decision_presentation
 from app.engines.entry_location import classify_entry_location
 from app.engines.final_decision_engine import evaluate_final_decision
-from app.services.alert_aggregator import aggregate_signal_facts
+from app.services.alert_aggregator import aggregate_signal_facts, alert_category
 from tests.test_decision_assistant import candle, data
 from tests.test_final_decision_engine import market
 
@@ -82,3 +83,81 @@ def test_long_take_profit_fact_never_becomes_short_entry():
     assert alerts[0]["alertCategory"] == "EXIT_WARNING"
     assert alerts[0]["event_type"] == "TAKE_PROFIT_1"
     assert alerts[0].get("direction") != "SHORT"
+
+
+def test_internal_ready_label_without_permission_stays_yellow():
+    event = {"currentState": "SHORT_READY", "direction": "SHORT", "canEnter": False}
+    view = build_decision_presentation(event)
+    assert view["tone"] == "neutral"
+    assert "等待可執行價格" in view["title"]
+    assert alert_category(event) == "SETUP_CONFIRMED"
+
+
+def test_canonical_entry_event_is_still_actionable():
+    event = {"currentState": "SHORT_READY", "direction": "SHORT", "canEnter": True,
+             "finalAction": "ENTER_SHORT"}
+    assert alert_category(event) == "ENTRY_READY"
+    assert build_decision_presentation(event)["tone"] == "short_ready"
+
+
+def test_executable_candidate_beats_higher_score_outside_zone():
+    value = market(price=100.5)
+    value["decision_assistant"]["canEnter"] = False
+    value["trend_continuation_engine"]["candidates"] = [{
+        "setupId": "HIGH-SCORE-BUT-FAR", "direction": "LONG",
+        "status": "ENTRY_READY_BULL_FLAG", "signalScore": 99,
+        "entryZoneLow": 110.0, "entryZoneHigh": 111.0,
+        "maxChasePrice": 112.0, "stopPrice": 108.0,
+        "tp1": 115.0, "riskReward": 2.0,
+    }]
+    decision, _ = evaluate_final_decision(value)
+    assert decision["finalAction"] == "ENTER_LONG"
+    assert decision["selectedScenarioId"] == "BO-v1"
+
+
+def test_fail_closed_never_publishes_entry_ready(monkeypatch):
+    monkeypatch.setattr(
+        "app.engines.decision_consistency.validate_final_decision",
+        lambda _decision: ["FORCED_CONFLICT"],
+    )
+    decision, events = evaluate_final_decision(market())
+    assert decision["finalAction"] == "NO_TRADE"
+    assert decision["canEnter"] is False
+    assert not any(event["event_type"] == "ENTRY_READY" for event in events)
+
+
+def test_non_executable_opposite_ready_candidate_does_not_create_conflict():
+    value = market(price=100.5)
+    value["trend_continuation_engine"]["candidates"] = [{
+        "setupId": "FAR-SHORT", "direction": "SHORT",
+        "status": "ENTRY_READY_BEAR_FLAG", "signalScore": 95,
+        "entryZoneLow": 90.0, "entryZoneHigh": 91.0,
+        "maxChasePrice": 88.0, "stopPrice": 93.0,
+        "tp1": 85.0, "riskReward": 2.0,
+    }]
+    decision, _ = evaluate_final_decision(value)
+    assert decision["finalAction"] == "ENTER_LONG"
+    assert decision.get("primaryReason") != "TIMEFRAME_CONFLICT"
+
+
+def test_rr_and_score_are_taken_from_selected_executable_setup():
+    value = market(price=100.5)
+    value["decision_assistant"].update(rewardRiskRatio=3.0, entryQualityScore=99)
+    setup = value["breakout_setup_manager"]["activeSetup"]
+    setup.update(riskReward=1.1, signalScore=40)
+    decision, _ = evaluate_final_decision(value)
+    assert decision["finalAction"] == "NO_TRADE"
+    assert decision["primaryReason"] == "RR_TOO_LOW"
+    assert decision["effectiveRR"] == 1.1
+
+
+def test_fail_closed_gets_a_non_entry_decision_identity(monkeypatch):
+    monkeypatch.setattr(
+        "app.engines.decision_consistency.validate_final_decision",
+        lambda _decision: ["FORCED_CONFLICT"],
+    )
+    decision, _ = evaluate_final_decision(market())
+    assert decision["decisionSignature"]
+    assert decision["decisionId"]
+    assert decision["decisionChanged"] is True
+    assert decision["finalAction"] == "NO_TRADE"

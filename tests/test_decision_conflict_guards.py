@@ -113,7 +113,7 @@ async def test_delayed_old_wait_never_reaches_telegram():
         assert row.cancellation_reason in {"CANCELLED_SUPERSEDED", "STALE_DECISION_VERSION"}
 
 
-def test_same_candle_entry_remains_current_inside_new_zone():
+def test_same_candle_old_entry_is_revoked_when_new_price_is_not_executable():
     first, _ = evaluate_final_decision(_market(4608.0))
     recalculation = _market(4609.37, can_enter=False)
     # Simulate an older candidate set trying to restore the previous chase decision.
@@ -121,10 +121,10 @@ def test_same_candle_entry_remains_current_inside_new_zone():
     recalculation["breakout_setup_manager"]["activeSetup"]["entryZoneHigh"] = 4605.05
     recalculation["breakout_setup_manager"]["activeSetup"]["maxChasePrice"] = 4607.35
     current, events = evaluate_final_decision(recalculation, previous=first)
-    assert current["finalAction"] == "ENTER_LONG"
-    assert current["entryZone"] == {"low": 4607.13, "high": 4610.43}
-    assert current["chaseLimit"] == 4612.20
-    assert events == []
+    assert current["finalAction"] == "WAIT"
+    assert current["canEnter"] is False
+    assert current["entryZone"] == {"low": 4601.36, "high": 4605.05}
+    assert not any(event["event_type"] == "ENTRY_READY" for event in events)
 
 
 def test_older_candle_can_never_overwrite_current_decision():

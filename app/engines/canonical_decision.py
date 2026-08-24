@@ -120,6 +120,12 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
             "SLOW_BEARISH_DRIFT", "STRONG_DECLINE",
             "REVERSAL_WARNING", "REVERSAL_CONFIRMED"}:
         can_enter = False
+    # Candidate lifecycle is diagnostic only. Do not let nested cards expose a
+    # green permission that contradicts the canonical new-entry decision.
+    selected_id = str((selected or {}).get("setupId") or "")
+    for candidate in candidates:
+        candidate["canEnter"] = bool(
+            can_enter and str(candidate.get("setupId") or "") == selected_id)
     entry_action = ("BUY" if can_enter and direction == "LONG" else
               "SELL" if can_enter and direction == "SHORT" else "WAIT")
     primary_reason = str(final.get("humanSummary") or "等待條件一致")

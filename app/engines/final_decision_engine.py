@@ -222,13 +222,21 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
                            or (data.get("trade_plan_manager") or {}).get("activePlans"))
     behavior = str((data.get("market_behavior_engine") or {}).get(
         "market_behavior") or "RANGE")
-    selected = max(candidates, key=lambda item: (item.lifecycle_state == "ENTRY_READY",
-                                                  item.strength), default=None)
-    raw_score = int(assistant.get("entryQualityScore") or
-                    (selected.strength if selected else 0))
-    rr = _number(assistant.get("rewardRiskRatio"))
-    if rr is None and selected:
-        rr = selected.risk_reward
+    def _selection_rank(item: SignalCandidate) -> tuple[bool, bool, int]:
+        zone = item.entry_zone
+        in_zone = bool(zone and zone[0] <= current_price <= zone[1])
+        executable = (item.lifecycle_state == "ENTRY_READY" and in_zone
+                      and stop_is_valid(item.direction, current_price,
+                                        item.invalidation_price))
+        return executable, item.lifecycle_state == "ENTRY_READY", item.strength
+
+    selected = max(candidates, key=_selection_rank, default=None)
+    # Score and R/R must belong to the selected setup. Assistant summaries may
+    # describe a different, higher-scoring but non-executable candidate.
+    raw_score = int(selected.strength if selected else
+                    assistant.get("entryQualityScore") or 0)
+    rr = (selected.risk_reward if selected and selected.risk_reward is not None
+          else _number(assistant.get("rewardRiskRatio")))
     selected_zone = selected.entry_zone if selected else None
     effective_chase_limit = selected.chase_limit if selected else None
     if selected and selected_zone and effective_chase_limit is None:
@@ -264,10 +272,11 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
     elif str(assistant.get("regime")) in {"RANGE", "NO_EDGE", "REVERSAL_RISK"}:
         action, primary, risk_gate = "NO_TRADE", "STRUCTURE_UNCLEAR", "NO_TRADE"
     elif (selected and selected.lifecycle_state == "ENTRY_READY"
-          and bool(assistant.get("canEnter"))
           and entry_location == "IN_EXECUTABLE_ZONE" and valid_stop):
         if rr is None or rr < settings.decision_assistant_min_rr:
             action, primary, risk_gate = "NO_TRADE", "RR_TOO_LOW", "RISK_BLOCK"
+        elif raw_score < 50:
+            action, primary, risk_gate = "NO_TRADE", "QUALITY_TOO_LOW", "RISK_BLOCK"
         else:
             action = "ENTER_LONG" if selected.direction == "LONG" else "ENTER_SHORT"
             primary, risk_gate = "ENTRY_READY", "ENTRY_READY"
@@ -284,23 +293,6 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
 
     candle_time = str((data.get("normalized_analysis") or {}).get(
         "lastClosedCandleTimestamp") or "")
-    previous_zone = previous.get("entryZone") or {}
-    previous_action = str(previous.get("finalAction") or "")
-    same_candle = candle_time == str(previous.get("sourceCandleCloseTime") or "")
-    still_in_previous_zone = (
-        isinstance(previous_zone.get("low"), (int, float))
-        and isinstance(previous_zone.get("high"), (int, float))
-        and float(previous_zone["low"]) <= current_price <= float(previous_zone["high"])
-    )
-    critical_override = primary in {"DATA_STALE", "EVENT_BLACKOUT", "SPREAD_TOO_HIGH"}
-    if (previous_action in {"ENTER_LONG", "ENTER_SHORT"} and action != previous_action
-            and same_candle and still_in_previous_zone and not critical_override):
-        sticky = dict(previous)
-        sticky.update({"currentPrice": current_price,
-                       "evaluatedAt": str(data.get("timestamp_utc") or ""),
-                       "decisionChanged": False, "events": []})
-        return sticky, []
-
     scenario_id = selected.scenario_id if selected else str(assistant.get("scenarioId") or "")
     zone = selected.entry_zone if selected else None
     chase_limit = selected.chase_limit if selected else None
@@ -396,9 +388,15 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
         "dataAgeSeconds": health.get("dataAgeSeconds"),
         "notificationSeverity": severity,
     })
-    ready_directions = {candidate.direction for candidate in candidates
-                        if candidate.lifecycle_state == "ENTRY_READY"
-                        and candidate.direction in {"LONG", "SHORT"}}
+    ready_directions = {
+        candidate.direction for candidate in candidates
+        if candidate.lifecycle_state == "ENTRY_READY"
+        and candidate.direction in {"LONG", "SHORT"}
+        and candidate.entry_zone is not None
+        and candidate.entry_zone[0] <= current_price <= candidate.entry_zone[1]
+        and stop_is_valid(candidate.direction, current_price,
+                          candidate.invalidation_price)
+    }
     if len(ready_directions) > 1:
         base.update({"finalAction": "NO_TRADE", "state": "NO_TRADE",
                      "canEnter": False, "primaryReason": "TIMEFRAME_CONFLICT",
@@ -408,6 +406,23 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
     consistency_errors = validate_final_decision(base)
     if consistency_errors:
         base = fail_closed(base, consistency_errors)
+        safe_signature = hashlib.sha256(repr((
+            "NO_TRADE", "SYSTEM_DECISION_CONFLICT", scenario_id,
+            candle_time, tuple(consistency_errors),
+        )).encode()).hexdigest()[:24]
+        safe_decision_id = hashlib.sha256(
+            f"{data.get('symbol', 'XAUUSD')}|{safe_signature}".encode()
+        ).hexdigest()[:32]
+        changed = safe_decision_id != str(previous.get("decisionId") or "")
+        version = int(previous.get("decisionVersion") or 0) + (1 if changed else 0)
+        base.update({"decisionSignature": safe_signature,
+                     "decisionId": safe_decision_id,
+                     "decisionChanged": changed,
+                     "decisionVersion": version})
+    # Event publication must use the post-validation canonical result. Keeping
+    # the pre-validation locals could emit ENTRY_READY after fail-closed.
+    action = cast(FinalAction, str(base.get("finalAction") or "NO_TRADE"))
+    primary = str(base.get("primaryReason") or "SYSTEM_DECISION_CONFLICT")
     events: list[dict] = []
     event_types: list[str] = []
     if changed:
@@ -452,7 +467,8 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
             "previousState": str(previous.get("state") or "WAIT"),
             "currentState": published_state, "transitionReason": base["humanSummary"],
             "marketState": str(assistant.get("regime") or ""),
-            "finalDecision": base["finalAction"], "currentPrice": current_price,
+            "finalDecision": base["finalAction"], "finalAction": base["finalAction"],
+            "canEnter": bool(base.get("canEnter")), "currentPrice": current_price,
             "entryZone": base.get("entryZone"), "chaseLimit": base.get("chaseLimit"),
             "stopLoss": base.get("invalidationPrice"), "targets": base.get("targets") or [],
             "candleCloseTime": candle_time,
