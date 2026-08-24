@@ -17,6 +17,17 @@ def test_live_cross_without_closed_cross_is_in_progress_everywhere():
     assert canonical["newEntryDecision"]["canEnter"] is False
 
 
+def test_two_components_share_the_same_confirmation_registry_record():
+    data = payload(price=4652.27, trigger=4650.08)
+    data["normalized_analysis"]["lastClosedCandlePrice"] = 4643.09
+    data["final_decision_state"].update(finalAction="WAIT", canEnter=False, state="WAIT")
+    canonical = build_canonical_decision(data, data["final_decision_state"])
+    key = "XAUUSD:15M:4650.08:ABOVE"
+    dashboard_status = canonical["confirmationRegistry"][key]["status"]
+    telegram_status = canonical["confirmationStatus"]
+    assert dashboard_status == telegram_status == "IN_PROGRESS"
+
+
 def test_future_confirmation_cannot_pollute_older_decision():
     record = confirmation_record(
         symbol="XAUUSD", timeframe="15M", level=4650.08, direction="LONG",
