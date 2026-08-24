@@ -488,6 +488,106 @@ function renderDirectionalAlert(alert) {
   $("bearish-monitor-message").textContent = alert.message || "持續等待下一個 15M 結構事件。";
 }
 
+function humanMarketState(canonical) {
+  const bias = canonical.marketBias;
+  const behavior = String(canonical.behavior15m || canonical.marketBehavior || "").toUpperCase();
+  const structure = String(canonical.structureStatus || "");
+  if (structure.includes("INVALID") || structure.includes("BROKEN")) return "結構失效";
+  if (bias === "BULLISH") {
+    if (["STRONG_RISE", "SLOW_RISE", "TREND_BULLISH", "STRONG_BULLISH"].includes(behavior)) return "強勢偏多";
+    if (["PULLBACK", "SLOW_BEARISH_DRIFT", "REVERSAL_WARNING"].includes(behavior)) return "偏多回踩";
+    if (behavior === "RANGE") return "偏多整理";
+  }
+  if (bias === "BEARISH") {
+    if (["STRONG_DECLINE", "SLOW_BEARISH_DRIFT", "TREND_BEARISH", "STRONG_BEARISH"].includes(behavior)) return "強勢偏空";
+    if (["REBOUND", "SLOW_RISE", "REVERSAL_WARNING"].includes(behavior)) return "偏空反彈";
+    if (behavior === "RANGE") return "偏空整理";
+  }
+  return "多空拉鋸";
+}
+
+function canonicalCandidates(canonical) {
+  const rows = [canonical.primarySetup, ...(canonical.alternativeSetups || [])].filter(Boolean);
+  const seen = new Set();
+  return rows.filter((row) => {
+    const key = `${row.setupId || ""}:${row.direction || ""}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function bestDisplayCandidate(canonical, direction) {
+  return canonicalCandidates(canonical)
+    .filter((row) => row.direction === direction)
+    .sort((a, b) => Number(b.setupScore || 0) - Number(a.setupScore || 0))[0] || null;
+}
+
+function candidateCondition(candidate) {
+  if (!candidate) return "目前沒有有效條件";
+  const level = candidate.confirmationLevel;
+  const sideText = candidate.direction === "LONG" ? "收盤站上" : "收盤跌破";
+  if (level != null) return `等 15M ${sideText} ${fmt(level)}`;
+  if (candidate.route === "PULLBACK") return "等回踩區出現收盤確認";
+  return "等待市場形成可執行條件";
+}
+
+function renderHomeRoute(direction, candidate, canonical, livePrice) {
+  const prefix = direction === "LONG" ? "home-long" : "home-short";
+  const card = $(`${prefix}-route`);
+  const zone = (candidate || {}).entryZone || {};
+  const isSelected = candidate && candidate.setupId === canonical.activeSetupId;
+  const ready = !!(candidate && isSelected && canonical.newEntryDecision?.canEnter);
+  const inZone = livePrice != null && zone.low != null && zone.high != null &&
+    Number(livePrice) >= Number(zone.low) && Number(livePrice) <= Number(zone.high);
+  const invalid = Boolean(candidate) && (candidate.active === false || ["INVALIDATED", "ARCHIVED", "MISSED"].includes(candidate.setupState));
+  const status = invalid ? "INVALID" : ready ? "READY" : inZone ? "APPROACHING" : "WAIT";
+  card.dataset.status = status;
+  $(`${prefix}-status`).textContent = ({READY: "已成立", APPROACHING: "接近／等待確認", WAIT: "等待", INVALID: "已失效"})[status];
+  $(`${prefix}-condition`).textContent = candidateCondition(candidate);
+  $(`${prefix}-entry`).textContent = zone.low == null || zone.high == null ? "–" : `${fmt(zone.low)}–${fmt(zone.high)}`;
+  $(`${prefix}-stop`).textContent = candidate?.tacticalStop == null ? "–" : fmt(candidate.tacticalStop);
+  $(`${prefix}-targets`).textContent = (candidate?.targets || []).slice(0, 2).map(fmt).join(" / ") || "–";
+  return { candidate, status };
+}
+
+function renderDecisionHome(canonical, finalState) {
+  if (!canonical || !canonical.schemaVersion) return;
+  const entry = canonical.newEntryDecision || {};
+  const realtime = finalState.realtimePresentation || (S.analysis && S.analysis.realtime_presentation) || {};
+  const livePrice = realtime.currentPrice ?? finalState.source_price ?? canonical.positionManagement?.currentPrice;
+  const completeness = canonical.decisionCompleteness || {};
+  const critical = canonical.dataStale || canonical.closedCandleAvailable === false || completeness.valid === false;
+  let displayState = "WAIT";
+  if (critical) displayState = "INVALID";
+  else if (entry.canEnter && entry.action === "BUY") displayState = "BUY";
+  else if (entry.canEnter && entry.action === "SELL") displayState = "SELL";
+  else if (entry.tradeStatus === "ENTRY_READY" || canonical.setupState === "ENTRY_READY") displayState = "READY";
+  const icons = {WAIT: "🟡", READY: "🟠", BUY: "🟢", SELL: "🔴", INVALID: "⚫"};
+  $("home-live-price").textContent = livePrice == null ? "–" : fmt(livePrice);
+  $("home-display-state").textContent = `${icons[displayState]} ${displayState}`;
+  $("home-primary-card").dataset.state = displayState;
+  const marketText = humanMarketState(canonical);
+  $("home-market-state").textContent = critical ? "暫停進場，等待資料恢復" : `市場狀態：${marketText}`;
+  $("home-primary-reason").textContent = critical
+    ? "行情或決策資料不完整，恢復前不提供可執行訊號。"
+    : canonical.primaryReason || "目前條件尚未一致。";
+
+  const longRoute = renderHomeRoute("LONG", bestDisplayCandidate(canonical, "LONG"), canonical, livePrice);
+  const shortRoute = renderHomeRoute("SHORT", bestDisplayCandidate(canonical, "SHORT"), canonical, livePrice);
+  $("home-up-condition").textContent = longRoute.candidate
+    ? `${candidateCondition(longRoute.candidate)} → 找多` : "多方條件尚未形成";
+  $("home-down-condition").textContent = shortRoute.candidate
+    ? `${candidateCondition(shortRoute.candidate)} → 找空` : "空方條件尚未形成";
+  $("home-next-action").textContent = critical
+    ? "等待行情與已收盤 K 棒恢復正常"
+    : (canonical.canonicalNextTrigger || {}).label || "等待新結構形成";
+
+  const health = $("home-system-health");
+  health.hidden = !critical;
+  if (critical) health.title = (completeness.errors || canonical.reasonCodes || []).join("、") || "交易資料異常";
+}
+
 function renderFinalDecision(finalState, snapshot) {
   if (!finalState) return;
   if (snapshot && ["decision-snapshot-v2", "decision-snapshot-v3"].includes(snapshot.schemaVersion)) {
@@ -582,6 +682,7 @@ function renderFinalDecision(finalState, snapshot) {
   $("quick-action-why").textContent = canonical.primaryReason || finalState.humanSummary || finalState.reason || "等待條件一致";
   $("quick-action-next").textContent = trigger.label || "等待新結構形成";
   $("quick-action-card").dataset.action = presentation.tone || (finalState.state === "DATA_STALE" ? "danger" : "neutral");
+  renderDecisionHome(canonical, finalState);
 }
 
 function renderDecisionAssistant(v3, finalDecision = {}) {
@@ -1803,6 +1904,11 @@ function connectWS() {
         $("quick-action-why").textContent = "新一根 15 分鐘 K 棒已收盤，系統正在重新判斷。";
         $("quick-action-next").textContent = "更新完成前先不要進場";
         $("quick-action-card").dataset.action = "NO_TRADE";
+        $("home-display-state").textContent = "🟡 WAIT";
+        $("home-primary-card").dataset.state = "WAIT";
+        $("home-market-state").textContent = "市場狀態：正在更新";
+        $("home-primary-reason").textContent = "新一根 15 分鐘 K 棒已收盤，完成重新判斷前不進場。";
+        $("home-next-action").textContent = "等待最新 canonical snapshot";
       }
       else if (msg.type === "candle_closed") loadCandles(S.tf, true).catch(console.error);
     } catch (err) { console.warn("ws message error", err); }
@@ -1812,6 +1918,21 @@ function connectWS() {
 /* ═══ 啟動 ═══ */
 async function boot() {
   initChart();
+  const detailsToggle = $("analysis-details-toggle");
+  if (detailsToggle) detailsToggle.addEventListener("click", () => {
+    const open = document.body.classList.toggle("analysis-details-open");
+    detailsToggle.setAttribute("aria-expanded", String(open));
+    detailsToggle.textContent = open ? "收起分析細節" : "查看分析細節";
+    if (open && S.chart) S.chart.applyOptions({ width: $("chart").clientWidth });
+  });
+  const healthToggle = $("home-system-health");
+  if (healthToggle) healthToggle.addEventListener("click", () => {
+    document.body.classList.add("analysis-details-open");
+    if (detailsToggle) {
+      detailsToggle.setAttribute("aria-expanded", "true");
+      detailsToggle.textContent = "收起分析細節";
+    }
+  });
   const advancedToggle = $("mobile-advanced-toggle");
   if (advancedToggle) advancedToggle.addEventListener("click", () => {
     const open = document.body.classList.toggle("mobile-advanced-open");

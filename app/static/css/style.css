@@ -485,3 +485,70 @@ body {
 .performance-metrics { display: grid; grid-template-columns: repeat(3,1fr); gap: 6px; font-size: 12px; }
 .performance-metrics b { display: block; font-size: 16px; margin-top: 3px; }
 .sample-low { color: var(--warn, #d29922); font-size: 12px; margin-top: 7px; }
+
+/* ═══ 極簡決策首頁（只翻譯 canonical snapshot，不計算交易訊號） ═══ */
+.decision-home { grid-column: 1 / -1; padding: 20px; }
+.decision-home-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+.decision-symbol { display: block; color: var(--text-dim); font-size: .78rem; font-weight: 700; letter-spacing: 1.5px; }
+.decision-live-price { display: block; margin-top: 2px; font-size: clamp(2rem, 5vw, 3.2rem); line-height: 1.05; }
+.system-health-pill { border: 1px solid var(--danger); background: rgba(248,81,73,.12); color: var(--danger); border-radius: 999px; padding: 5px 10px; cursor: pointer; }
+.decision-primary { margin-top: 18px; padding: 20px; border: 1px solid rgba(240,160,32,.45); border-radius: 12px; background: linear-gradient(135deg, rgba(240,160,32,.11), rgba(22,27,34,.75)); }
+.decision-primary[data-state="BUY"] { border-color: var(--bull); background: linear-gradient(135deg, rgba(38,166,154,.15), rgba(22,27,34,.75)); }
+.decision-primary[data-state="SELL"], .decision-primary[data-state="INVALID"] { border-color: var(--bear); background: linear-gradient(135deg, rgba(239,83,80,.14), rgba(22,27,34,.75)); }
+.decision-primary[data-state="READY"] { border-color: var(--warn); }
+.decision-primary-state { font-family: var(--mono); font-size: clamp(1.65rem, 4vw, 2.7rem); letter-spacing: .5px; }
+.decision-primary h2 { margin-top: 4px; font-size: clamp(1.05rem, 2.5vw, 1.35rem); }
+.decision-primary p { margin-top: 5px; color: var(--text-dim); }
+.decision-pivots { display: flex; flex-wrap: wrap; gap: 10px 22px; margin-top: 14px; font-size: .88rem; }
+.decision-pivots span { padding: 5px 10px; background: rgba(13,17,23,.62); border-radius: 6px; }
+.decision-routes { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
+.decision-route { border: 1px solid var(--border); border-radius: 10px; padding: 14px; background: rgba(13,17,23,.46); }
+.decision-route.long { border-top: 3px solid var(--bull); }
+.decision-route.short { border-top: 3px solid var(--bear); }
+.decision-route header { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.decision-route h3 { font-size: 1rem; }
+.decision-route header span { color: var(--warn); font-size: .76rem; font-weight: 700; }
+.decision-route[data-status="READY"] header span { color: var(--bull); }
+.decision-route[data-status="INVALID"] { opacity: .62; }
+.route-condition { display: block; margin: 10px 0; min-height: 2.8em; font-size: .88rem; }
+.decision-route dl { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.decision-route dl div { min-width: 0; padding: 7px 8px; background: rgba(22,27,34,.75); border-radius: 6px; }
+.decision-route dt { color: var(--text-dim); font-size: .66rem; }
+.decision-route dd { overflow-wrap: anywhere; font-size: .82rem; }
+.decision-next { margin-top: 12px; padding: 12px 14px; border-left: 3px solid var(--info); background: rgba(88,166,255,.07); border-radius: 0 8px 8px 0; }
+.decision-next span { display: block; color: var(--text-dim); font-size: .68rem; }
+.decision-next strong { display: block; margin-top: 2px; }
+.analysis-details-toggle { display: block; width: 100%; margin-top: 12px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: transparent; color: var(--text-dim); cursor: pointer; }
+.analysis-details-toggle:hover { color: var(--text); border-color: var(--info); }
+
+/* 正常狀態不占首頁；舊完整介面保留為預設折疊的分析細節。 */
+.topbar .price-block,
+.topbar .brand,
+.topbar .top-chips > :not(#admin-login-btn):not(#admin-logout-btn),
+.topbar .offset-panel { display: none; }
+.topbar { padding-bottom: 4px; }
+.layout > .chart-card,
+.layout > .side,
+.tabs-card { display: none; }
+body.analysis-details-open .layout > .chart-card,
+body.analysis-details-open .layout > .side,
+body.analysis-details-open .tabs-card { display: block; }
+body.analysis-details-open .layout > .chart-card { grid-column: 1; }
+body.analysis-details-open .layout > .side { grid-column: 2; }
+
+@media (max-width: 900px) {
+  .decision-home { padding: 12px; }
+  .decision-live-price { font-size: 1.8rem; }
+  .decision-primary { margin-top: 10px; padding: 12px; }
+  .decision-pivots { margin-top: 9px; gap: 6px; }
+  .decision-routes { grid-template-columns: 1fr; gap: 8px; margin-top: 8px; }
+  .decision-route { padding: 10px; }
+  .route-condition { min-height: 0; margin: 6px 0; }
+  .decision-route dl div { padding: 5px 6px; }
+  .decision-next { margin-top: 8px; padding: 9px 11px; }
+  .analysis-details-toggle { margin-top: 8px; padding: 8px; }
+  .decision-route dl { grid-template-columns: 1fr 1fr 1fr; }
+  body.analysis-details-open .layout > .chart-card,
+  body.analysis-details-open .layout > .side { grid-column: 1; }
+  body.analysis-details-open:not(.mobile-advanced-open) .side > :not(#quick-action-card):not(#mobile-advanced-toggle) { display: none; }
+}
