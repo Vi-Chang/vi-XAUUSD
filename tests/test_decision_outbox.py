@@ -390,7 +390,7 @@ async def test_two_workers_claim_same_semantic_notification_once():
 
 
 @pytest.mark.asyncio
-async def test_late_reason_does_not_reopen_sent_decision():
+async def test_distinct_exit_event_type_is_not_mistaken_for_duplicate():
     base = {
         "eventId": "late-fact-a", "event_type": "EXIT_ZONE_REACHED",
         "previousState": "WAIT", "currentState": "MISSED_ENTRY",
@@ -417,10 +417,10 @@ async def test_late_reason_does_not_reopen_sent_decision():
     late = {**base, "eventId": "late-fact-b", "event_type": "EXIT_NOW",
             "transitionReason": "反向收盤突破防守價"}
     updated = persist_decision_events("XAUUSD-LATE-FACT", [late])
-    assert updated == []
-    assert await deliver_pending_telegram(sender=sender, editor=editor,
-                                          event_id=first["eventId"]) == 0
-    assert sends == 1 and edits == 0
+    assert len(updated) == 1
+    assert await deliver_pending_telegram(
+        sender=sender, editor=editor, event_id=updated[0]["eventId"]) == 1
+    assert sends == 2 and edits == 0
 
 
 def _breakout_dedup_event(*, event_id: str, status="WAIT_BREAKOUT_CONFIRMATION",

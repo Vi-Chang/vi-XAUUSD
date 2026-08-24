@@ -118,6 +118,43 @@ def _local_time(raw: str) -> str:
 
 
 def format_decision_message(event: dict) -> str:
+    canonical_type = str(event.get("event_type") or "")
+    if canonical_type == "DATA_RECOVERED":
+        closed = event.get("latestClosedCandlePrice")
+        return "\n".join([
+            "✅【XAUUSD 行情資料已恢復】",
+            "行情狀態：資料已更新，可重新評估策略。",
+            (f"最新15M收盤：{float(closed):.2f}" if isinstance(closed, (int, float))
+             else "最新15M收盤：價格欄位仍缺失，暫不產生進場通知。"),
+            "策略已使用最新已收盤 K 棒重新計算。",
+        ])
+    if canonical_type == "DATA_STALE":
+        return "🔴【XAUUSD 行情資料延遲】\n資料恢復前暫停新進場；持倉防守提醒不會因此關閉。"
+    if canonical_type in {"ENTRY_READY", "ENTRY_NOW"}:
+        zone = event.get("entryZone") or {}
+        return "\n".join([
+            "🟢【XAUUSD 進場條件成立】",
+            f"方向：{'做多' if event.get('direction') == 'LONG' else '做空'}",
+            f"現價：{float(event.get('currentPrice') or 0):.2f}",
+            f"可執行區：{zone.get('low', '—')}～{zone.get('high', '—')}",
+            f"失效價：{event.get('stopLoss') or '—'}",
+            f"風險報酬比：{event.get('effectiveRR') or '—'}",
+            "下一步：條件已成立，不再等待更高或更低的新門檻。",
+        ])
+    if canonical_type == "WAIT_RETEST":
+        return "\n".join([
+            "🟡【XAUUSD 訊號已成立，但價格已跑遠】",
+            f"目前：{float(event.get('currentPrice') or 0):.2f}",
+            "下一步：等待第一次合理回踩，不是等待更遠的新突破。",
+        ])
+    if canonical_type in {"POSITION_DEFEND", "STOP_TRIGGERED", "POSITION_EXIT"}:
+        return "\n".join([
+            "⚠️【XAUUSD 持倉條件提醒】",
+            f"事件：{canonical_type}",
+            f"目前：{float(event.get('currentPrice') or 0):.2f}",
+            f"防守價：{event.get('stopLoss') or '—'}",
+            "若你持有相同方向部位：請依原風控處理；防守價不向不利方向移動。",
+        ])
     double_sweep = event.get("doubleSweepEvent") or {}
     if double_sweep.get("event"):
         return _format_double_sweep(event, double_sweep)

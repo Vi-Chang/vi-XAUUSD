@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 
 from app.config import get_settings
 from app.db.models import (
     CurrentFinalDecision,
     DecisionEvent,
     MarketMonitorState,
+    NotificationAudit,
     TelegramNotification,
 )
 from app.db.session import db_session
@@ -20,6 +22,11 @@ from app.engines.trigger_lifecycle import validate_notification
 from app.services.alert_aggregator import (
     aggregate_signal_facts,
     is_meaningful_change,
+)
+from app.services.notification_policy import (
+    canonical_dedupe_key,
+    eligibility,
+    is_expired,
 )
 from app.services.pre_delivery_trade_safety import (
     audit_delivery_block,
@@ -53,11 +60,22 @@ def persist_decision_events(symbol: str, events: list[dict]) -> list[dict]:
     """Persist facts but enqueue only one semantic notification per group."""
     created: list[dict] = []
     now = datetime.now(timezone.utc)
-    events = aggregate_signal_facts(symbol, events)
+    canonical = [dict(event) for event in events if event.get("eventVersion")]
+    legacy = [event for event in events if not event.get("eventVersion")]
+    events = canonical + aggregate_signal_facts(symbol, legacy)
     valid_events = []
     for payload in events:
+        payload["symbol"] = symbol
+        decision = (eligibility(payload) if payload.get("eventVersion") else {
+            "eligible": True, "reasonCode": "SEND_LEGACY_MEANINGFUL_EVENT",
+            "priority": "IMPORTANT"})
+        payload["notificationDecision"] = decision
+        payload["notificationEligible"] = decision["eligible"]
+        if payload.get("eventVersion"):
+            raw_key = canonical_dedupe_key(payload)
+            payload["semanticDedupKey"] = hashlib.sha256(raw_key.encode()).hexdigest()
         errors = validate_notification(payload)
-        if errors:
+        if errors and decision["eligible"]:
             logger.error("notification validation failed: %s", ",".join(errors))
             continue
         valid_events.append(payload)
@@ -75,11 +93,31 @@ def persist_decision_events(symbol: str, events: list[dict]) -> list[dict]:
             if (current is not None and not is_test
                     and payload_decision_id != current.decision_id):
                 logger.warning("non-current decision event rejected before enqueue: %s", event_id)
+                db.add(NotificationAudit(
+                    event_id=event_id,
+                    event_type=str(payload.get("event_type") or ""),
+                    eligible=False,
+                    reason_code="SKIP_STALE_EVENT",
+                    dedupe_key=semantic_key,
+                    payload={"decisionId": payload_decision_id,
+                             "currentDecisionId": current.decision_id},
+                    created_at=now,
+                ))
                 continue
+            notice_decision = payload.get("notificationDecision") or eligibility(payload)
             existing_notice = db.execute(select(TelegramNotification).where(
                 TelegramNotification.semantic_dedup_key == semantic_key
             )).scalar_one_or_none() if semantic_key else None
             if existing_notice is not None:
+                db.add(NotificationAudit(
+                    event_id=event_id,
+                    event_type=str(payload.get("event_type") or ""),
+                    eligible=False,
+                    reason_code="SKIP_DUPLICATE_EVENT",
+                    dedupe_key=semantic_key,
+                    payload={"originalEventId": existing_notice.event_id},
+                    created_at=now,
+                ))
                 # The durable unique fingerprint is the authority. A scheduler
                 # rerun creates fresh eventIds/dataVersions, but no new market
                 # decision. Never turn a successfully sent fingerprint back
@@ -107,6 +145,14 @@ def persist_decision_events(symbol: str, events: list[dict]) -> list[dict]:
                 existing_notice.updated_at = now
                 created.append(merged)
                 continue
+            db.add(NotificationAudit(
+                event_id=event_id, event_type=str(payload.get("event_type") or ""),
+                eligible=bool(notice_decision["eligible"]),
+                reason_code=str(notice_decision["reasonCode"]),
+                dedupe_key=semantic_key, payload={
+                    "setupId": payload.get("setupId"),
+                    "positionId": payload.get("positionId"),
+                    "snapshotId": payload.get("snapshotId")}, created_at=now))
             previous_sent = _last_sent_market_decision(db, symbol, payload)
             meaningful, reason = is_meaningful_change(previous_sent, payload)
             if not meaningful:
@@ -125,6 +171,16 @@ def persist_decision_events(symbol: str, events: list[dict]) -> list[dict]:
             db.add(
                 DecisionEvent(
                     event_id=event_id,
+                    event_type=str(payload.get("event_type") or "DECISION_UPDATED"),
+                    event_version=int(payload.get("eventVersion") or 1),
+                    setup_id=str(payload.get("setupId") or ""),
+                    position_id=str(payload.get("positionId") or ""),
+                    snapshot_id=str(payload.get("snapshotId") or ""),
+                    event_time_utc=str(payload.get("eventTimeUtc") or payload.get(
+                        "candleCloseTime") or ""),
+                    notification_eligible=bool(notice_decision["eligible"]),
+                    notification_reason=str(notice_decision["reasonCode"]),
+                    notification_priority=str(notice_decision["priority"]),
                     symbol=symbol,
                     previous_state=str(payload.get("previousState") or "WAIT"),
                     current_state=str(payload.get("currentState") or "WAIT"),
@@ -150,6 +206,8 @@ def persist_decision_events(symbol: str, events: list[dict]) -> list[dict]:
                     created_at=now,
                 )
             )
+            if not notice_decision["eligible"]:
+                continue
             db.add(
                 TelegramNotification(
                     event_id=event_id,
@@ -246,7 +304,15 @@ async def deliver_pending_telegram(
             current = db.execute(select(CurrentFinalDecision).where(
                 CurrentFinalDecision.symbol == event.symbol).with_for_update()
             ).scalar_one_or_none()
-            if (current is not None and row.decision_id
+            payload = dict(event.payload or {})
+            event_type = str(payload.get("event_type") or event.event_type or "")
+            entry_event = event_type in {"ENTRY_READY", "ENTRY_NOW"}
+            if entry_event and is_expired(payload, now=now):
+                row.status = "CANCELLED"
+                row.cancellation_reason = "NOTIFICATION_TOO_OLD"
+                row.updated_at = now
+                continue
+            if (entry_event and current is not None and row.decision_id
                     and (row.decision_id != current.decision_id
                          or row.decision_version < current.decision_version)):
                 row.status = "CANCELLED"
@@ -260,7 +326,7 @@ async def deliver_pending_telegram(
             row.status = "RETRYING"
             row.attempts += 1
             row.updated_at = now
-            claimed.append((row.event_id, dict(event.payload), row.attempts,
+            claimed.append((row.event_id, payload, row.attempts,
                             prior_status, row.message_id, row.created_at))
     sent = 0
     for (claimed_event_id, payload, attempts, prior_status, prior_message_id,
@@ -273,7 +339,9 @@ async def deliver_pending_telegram(
                     CurrentFinalDecision.symbol == str(payload.get("symbol") or "XAUUSD")
                 )).scalar_one_or_none()
                 is_test = str(payload.get("event_type") or "") == "TEST_NOTIFICATION"
-                if (current is not None and not is_test
+                entry_event = str(payload.get("event_type") or "") in {
+                    "ENTRY_READY", "ENTRY_NOW"}
+                if (entry_event and current is not None and not is_test
                         and str(payload.get("decisionId") or "") != current.decision_id):
                     row = db.execute(select(TelegramNotification).where(
                         TelegramNotification.event_id == claimed_event_id)).scalar_one()
@@ -281,7 +349,7 @@ async def deliver_pending_telegram(
                     row.cancellation_reason = "CANCELLED_SUPERSEDED"
                     row.updated_at = delivery_now
                     continue
-                if not is_test:
+                if entry_event and not is_test:
                     symbol = str(payload.get("symbol") or "XAUUSD")
                     safety = validate_pre_delivery(
                         db, symbol=symbol, queued_payload=payload,
@@ -381,6 +449,16 @@ def telegram_delivery_status() -> dict:
             .order_by(TelegramNotification.sent_at.desc())
             .limit(1)
         ).scalar_one_or_none()
+        pending_count = db.scalar(select(func.count()).select_from(
+            TelegramNotification).where(TelegramNotification.status.in_((
+                "PENDING", "FAILED", "RETRYING", "EDIT_PENDING")))) or 0
+        failed_count = db.scalar(select(func.count()).select_from(
+            TelegramNotification).where(TelegramNotification.status.in_((
+                "FAILED", "DELIVERY_UNKNOWN")))) or 0
+        gap_count = db.scalar(select(func.count()).select_from(TelegramNotification).where(
+            TelegramNotification.status.in_(("PENDING", "FAILED", "RETRYING")),
+            TelegramNotification.created_at < datetime.now(timezone.utc) - timedelta(seconds=30)
+        )) or 0
     configured = bool(
         get_settings().telegram_bot_token and get_settings().telegram_chat_id
     )
@@ -392,8 +470,17 @@ def telegram_delivery_status() -> dict:
             "lastEvent": "",
             "delivered": False,
             "messageId": "",
+            "pipelineStatus": "HEALTHY",
+            "queueDepth": int(pending_count),
+            "failedCount": int(failed_count),
+            "deliveryGapCount": int(gap_count),
+            "lastDeliveryLatencyMs": None,
+            "lastError": "",
         }
     notification, event = row
+    latency_ms = None
+    if last_sent and last_sent.sent_at:
+        latency_ms = round((last_sent.sent_at - last_sent.created_at).total_seconds() * 1000)
     return {
         "connected": configured,
         "status": notification.status,
@@ -404,4 +491,8 @@ def telegram_delivery_status() -> dict:
         "delivered": notification.status == "SENT",
         "messageId": notification.message_id or "",
         "eventId": event.event_id,
+        "pipelineStatus": "NOTIFICATION_PIPELINE_DEGRADED" if gap_count else "HEALTHY",
+        "queueDepth": int(pending_count), "failedCount": int(failed_count),
+        "deliveryGapCount": int(gap_count), "lastDeliveryLatencyMs": latency_ms,
+        "lastError": notification.last_error,
     }

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 
@@ -74,12 +75,20 @@ def _last_15m_candle():
         if row is None:
             return None, None
         from app.utils.timeutils import ensure_utc
-        t = ensure_utc(row.open_time)
+        # Freshness means the finalized boundary, not when that candle opened.
+        t = ensure_utc(row.close_time)
         age = (datetime.now(timezone.utc) - t).total_seconds() / 60.0
         return t, age
     except Exception as exc:  # noqa: BLE001
         logger.warning("read last candle failed: %s", exc)
         return None, None
+
+
+def _market_reopen_grace(now: datetime | None = None) -> bool:
+    """Sunday-Friday session reopen: wait for the first finalized 15M bar."""
+    ny = (now or datetime.now(timezone.utc)).astimezone(
+        ZoneInfo("America/New_York"))
+    return ny.hour == 18 and ny.minute < 20 and ny.weekday() in {0, 1, 2, 3, 6}
 
 
 async def _maybe_daily_summary(state) -> None:
@@ -133,6 +142,10 @@ async def run_monitor(state) -> None:
     # 2) 資料延遲 → WARN
     last_t, age_min = _last_15m_candle()
     lag = get_settings().data_lag_warn_minutes
+    reopen_grace = _market_reopen_grace()
+    if reopen_grace and age_min is not None and age_min > lag:
+        logger.info("market reopened; waiting for first finalized 15M candle")
+        return
     if age_min is not None and age_min > lag:
         await state.notifier.notify(
             "RISK", "data_lag",
@@ -211,7 +224,7 @@ def compute_readiness(state) -> dict:
         ready, reason = False, "scheduler_not_started"
     elif last_t is None:
         ready, reason = (False, "warming_up") if in_grace else (False, "no_data")
-    elif age_min is not None and age_min > lag:
+    elif age_min is not None and age_min > lag and not _market_reopen_grace(now):
         ready, reason = False, "data_stale"
     elif check_liveness(state.last_job_run, started):
         ready, reason = False, "component_down"

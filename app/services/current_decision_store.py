@@ -115,9 +115,17 @@ def publish_current_final_decision(symbol: str, decision: dict) -> tuple[dict, b
                 TelegramNotification.decision_id != decision_id,
             ).with_for_update()).scalars().all()
             for notification in stale:
-                notification.status = "CANCELLED"
-                notification.cancellation_reason = "CANCELLED_SUPERSEDED"
-                notification.updated_at = now
+                event = db.execute(select(DecisionEvent).where(
+                    DecisionEvent.event_id == notification.event_id)).scalar_one_or_none()
+                event_type = str((event.payload or {}).get("event_type") if event else "")
+                # A newer dashboard decision invalidates old entry advice only.
+                # DATA/position/setup lifecycle events are historical facts and
+                # must still be delivered exactly once.
+                legacy_event = bool(event and not (event.payload or {}).get("eventVersion"))
+                if legacy_event or event_type in {"ENTRY_READY", "ENTRY_NOW"}:
+                    notification.status = "CANCELLED"
+                    notification.cancellation_reason = "CANCELLED_SUPERSEDED"
+                    notification.updated_at = now
         return incoming, True
 
 
