@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>XAUUSD 交易分析終端</title>
-<link rel="stylesheet" href="/static/css/style.css?v=unified-decision-v1">
+<link rel="stylesheet" href="/static/css/style.css?v=decision-home-v3">
 </head>
 <body>
 <div class="stale-banner" id="stale-banner" hidden>
@@ -57,6 +57,53 @@
 </header>
 
 <main class="layout">
+  <section class="decision-home card" id="decision-home" aria-live="polite">
+    <div class="decision-home-head">
+      <div>
+        <span class="decision-symbol">XAUUSD</span>
+        <strong class="decision-live-price num" id="home-live-price">––––.––</strong>
+      </div>
+      <button class="system-health-pill" id="home-system-health" type="button" hidden>🔴 系統異常</button>
+    </div>
+
+    <div class="decision-primary" id="home-primary-card" data-state="WAIT">
+      <strong class="decision-primary-state" id="home-display-state">🟡 WAIT</strong>
+      <h2 id="home-market-state">市場狀態：等待最新分析</h2>
+      <p id="home-primary-reason">正在整理目前最重要的交易條件。</p>
+      <div class="decision-pivots">
+        <span id="home-up-condition">站上關鍵價 → 找多</span>
+        <span id="home-down-condition">跌破關鍵價 → 找空</span>
+      </div>
+    </div>
+
+    <div class="decision-routes">
+      <article class="decision-route long" id="home-long-route">
+        <header><h3>🟢 做多</h3><span id="home-long-status">等待</span></header>
+        <strong class="route-condition" id="home-long-condition">等待多方條件形成</strong>
+        <dl>
+          <div><dt>候選入場區</dt><dd class="num" id="home-long-entry">–</dd></div>
+          <div><dt>SL</dt><dd class="num" id="home-long-stop">–</dd></div>
+          <div><dt>TP</dt><dd class="num" id="home-long-targets">–</dd></div>
+        </dl>
+      </article>
+      <article class="decision-route short" id="home-short-route">
+        <header><h3>🔴 做空</h3><span id="home-short-status">等待</span></header>
+        <strong class="route-condition" id="home-short-condition">等待空方條件形成</strong>
+        <dl>
+          <div><dt>候選入場區</dt><dd class="num" id="home-short-entry">–</dd></div>
+          <div><dt>SL</dt><dd class="num" id="home-short-stop">–</dd></div>
+          <div><dt>TP</dt><dd class="num" id="home-short-targets">–</dd></div>
+        </dl>
+      </article>
+    </div>
+
+    <div class="decision-next">
+      <span>下一步</span>
+      <strong id="home-next-action">等待分析完成</strong>
+    </div>
+    <button class="analysis-details-toggle" id="analysis-details-toggle" type="button" aria-expanded="false">查看分析細節</button>
+  </section>
+
   <section class="chart-card card">
     <div class="chart-toolbar">
       <div class="tf-group" id="tf-group">
@@ -366,6 +413,6 @@
 <script src="/static/vendor/lightweight-charts.standalone.production.js"></script>
 <script src="/static/js/escape.js"></script>
 <script src="/static/js/messages.js?v=scenario-safety-v2"></script>
-<script src="/static/js/app.js?v=freshness-realtime-v1"></script>
+<script src="/static/js/app.js?v=decision-home-v3"></script>
 </body>
 </html>
