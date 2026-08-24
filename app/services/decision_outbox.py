@@ -272,14 +272,16 @@ async def deliver_pending_telegram(
                 current = db.execute(select(CurrentFinalDecision).where(
                     CurrentFinalDecision.symbol == str(payload.get("symbol") or "XAUUSD")
                 )).scalar_one_or_none()
-                if (current is not None and str(payload.get("decisionId") or "") != current.decision_id):
+                is_test = str(payload.get("event_type") or "") == "TEST_NOTIFICATION"
+                if (current is not None and not is_test
+                        and str(payload.get("decisionId") or "") != current.decision_id):
                     row = db.execute(select(TelegramNotification).where(
                         TelegramNotification.event_id == claimed_event_id)).scalar_one()
                     row.status = "CANCELLED"
                     row.cancellation_reason = "CANCELLED_SUPERSEDED"
                     row.updated_at = delivery_now
                     continue
-                if str(payload.get("event_type") or "") != "TEST_NOTIFICATION":
+                if not is_test:
                     symbol = str(payload.get("symbol") or "XAUUSD")
                     safety = validate_pre_delivery(
                         db, symbol=symbol, queued_payload=payload,

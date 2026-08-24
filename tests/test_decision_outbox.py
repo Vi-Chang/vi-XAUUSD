@@ -179,6 +179,46 @@ def test_telegram_message_uses_plain_chinese_not_internal_only():
     assert "資料時間" in message
 
 
+@pytest.mark.asyncio
+async def test_health_test_notification_is_not_cancelled_by_current_market_decision():
+    """System health events are not stale trading advice and must survive supersession."""
+    from app.services.current_decision_store import publish_current_final_decision
+
+    init_db()
+    publish_current_final_decision("XAUUSD-TEST-HEALTH", {
+        "decisionSignature": "current-market-decision",
+        "sourceCandleCloseTime": "2026-08-24T01:45:00+00:00",
+        "sourceDataVersion": 10, "evaluatedAt": "2026-08-24T01:46:00+00:00",
+        "finalAction": "WAIT", "direction": "NEUTRAL", "events": [],
+    })
+    event = {
+        "eventId": "telegram-health-test-not-superseded",
+        "event_type": "TEST_NOTIFICATION", "previousState": "WAIT",
+        "currentState": "WAIT", "transitionReason": "Telegram 測試通知",
+        "marketState": "", "finalDecision": "WAIT", "currentPrice": 4600,
+        "entryZone": None, "stopLoss": None, "targets": [],
+        "candleCloseTime": "2026-08-24T01:45:00+00:00",
+        "calculatedAt": "2026-08-24T01:46:00+00:00", "dataVersion": 10,
+        "flatAction": "這是一則測試，不代表交易訊號",
+        "symbol": "XAUUSD-TEST-HEALTH",
+    }
+    assert len(persist_decision_events("XAUUSD-TEST-HEALTH", [event])) == 1
+    sent_messages = []
+
+    async def sender(message):
+        sent_messages.append(message)
+        return "telegram-health-message-1"
+
+    assert await deliver_pending_telegram(
+        sender=sender, event_id=event["eventId"]) == 1
+    assert len(sent_messages) == 1
+    with db_session() as db:
+        row = db.execute(select(TelegramNotification).where(
+            TelegramNotification.event_id == event["eventId"])).scalar_one()
+        assert row.status == "SENT"
+        assert row.message_id == "telegram-health-message-1"
+
+
 def test_watch_telegram_is_yellow_and_explicitly_forbids_entry():
     event = {
         "currentState": "LONG_WATCH", "direction": "LONG",
