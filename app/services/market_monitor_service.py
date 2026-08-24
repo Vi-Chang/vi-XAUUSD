@@ -10,6 +10,7 @@ from sqlalchemy import select
 
 from app.db.models import MarketMonitorState
 from app.db.session import db_session
+from app.engines.break_lifecycle import evaluate_break_lifecycle
 from app.engines.breakout_alert_state import (
     BreakoutAlertState,
     breakout_view,
@@ -21,14 +22,13 @@ from app.engines.breakout_setup_manager import (
 )
 from app.engines.data_health_gate import evaluate_data_health
 from app.engines.decision_assistant import evaluate_decision_assistant
+from app.engines.dynamic_profit_protection import evaluate_dynamic_profit
+from app.engines.entry_opportunity import evaluate_entry_opportunities
 from app.engines.final_decision_engine import evaluate_final_decision
 from app.engines.hypothetical_exit_advisor import (
     build_hypothetical_exit_plans,
     evaluate_hypothetical_exits,
 )
-from app.engines.break_lifecycle import evaluate_break_lifecycle
-from app.engines.dynamic_profit_protection import evaluate_dynamic_profit
-from app.engines.entry_opportunity import evaluate_entry_opportunities
 from app.engines.market_behavior import evaluate_market_behavior
 from app.engines.regime_state_machine import evaluate_regime_state
 from app.engines.signal_lifecycle import evaluate_signal_lifecycle

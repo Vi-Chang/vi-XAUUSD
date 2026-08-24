@@ -1,12 +1,11 @@
 """Canonical, timezone-safe access to the latest genuinely closed candle."""
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Iterable
 
 from app.providers.base import Candle
-
 
 TIMEFRAME_MINUTES = {"1M": 1, "5M": 5, "15M": 15, "30M": 30,
                      "1H": 60, "4H": 240, "1D": 1440}

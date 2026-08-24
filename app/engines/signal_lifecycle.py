@@ -4,7 +4,6 @@ from __future__ import annotations
 import hashlib
 from datetime import datetime, timezone
 
-
 LIFECYCLE_EVENTS = {
     "BIAS_CHANGE", "SETUP_FORMING", "ENTRY_APPROACHING", "ENTRY_READY",
     "PRICE_RAN_AWAY", "WAIT_RETRACE", "RETRACE_APPROACHING",
