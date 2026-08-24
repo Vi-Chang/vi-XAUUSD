@@ -13,6 +13,7 @@ Jobs:
 
 from __future__ import annotations
 
+import gc
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -517,6 +518,8 @@ async def job_outcome_backfill() -> None:
             persist_daily_validation_report,
         )
 
+        # 每種回填使用獨立 session。大型 JSON/ORM identity map 若共用同一
+        # session，會在四個回填疊加後才釋放，低記憶體節點可能直接驅逐服務。
         with db_session() as db:
             updated = backfill_outcomes(
                 db,
@@ -524,19 +527,26 @@ async def job_outcome_backfill() -> None:
                 lookback_days=s.outcome_backfill_lookback_days,
                 limit=s.outcome_backfill_batch_size,
             )
+        gc.collect()
+        with db_session() as db:
             event_updated = backfill_decision_event_outcomes(
                 db, now=datetime.now(timezone.utc),
                 lookback_days=s.outcome_backfill_lookback_days,
                 limit=s.outcome_backfill_batch_size)
+        gc.collect()
+        with db_session() as db:
             replay_updated = backfill_decision_replay_outcomes(
                 db, now=datetime.now(timezone.utc),
                 lookback_days=s.outcome_backfill_lookback_days,
                 limit=s.outcome_backfill_batch_size)
+        gc.collect()
+        with db_session() as db:
             phase2_updated = backfill_setup_outcomes(
                 db, now=datetime.now(timezone.utc),
                 lookback_days=max(90, s.outcome_backfill_lookback_days),
                 limit=s.outcome_backfill_batch_size)
             persist_daily_validation_report(db, now=datetime.now(timezone.utc))
+        gc.collect()
         if updated:
             logger.info("outcome backfill updated %d horizon values", updated)
         if event_updated:
