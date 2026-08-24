@@ -448,6 +448,7 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
             result.position_management = PositionManagement(
                 has_position=True, position_side=v["side"],
                 entry_price=v["entry_price"],
+                position_size=v["lot_size"],
                 current_r_multiple=v["r_multiple"],
                 recommended_action=position_action,
                 partial_exit_plan="回本後先落袋 2~3 成 → 到主要目標再落袋 3~5 成 → 留 2~4 成續抱趨勢",

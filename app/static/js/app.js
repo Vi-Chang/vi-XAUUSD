@@ -462,7 +462,7 @@ function applyAnalysis(a) {
   const offVal = a.offset_info ? a.offset_info.value : 0;
   renderScenario($("scenario-long"), a.long_scenario, "做多劇本", offVal);
   renderScenario($("scenario-short"), a.short_scenario, "做空劇本", offVal);
-  renderAiStrategy(a.ai_strategy);
+  renderAiStrategy(a.ai_strategy, (a.decision_snapshot || {}).canonicalDecision || {});
   applyOverlays().catch(console.error);
 }
 
@@ -526,11 +526,16 @@ function renderFinalDecision(finalState, snapshot) {
   const realtime = finalState.realtimePresentation || (S.analysis && S.analysis.realtime_presentation) || {};
   S.realtimeFacts = realtime;
   const presentation = finalState.presentation || event.presentation || {};
+  const canonical = (snapshot && snapshot.canonicalDecision) || finalState.canonicalDecision || event.canonicalDecision || {};
+  const newEntry = canonical.newEntryDecision || {};
+  const position = canonical.positionManagement || {};
+  const trigger = canonical.canonicalNextTrigger || {};
   $("quick-final-state").textContent = labels[finalState.state] || "等待";
-  $("quick-flat-action").textContent = finalState.flat_action || "等待下一個明確條件";
-  $("quick-position-action").textContent = finalState.direction === "SHORT"
-    ? finalState.short_manage : finalState.long_manage;
-  $("quick-trigger").textContent = finalState.confirmation || "等待下一根 15 分鐘 K 線";
+  $("quick-flat-action").textContent = newEntry.action || "WAIT";
+  $("quick-position-action").textContent = position.positionKnown
+    ? `${position.actualSide || "持倉"} 成本 ${position.actualEntryPrice == null ? "–" : fmt(position.actualEntryPrice)}｜${position.action || "HOLD"}`
+    : (position.message || "未取得實際持倉資料");
+  $("quick-trigger").textContent = trigger.label || "等待新結構形成";
   const marketFresh = ((realtime.freshnessState || finalState.freshnessState || {}).marketFreshness || {});
   $("quick-freshness").textContent = marketFresh.status === "stale" ? "資料過期，禁止進場" : marketFresh.status === "degraded" ? "資料稍有延遲" : "資料正常";
   const livePrice = realtime.currentPrice ?? finalState.source_price;
@@ -540,9 +545,9 @@ function renderFinalDecision(finalState, snapshot) {
   $("quick-closed-time").textContent = fmtTs(realtime.latestClosed15mTimeUtc || finalState.last_closed_candle_time);
   $("quick-candle-state").textContent = realtime.closedConfirmed ? "收盤已確認" : realtime.intrabarCrossed ? "盤中已越過，尚未收盤" : "尚未確認";
   updateRealtimeFacts(Number(livePrice));
-  $("quick-action-title").textContent = finalState.humanSummary || presentation.title || finalState.action || labels[finalState.state] || "等待";
-  $("quick-action-why").textContent = finalState.humanSummary || finalState.reason || "等待條件一致";
-  $("quick-action-next").textContent = finalState.flat_action || "等待下一個明確條件";
+  $("quick-action-title").textContent = canonical.primaryAction || finalState.humanSummary || presentation.title || "WAIT";
+  $("quick-action-why").textContent = canonical.primaryReason || finalState.humanSummary || finalState.reason || "等待條件一致";
+  $("quick-action-next").textContent = trigger.label || "等待新結構形成";
   $("quick-action-card").dataset.action = presentation.tone || (finalState.state === "DATA_STALE" ? "danger" : "neutral");
 }
 
@@ -554,13 +559,17 @@ function renderDecisionAssistant(v3, finalDecision = {}) {
   why.hidden = false;
   const side = v3.direction === "LONG" ? "偏多" : v3.direction === "SHORT" ? "偏空" : "中立";
   const zone = v3.entryZone || {};
+  const canonical = ((S.analysis || {}).decision_snapshot || {}).canonicalDecision || finalDecision.canonicalDecision || {};
+  const selected = ((canonical.newEntryDecision || {}).selectedSetup) || {};
+  const canonicalZone = selected.entryZone || zone;
   $("v3-direction").textContent = `${side}｜${v3.regime || "等待"}`;
   $("v3-can-enter").textContent = finalDecision.canEnter ? "可以評估進場" : (finalDecision.humanSummary || v3.actionSummary);
-  $("v3-entry-zone").textContent = zone.low != null && zone.high != null ? `${fmt(zone.low)}–${fmt(zone.high)}` : "尚未形成";
-  $("v3-invalidation").textContent = v3.invalidation == null ? "尚未形成" : fmt(v3.invalidation);
-  $("v3-target").textContent = (v3.targets || []).length ? fmt(v3.targets[0]) : "尚未形成";
-  $("v3-quality").textContent = `${v3.entryQualityGrade}級（${v3.entryQualityScore}分）｜RR ${Number(v3.rewardRiskRatio || 0).toFixed(2)}`;
-  $("v3-trigger").textContent = v3.nextTrigger || "等待新結構";
+  $("v3-entry-zone-label").textContent = selected.entryZoneLabel || "候選進場區";
+  $("v3-entry-zone").textContent = canonicalZone.low != null && canonicalZone.high != null ? `${fmt(canonicalZone.low)}–${fmt(canonicalZone.high)}` : "尚未形成";
+  $("v3-invalidation").textContent = selected.tacticalStop == null ? "尚未形成" : fmt(selected.tacticalStop);
+  $("v3-target").textContent = (selected.targets || []).length ? fmt(selected.targets[0]) : "尚未形成";
+  $("v3-quality").textContent = `${v3.entryQualityGrade}級（${v3.entryQualityScore}分）｜RR ${Number(selected.riskReward || 0).toFixed(2)}`;
+  $("v3-trigger").textContent = (canonical.canonicalNextTrigger || {}).label || v3.nextTrigger || "等待新結構";
   const items = [ ...(v3.regimeReasons || []), ...((v3.why || {}).technical || []), ...((v3.why || {}).blocked || []) ];
   $("v3-why-list").replaceChildren(...items.slice(0, 10).map((text) => {
     const li = document.createElement("li"); li.textContent = text; return li;
@@ -965,7 +974,7 @@ function aiZone(resolved, id) {
                    : h`${lo} – ${hi} <span class="ai-id">${id}</span>`;
 }
 
-function renderAiStrategy(ai) {
+function renderAiStrategy(ai, canonical = {}) {
   const box = $("ai-body");
   if (!box) return;
   if (!ai || (!ai.available && !ai.invalid)) {
@@ -1028,7 +1037,7 @@ function renderAiStrategy(ai) {
 
         <div class="ai-sec-title">行動</div>
         ${act.type === "Wait" && act.wait_condition ? h`<div class="ai-kv"><span>等什麼</span><span>${act.wait_condition}</span></div>` : ""}
-        <div class="ai-kv"><span>下一步觸發</span><span>${act.next_trigger || ""}</span></div>
+        <div class="ai-kv"><span>正式進場確認</span><span>${(canonical.canonicalNextTrigger || {}).label || act.next_trigger || ""}</span></div>
 
         <div class="ai-sec-title">交易方案(${broker}掛單價)</div>
         <div class="ai-kv"><span>進場</span><span class="num">${aiZone(res, tp.entry_id)}</span></div>

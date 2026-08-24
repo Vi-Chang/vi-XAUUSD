@@ -190,6 +190,7 @@ class PositionManagement(BaseModel):
     has_position: bool = False
     position_side: str = ""
     entry_price: float | None = None
+    position_size: float | None = None
     current_r_multiple: float | None = None
     recommended_action: str = ""
     partial_exit_plan: str = ""

@@ -119,6 +119,32 @@ def _local_time(raw: str) -> str:
 
 def format_decision_message(event: dict) -> str:
     canonical_type = str(event.get("event_type") or "")
+    canonical = event.get("canonicalDecision") or {}
+    if canonical and canonical_type in {"ENTRY_READY", "CANDLE_FINALIZED", "WAIT_RETEST"}:
+        entry = canonical.get("newEntryDecision") or {}
+        trigger = canonical.get("canonicalNextTrigger") or {}
+        position = canonical.get("positionManagement") or {}
+        action = str(canonical.get("primaryAction") or "WAIT")
+        title = ("🟢【XAUUSD｜現在可以進場】" if action in {"BUY", "SELL"}
+                 else "🟡【XAUUSD｜現在先不要進場】")
+        lines = [title, f"現價：{float(event.get('currentPrice') or 0):.2f}",
+                 f"原因：{canonical.get('primaryReason')}",
+                 f"下一個重要條件：{trigger.get('label')}"]
+        chosen = entry.get("selectedSetup") or {}
+        if chosen:
+            zone = chosen.get("entryZone") or {}
+            lines.extend([
+                f"{chosen.get('entryZoneLabel')}：{zone.get('low') or '—'}～{zone.get('high') or '—'}",
+                f"盈虧比：{chosen.get('riskReward') if chosen.get('riskReward') is not None else '—'}",
+            ])
+        if not position.get("positionKnown"):
+            lines.append("持倉：未取得實際持倉資料")
+        else:
+            lines.append(
+                f"持倉：{position.get('actualSide')} 成本 {position.get('actualEntryPrice')}，"
+                f"目前動作 {position.get('action')}")
+        lines.append(f"收盤確認來源：最新已收 15M {canonical.get('lastClosedCandleTime') or '—'}")
+        return "\n".join(lines)
     if canonical_type == "DATA_RECOVERED":
         closed = event.get("latestClosedCandlePrice")
         return "\n".join([

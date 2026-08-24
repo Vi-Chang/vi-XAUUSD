@@ -46,6 +46,8 @@ def build_decision_snapshot(data: dict, *, risk_mode: str = "STANDARD") -> dict:
     raw = f"XAUUSD|{setup_id}|{state}|{candle_time}|{action}"
     decision_id = hashlib.sha256(raw.encode()).hexdigest()[:24]
     event = data.get("event_risk") or {}
+    from app.engines.canonical_decision import build_canonical_decision
+    canonical = build_canonical_decision(data, final)
     return {
         "schemaVersion": "decision-snapshot-v3", "decisionId": final.get("decisionId") or decision_id,
         "decisionVersion": final.get("decisionVersion", 0),
@@ -67,7 +69,8 @@ def build_decision_snapshot(data: dict, *, risk_mode: str = "STANDARD") -> dict:
         "stopLoss": final.get("invalidationPrice"), "targets": final.get("targets") or [],
         "riskReward": final.get("effectiveRR"),
         "actionSummary": final.get("humanSummary") or assistant.get("actionSummary") or action,
-        "nextTrigger": assistant.get("nextTrigger") or final.get("next_trigger") or final.get("confirmation") or "等待新結構形成",
+        "nextTrigger": canonical["canonicalNextTrigger"]["label"],
+        "canonicalDecision": canonical,
         "currentPrice": health["currentPrice"], "marketDataTimestamp": health["marketDataTimestamp"],
         "quoteTime": health["quoteTime"], "calculatedAt": data.get("timestamp_utc") or health["evaluatedAt"],
         "dataHealth": health, "riskMode": risk_mode.upper(),

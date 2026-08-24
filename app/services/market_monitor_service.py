@@ -225,6 +225,12 @@ def evaluate_market_monitors(
     final_state, final_events = evaluate_final_decision(
         final_input, _load(symbol, "final_decision")
     )
+    from app.engines.canonical_decision import build_canonical_decision
+    canonical = build_canonical_decision(final_input, final_state)
+    final_state["canonicalDecision"] = canonical
+    for event in final_events:
+        event["canonicalDecision"] = canonical
+        event["nextTriggerCondition"] = canonical["canonicalNextTrigger"]
     final_state["events"] = final_events
     if final_events:
         final_state["latest_event"] = final_events[-1]
