@@ -126,6 +126,22 @@ def _local_time(raw: str) -> str:
 
 def format_decision_message(event: dict) -> str:
     canonical_type = str(event.get("event_type") or "")
+    if canonical_type in {"WICK_REJECTION_CHANGED", "REJECTION_BREAKOUT_CHANGED"}:
+        state = str(event.get("currentState") or "")
+        breakout = str(event.get("breakoutState") or "NONE")
+        zone = event.get("zone") or {}
+        range_text = (f"{float(zone['low']):.2f}–{float(zone['high']):.2f}"
+                      if isinstance(zone.get("low"), (int, float)) and
+                      isinstance(zone.get("high"), (int, float)) else "等待新區域")
+        if breakout == "BREAKOUT_CONFIRMED":
+            return ("🟢【XAUUSD｜拒絕區已被收盤突破】\n"
+                    f"區域：{range_text}\n15M 實體已突破並確認守住，續攻條件改善。")
+        if state == "REPEATED_UPPER_WICK_REJECTION":
+            return ("⚠️【XAUUSD｜15M 上方連續出現賣壓】\n"
+                    f"區域：{range_text}\n多方動能可能仍在修復，但價格尚未突破供給區。\n目前：不追多。")
+        if state == "REPEATED_LOWER_WICK_REJECTION":
+            return ("⚠️【XAUUSD｜15M 下方連續出現承接】\n"
+                    f"區域：{range_text}\n空方動能可能仍偏弱，但價格尚未跌破承接區。\n目前：不追空。")
     if canonical_type == "MARKET_BEHAVIOR_CHANGED":
         labels = {
             "STRONG_RISE": "急漲", "SLOW_RISE": "緩步上升", "RANGE": "盤整",

@@ -47,6 +47,7 @@ PUBLIC_ALLOWLIST: tuple[str, ...] = (
     "breakout_setup_manager",
     "trend_continuation_engine",
     "market_behavior_engine",
+    "wick_rejection_engine",
     # Position-free market decision only: no account, trade, PnL or broker data.
     "decision_assistant",
     "final_decision_state",

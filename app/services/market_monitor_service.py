@@ -31,6 +31,7 @@ from app.engines.regime_state_machine import evaluate_regime_state
 from app.engines.trade_plan import evaluate_trade_plans, migrate_legacy_virtual_profit
 from app.engines.trend_continuation_engine import evaluate_trend_continuation
 from app.engines.virtual_profit_tracker import evaluate_virtual_profit
+from app.engines.wick_rejection import evaluate_wick_rejection
 from app.services.double_sweep_service import evaluate_double_sweep_monitor
 
 
@@ -209,8 +210,13 @@ def evaluate_market_monitors(
         "double_sweep_statistical": {
             **double_sweep_state, "events": double_sweep_events},
     }
+    wick_state, wick_events = evaluate_wick_rejection(
+        m15_closed, data=data, previous=_load(symbol, "wick_rejection"))
+    _save(symbol, "wick_rejection", wick_state)
+    monitor_result["wick_rejection_engine"] = wick_state
+    behavior_input = {**data, "wick_rejection_engine": wick_state}
     behavior_state, behavior_events = evaluate_market_behavior(
-        m15=m15_closed, h1=h1_closed, h4=h4_closed, data=data,
+        m15=m15_closed, h1=h1_closed, h4=h4_closed, data=behavior_input,
         previous=_load(symbol, "market_behavior"))
     _save(symbol, "market_behavior", behavior_state)
     monitor_result["market_behavior_engine"] = behavior_state
@@ -223,7 +229,7 @@ def evaluate_market_monitors(
         previous=_load(symbol, "decision_assistant"))
     _save(symbol, "decision_assistant", assistant_state)
     monitor_result["decision_assistant"] = assistant_state
-    signal_facts = (exit_events + ([breakout_event] if breakout_event else [])
+    signal_facts = (exit_events + ([breakout_event] if breakout_event else []) + wick_events
                     + virtual_events + trade_plan_events + breakout_setup_events
                     + continuation_events + regime_events + behavior_events
                     + assistant_events)

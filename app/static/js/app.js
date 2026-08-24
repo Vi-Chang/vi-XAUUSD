@@ -535,6 +535,8 @@ function renderFinalDecision(finalState, snapshot) {
     PULLBACK: "🟡 多頭回檔 ↘", SLOW_BEARISH_DRIFT: "🟠 緩步下降 ↘",
     STRONG_DECLINE: "🔴 急跌 ↓↓", REBOUND: "🟡 空頭反彈 ↗",
     REVERSAL_WARNING: "⚠️ 反轉警告", REVERSAL_CONFIRMED: "🔴 反轉已確認",
+    BULLISH_ATTEMPT_WITH_REJECTION: "🟡 多方嘗試續攻，但上方有賣壓",
+    BEARISH_ATTEMPT_WITH_SUPPORT: "🟡 空方嘗試下壓，但下方有承接",
   };
   $("quick-market-bias").textContent = canonical.marketBias === "BULLISH" ? "🟢 偏多" : canonical.marketBias === "BEARISH" ? "🔴 偏空" : "⚪ 中立";
   $("quick-behavior-15m").textContent = behaviorLabels[canonical.behavior15m] || "等待資料";
@@ -542,6 +544,15 @@ function renderFinalDecision(finalState, snapshot) {
   $("quick-behavior-4h").textContent = behaviorLabels[canonical.behavior4h] || "等待資料";
   $("quick-structure-status").textContent = canonical.structureStatus || "等待資料";
   $("quick-momentum-status").textContent = canonical.momentumStatus || "等待資料";
+  const wick = canonical.wickRejection || {};
+  const wickZone = wick.wick_rejection_zone || {};
+  const wickText = wick.wick_rejection_state === "REPEATED_UPPER_WICK_REJECTION"
+    ? `🟠 明顯上方賣壓｜${wick.wick_rejection_count || 0} 次｜${fmt(wickZone.low)}～${fmt(wickZone.high)}`
+    : wick.wick_rejection_state === "REPEATED_LOWER_WICK_REJECTION"
+      ? `🟢 明顯下方承接｜${wick.wick_rejection_count || 0} 次｜${fmt(wickZone.low)}～${fmt(wickZone.high)}`
+      : wick.wick_rejection_state?.startsWith("SINGLE_UPPER") ? "🟡 單次上方拒絕"
+        : wick.wick_rejection_state?.startsWith("SINGLE_LOWER") ? "🟢 單次下方承接" : "⚪ 無明顯拒絕";
+  $("quick-wick-rejection").textContent = wickText;
   $("quick-final-state").textContent = canonical.primaryAction || "WAIT";
   $("quick-flat-action").textContent = newEntry.action || "WAIT";
   $("quick-position-action").textContent = position.positionKnown

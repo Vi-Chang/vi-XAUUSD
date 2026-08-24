@@ -127,6 +127,7 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
     archived_candidates = [item for item in all_candidates if not item["active"]]
     candidates = [item for item in all_candidates if item["active"]]
     behavior_state = data.get("market_behavior_engine") or {}
+    rejection = data.get("wick_rejection_engine") or behavior_state.get("wick_rejection") or {}
     market_bias = str(behavior_state.get("market_bias") or
                       normalized.get("trendBias") or "neutral").upper()
     market_bias = ("BULLISH" if "BULL" in market_bias else
@@ -177,6 +178,15 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
     confirmation_closed = (trigger_level is None or
                            (confirmation or {}).get("status") == "CLOSED_CONFIRMED")
     can_enter = bool(final.get("canEnter")) and rr_ok and not stale and confirmation_closed
+    conflict = str(rejection.get("momentum_price_conflict") or "NONE")
+    rejection_state = str(rejection.get("wick_rejection_state") or "NO_SIGNIFICANT_REJECTION")
+    rejection_breakout = str(rejection.get("breakout_state") or "NONE")
+    if (direction == "LONG" and rejection_state == "REPEATED_UPPER_WICK_REJECTION"
+            and rejection_breakout != "BREAKOUT_CONFIRMED"):
+        can_enter = False
+    if (direction == "SHORT" and rejection_state == "REPEATED_LOWER_WICK_REJECTION"
+            and rejection_breakout != "BREAKOUT_CONFIRMED"):
+        can_enter = False
     if direction == "LONG" and behavior in {
             "SLOW_BEARISH_DRIFT", "STRONG_DECLINE",
             "REVERSAL_WARNING", "REVERSAL_CONFIRMED"}:
@@ -212,6 +222,10 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
         primary_reason = "15M價格行為已轉弱，暫停新的多單進場。"
     elif selected and not rr_ok:
         primary_reason = "方向可能正確，但目前進場盈虧比不合格。"
+    elif conflict == "BULLISH_MOMENTUM_BUT_PRICE_REJECTED":
+        primary_reason = "多方動能正在恢復，但上方連續出現賣壓拒絕，等待15M實體突破拒絕區。"
+    elif conflict == "BEARISH_MOMENTUM_BUT_PRICE_SUPPORTED":
+        primary_reason = "空方動能正在增強，但下方連續出現承接，等待15M實體跌破支撐拒絕區。"
     position = data.get("position_management") or {}
     levels = list(normalized.get("confirmationLevels") or [])
     resistance_levels = [float(item["price"]) for item in levels
@@ -236,6 +250,10 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
             normalized_position_action, management_mode = "REDUCE", "DEFENSIVE_MANAGEMENT"
         elif behavior in {"SLOW_BEARISH_DRIFT", "REVERSAL_WARNING"}:
             normalized_position_action, management_mode = "HOLD", "HOLD_WITH_CAUTION"
+        if (rejection_state == "REPEATED_UPPER_WICK_REJECTION"
+                and rejection_breakout != "BREAKOUT_CONFIRMED"
+                and normalized_position_action == "HOLD"):
+            management_mode = "TAKE_PROFIT_WATCH"
     action = normalized_position_action if known else entry_action
     actual_entry = _number(position.get("entry_price"))
     position_rr = None
@@ -260,6 +278,8 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
         reason_codes.append("DATA_STALE")
     if selected and selected.get("entryQuality") == "ACCEPTABLE":
         reason_codes.append("ENTRY_ZONE_NOT_REACHED")
+    if conflict != "NONE":
+        reason_codes.append("MOMENTUM_PRICE_CONFLICT")
     reason_codes = list(dict.fromkeys(reason_codes))[:3]
     setup_state = str(selected.get("setupState") or "WATCHING")
     return {
@@ -271,6 +291,12 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
         "bearishPressure": ("STRONG" if behavior in {"STRONG_DECLINE", "REVERSAL_CONFIRMED"}
                             else "MODERATE" if behavior in {"SLOW_BEARISH_DRIFT", "REVERSAL_WARNING"}
                             else "WEAK"),
+        "wickRejection": rejection,
+        "wickRejectionState": rejection_state,
+        "wickRejectionScore": rejection.get("wick_rejection_score", 0),
+        "wickRejectionZone": rejection.get("wick_rejection_zone"),
+        "momentumPriceConflict": conflict,
+        "breakoutFailureState": rejection_breakout,
         "primaryAction": action,
         "primaryReason": primary_reason,
         "canonicalNextTrigger": canonical_trigger,

@@ -134,6 +134,11 @@ def evaluate_market_behavior(*, m15: pd.DataFrame | None, h1: pd.DataFrame | Non
                "4H": _classify(h4, bias=bias, normalized={})}
     proposed = results["15M"]["behavior"]
     score = results["15M"]["confidence"]
+    rejection = data.get("wick_rejection_engine") or {}
+    override = rejection.get("behavior_override")
+    if override:
+        proposed = str(override)
+        score = max(50, min(85, score - int(rejection.get("wick_rejection_penalty") or 0)))
     old = str(previous.get("market_behavior") or "RANGE")
     if (old != "RANGE" and proposed == "RANGE"
             and int(results["15M"]["scores"].get(old) or 0)
@@ -183,6 +188,7 @@ def evaluate_market_behavior(*, m15: pd.DataFrame | None, h1: pd.DataFrame | Non
             else "SHORT_TERM_BULLISH" if behavior in {"SLOW_RISE", "STRONG_RISE", "REBOUND"}
             else "NEUTRAL"),
         "scores": results["15M"]["scores"], "metrics": metrics,
+        "wick_rejection": rejection,
         "pending_behavior": pending, "pending_count": count,
         "last_evaluated_candle": candle_time,
     }
