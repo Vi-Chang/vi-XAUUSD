@@ -39,6 +39,7 @@ from app.engines.hypothetical_exit_advisor import (
     evaluate_hypothetical_exits,
 )
 from app.engines.market_behavior import evaluate_market_behavior
+from app.engines.opportunity_coverage_watchdog import evaluate_opportunity_coverage
 from app.engines.regime_state_machine import evaluate_regime_state
 from app.engines.signal_lifecycle import evaluate_signal_lifecycle
 from app.engines.trade_plan import evaluate_trade_plans, migrate_legacy_virtual_profit
@@ -295,6 +296,11 @@ def evaluate_market_monitors(
     early_state, early_events = evaluate_early_entry_candidate(
         {**data, **monitor_result}, _load(symbol, "early_entry_candidate"))
     monitor_result["early_entry_candidate"] = early_state
+    coverage_state, coverage_events = evaluate_opportunity_coverage(
+        {**data, **monitor_result}, early_state,
+        _load(symbol, "opportunity_coverage"))
+    _save(symbol, "opportunity_coverage", coverage_state)
+    monitor_result["opportunity_coverage_watchdog"] = coverage_state
     profit_state, profit_events = evaluate_dynamic_profit(
         data={**data, **monitor_result, "indicator_snapshot": indicators}, frame=m15_closed,
         trade_plans=trade_plan_state, break_state=break_state,
@@ -313,7 +319,8 @@ def evaluate_market_monitors(
     signal_facts = (exit_events + ([breakout_event] if breakout_event else []) + wick_events
                     + virtual_events + trade_plan_events + breakout_setup_events
                     + continuation_events + regime_events + behavior_events
-                    + assistant_events + opportunity_events + early_events)
+                    + assistant_events + opportunity_events + early_events
+                    + coverage_events)
     signal_facts += (double_sweep_events + break_events + recovery_events
                      + profit_events)
     health_event = decision_health.get("dataHealthEvent")
@@ -539,6 +546,11 @@ def evaluate_live_quote_state(
         _load(symbol, "early_entry_candidate"))
     _save(symbol, "early_entry_candidate", early_state)
     live_facts.extend(early_events)
+    coverage_state, coverage_events = evaluate_opportunity_coverage(
+        {**candidate, "normalized_analysis": normalized}, early_state,
+        _load(symbol, "opportunity_coverage"))
+    _save(symbol, "opportunity_coverage", coverage_state)
+    live_facts.extend(coverage_events)
     current, events = evaluate_final_decision(
         {**candidate, "normalized_analysis": normalized,
          "regime_state_machine": regime_state, "signal_facts": live_facts}, previous_final

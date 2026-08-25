@@ -250,9 +250,12 @@ class Settings(BaseSettings):
     decision_assistant_min_price_delta: float = 0.50
     # Pre-entry warning thresholds. These never relax the canonical entry gate.
     early_entry_neighborhood_atr_mult: float = 0.30
+    early_entry_watch_proximity_atr_mult: float = 0.75
     early_entry_breakout_near_atr_mult: float = 0.35
     early_entry_max_extension_atr_mult: float = 0.70
     early_entry_min_score: int = 65
+    early_entry_watch_min_rr: float = 1.20
+    opportunity_coverage_favorable_atr_mult: float = 0.80
     entry_anchor_max_distance_atr_mult: float = 1.20
     entry_anchor_max_distance_price_pct: float = 0.0035
     closed_15m_context_max_staleness_seconds: int = 20 * 60

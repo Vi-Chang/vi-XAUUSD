@@ -138,7 +138,8 @@ def _closed_candle_text(candle: dict) -> str:
 def format_decision_message(event: dict) -> str:
     canonical_type = str(event.get("event_type") or "")
     if canonical_type in {
-            "EARLY_ENTRY_PREPARE", "EARLY_ENTRY_MISSED", "EARLY_ENTRY_INVALIDATED"}:
+            "EARLY_ENTRY_WATCH", "EARLY_ENTRY_PREPARE", "EARLY_ENTRY_MISSED",
+            "EARLY_ENTRY_INVALIDATED"}:
         side = str(event.get("candidateSide") or event.get("direction") or "LONG")
         word = "做多" if side == "LONG" else "做空"
         zone = event.get("candidateZone") or event.get("entryZone") or {}
@@ -160,6 +161,14 @@ def format_decision_message(event: dict) -> str:
             "BREAKOUT_COMPRESSION": "價格靠近突破位並收斂",
         }.get(reasons[0] if reasons else "", "價格與結構正在形成候選機會")
         price = float(event.get("currentPrice") or 0)
+        if canonical_type == "EARLY_ENTRY_WATCH":
+            lines = [f"👀【開始留意{word}機會】", f"現價：{price:.2f}",
+                     f"觀察區：{zone_text}",
+                     "現在：只是接近有效價區，尚不可進場。",
+                     "下一步：等待價格反應與短線結構確認；成立後會再通知。"]
+            if str(event.get("dataHealth") or "") == "DEGRADED_15M":
+                lines.append("資料提醒：15M 資料降級，只能觀察，不能確認進場。")
+            return "\n".join(lines)
         if canonical_type == "EARLY_ENTRY_PREPARE":
             lines = [f"🟡【準備{word}】", f"現價：{price:.2f}",
                      f"候選區：{zone_text}", f"發生什麼事：{plain_reason}",

@@ -76,7 +76,7 @@ def test_prepare_invalidates_after_confirmed_directional_support_break():
     state, _ = evaluate_early_entry_candidate(_data(), {"state": "IDLE"})
     invalid, events = evaluate_early_entry_candidate(
         _data(price=96.8, break_state="BREAK_CONFIRMED", break_direction="DOWN"), state)
-    assert invalid["state"] == "INVALIDATED"
+    assert invalid["state"] == "INVALIDATED_LONG"
     assert invalid["transitionReason"] == "STRUCTURE_INVALIDATED"
     assert events[0]["eventKey"].endswith(":INVALIDATED")
 

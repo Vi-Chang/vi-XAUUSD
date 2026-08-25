@@ -7,10 +7,11 @@ import math
 from app.config import get_settings
 
 ALERT_PRIORITY = {
-    "SCENARIO_INVALIDATED": 110, "EXIT_WARNING": 100, "ENTRY_READY": 80,
-    "WAIT_RETEST": 70, "SETUP_CONFIRMED": 60, "MISSED_ENTRY": 50,
-    "PULLBACK_ZONE_CREATED": 40, "MEANINGFUL_SCENARIO_UPDATE": 30,
-    "WATCHING": 20, "WAIT": 10,
+    "POSITION_EMERGENCY": 140, "SCENARIO_INVALIDATED": 135,
+    "ENTRY_READY": 130, "EXIT_WARNING": 120, "PREPARE": 90, "WATCHING": 80,
+    "MISSED_ENTRY": 70, "DATA_STATUS": 60, "WAIT_RETEST": 50,
+    "SETUP_CONFIRMED": 45, "PULLBACK_ZONE_CREATED": 40,
+    "MEANINGFUL_SCENARIO_UPDATE": 30, "WAIT": 10,
 }
 
 
@@ -275,7 +276,11 @@ def notification_fingerprint(event: dict) -> str:
 
 def alert_category(event: dict) -> str:
     event_type = str(event.get("event_type") or "")
+    if event_type in {"ENTRY_READY", "ENTRY_NOW"}:
+        return "ENTRY_READY"
     if event_type == "EARLY_ENTRY_PREPARE":
+        return "PREPARE"
+    if event_type == "EARLY_ENTRY_WATCH":
         return "WATCHING"
     if event_type == "EARLY_ENTRY_MISSED":
         return "MISSED_ENTRY"
@@ -358,7 +363,7 @@ def aggregate_signal_facts(symbol: str, events: list[dict]) -> list[dict]:
         enriched = {**event, "symbol": symbol,
                     "timeframe": str(event.get("timeframe") or "15M")}
         enriched["alertCategory"] = alert_category(enriched)
-        cycle = str(enriched.get("evaluationCycleId") or
+        cycle = str(enriched.get("evaluationCycleId") or enriched.get("snapshotId") or
                     f"{enriched.get('dataVersion', 0)}:{enriched.get('calculatedAt', '')}")
         cycles.setdefault(cycle, []).append(enriched)
     aggregated = []
