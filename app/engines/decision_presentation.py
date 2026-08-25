@@ -7,6 +7,7 @@ from typing import Literal, cast
 from zoneinfo import ZoneInfo
 
 from app.engines.confidence import confidence_label, normalize_signal_score
+from app.engines.user_facing_trade_message import UserFacingTradeMessageBuilder
 
 TAIPEI = ZoneInfo("Asia/Taipei")
 
@@ -136,7 +137,7 @@ def _closed_candle_text(candle: dict) -> str:
         return "不可用（PARSE_ERROR）"
 
 
-def format_decision_message(event: dict) -> str:
+def _format_decision_message_legacy(event: dict) -> str:
     canonical_type = str(event.get("event_type") or "")
     if canonical_type in {
             "EARLY_ENTRY_WATCH", "EARLY_ENTRY_PREPARE", "EARLY_ENTRY_REPLACED",
@@ -987,3 +988,11 @@ def _format_management_plan(event: dict, plan: dict) -> str:
         f"下一觸發：{next_target}",
         f"資料時間：{_local_time(str(event.get('calculatedAt') or ''))}（UTC+8）",
     ])
+
+
+_USER_MESSAGE_BUILDER = UserFacingTradeMessageBuilder()
+
+
+def format_decision_message(event: dict) -> str:
+    """The only public Telegram/web trade-message rendering gateway."""
+    return _USER_MESSAGE_BUILDER.build(event, _format_decision_message_legacy)

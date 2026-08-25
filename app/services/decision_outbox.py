@@ -32,7 +32,9 @@ from app.services.notification_coordinator import coordinate_notification_intent
 from app.services.notification_policy import (
     canonical_dedupe_key,
     eligibility,
+    has_meaningful_action_delta,
     is_expired,
+    user_visible_state_fingerprint,
 )
 from app.services.pre_delivery_trade_safety import (
     audit_delivery_block,
@@ -284,6 +286,33 @@ def persist_decision_events(symbol: str, events: list[dict]) -> list[dict]:
                     "positionId": payload.get("positionId"),
                     "snapshotId": payload.get("snapshotId")}, created_at=now))
             previous_sent = _last_sent_market_decision(db, symbol, payload)
+            action_delta, action_delta_reason = has_meaningful_action_delta(
+                previous_sent, payload)
+            if notice_decision["eligible"] and not is_test and not action_delta:
+                before_fingerprint = (user_visible_state_fingerprint(previous_sent)
+                                      if previous_sent else "")
+                after_fingerprint = user_visible_state_fingerprint(payload)
+                logger.info(
+                    "telegram action suppressed: snapshot=%s intent=%s reason=%s before=%s after=%s",
+                    payload.get("snapshotId"), payload.get("event_type"),
+                    action_delta_reason, before_fingerprint, after_fingerprint,
+                )
+                db.add(NotificationAudit(
+                    event_id=event_id,
+                    event_type=str(payload.get("event_type") or ""),
+                    eligible=False, reason_code=action_delta_reason,
+                    dedupe_key=semantic_key,
+                    payload={"snapshotId": payload.get("snapshotId"),
+                             "priority": notice_decision.get("userPriority"),
+                             "notificationIntent": payload.get("event_type"),
+                             "fingerprintBefore": before_fingerprint,
+                             "fingerprintAfter": after_fingerprint},
+                    created_at=now,
+                ))
+                notice_decision = {**notice_decision, "eligible": False,
+                                   "reasonCode": action_delta_reason}
+                payload["notificationDecision"] = notice_decision
+                payload["notificationEligible"] = False
             regressed, regression_reason = notification_state_regression(
                 previous_sent, payload)
             if regressed:
