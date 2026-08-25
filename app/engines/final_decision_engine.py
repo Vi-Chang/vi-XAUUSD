@@ -560,6 +560,8 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
         "executionGate": execution_gate,
         "defenseState": defense_state,
         "defenseLevel": decision_health.get("defenseLevel"),
+        "defenseSide": decision_health.get("side"),
+        "confirmationBuffer": decision_health.get("confirmationBuffer"),
         "falseBreakDetected": bool(decision_health.get("falseBreakDetected")),
         "activeLongScenario": decision_health.get("activeLongScenario", "ACTIVE"),
         "activeShortScenario": decision_health.get("activeShortScenario", "ACTIVE"),
@@ -718,6 +720,8 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
             "marketBiasChanged": base.get("marketBiasChanged"),
             "defenseState": base.get("defenseState"),
             "defenseLevel": base.get("defenseLevel"),
+            "defenseSide": base.get("defenseSide"),
+            "confirmationBuffer": base.get("confirmationBuffer"),
             "primaryTriggerId": scenario_id,
             "notificationEligible": True,
             **{key: canonical_fact.get(key) for key in (
@@ -725,7 +729,7 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
                 "emergencyStop", "reclaimDeadline", "reasonCode", "closedPrice",
                 "previousBehavior", "behaviorConfidence", "marketBias",
                 "breakLifecycle", "positionProfitDecision", "triggerLevel",
-                "opportunityId")
+                "opportunityId", "defenseSide", "confirmationBuffer")
                if canonical_fact.get(key) is not None},
         })
         if canonical_fact.get("fakeBreakoutRecovery"):

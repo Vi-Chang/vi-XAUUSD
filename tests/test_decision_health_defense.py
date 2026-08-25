@@ -6,6 +6,8 @@ from app.engines.decision_health import (
     get_latest_valid_closed_15m,
     is_confirmed_break,
 )
+from app.engines.decision_presentation import format_decision_message
+from app.engines.scenario_execution import can_execute_scenario
 from app.services.alert_aggregator import (
     is_meaningful_change,
     notification_fingerprint,
@@ -44,6 +46,40 @@ def test_case_a_intrabar_defense_touch_preserves_bias_and_waits_for_close():
     assert defense["defenseState"] in {"TESTING", "BROKEN_PENDING_CLOSE"}
     assert defense["entryConfirmation"] == "WAIT_15M_CLOSE"
     assert defense["shortNow"] is False
+
+
+def test_deep_intrabar_cross_is_pending_close_not_testing_and_cannot_execute():
+    defense = evaluate_defense_state(
+        defense_level=4656.07, side="LONG", current_price=4646.70,
+        atr15=2.0, closed_context=None,
+        entry_confirmation="WAIT_15M_CLOSE", previous={})
+    assert defense["defenseState"] == "BROKEN_PENDING_CLOSE"
+    assert defense["entryConfirmation"] == "WAIT_15M_CLOSE"
+    gate = can_execute_scenario(
+        direction="LONG", current_price=4646.70, invalidation_price=4656.07,
+        lifecycle_state="ENTRY_READY", data_health="DEGRADED_15M",
+        entry_confirmation=defense["entryConfirmation"],
+        closed_candle_confirmed=False, in_executable_zone=False,
+        risk_valid=False, rr_valid=True, stop_valid=False)
+    assert gate["executionAllowed"] is False
+    assert gate["scenarioValidity"] == "BLOCKED_BY_DATA"
+
+
+def test_pending_break_telegram_combines_degraded_data_and_close_outcomes():
+    message = format_decision_message({
+        "event_type": "DEFENSE_TEST", "currentState": "WAIT",
+        "currentPrice": 4646.70, "marketBias": "BULLISH",
+        "dataHealth": "DEGRADED_15M", "entryConfirmation": "WAIT_15M_CLOSE",
+        "defenseState": "BROKEN_PENDING_CLOSE", "defenseLevel": 4656.07,
+        "defenseSide": "LONG", "confirmationBuffer": .20,
+    })
+    assert "🟠 15M 資料延遲" in message
+    assert "盤中已跌破多方防守 4656.07" in message
+    assert "新進場：禁止" in message
+    assert "收盤重新站回 4656.07" in message
+    assert "收盤確認跌破 4655.87" in message
+    assert "高週期方向保留" in message
+    assert "正在測試原方向防守" not in message
 
 
 def test_case_b_false_break_closes_back_above_defense_and_recovers():

@@ -253,10 +253,55 @@ def format_decision_message(event: dict) -> str:
         defense = event.get("defenseLevel") or canonical.get("defenseLevel")
         price = float(event.get("currentPrice") or 0)
         bias = str(event.get("marketBias") or canonical.get("marketBias") or "NEUTRAL")
+        defense_state = str(event.get("defenseState") or
+                            canonical.get("defenseState") or "TESTING")
+        data_health = str(event.get("dataHealth") or
+                          canonical.get("dataHealth") or "UNKNOWN")
+        health_text = {
+            "HEALTHY": "🟢 正常", "RECOVERING": "🟡 資料恢復中",
+            "DEGRADED_15M": "🟠 15M 資料延遲",
+            "STALE": "🔴 行情資料過期",
+        }.get(data_health, "🟠 資料狀態待確認")
+        side = str(event.get("defenseSide") or canonical.get("defenseSide") or
+                   ("LONG" if bias == "BULLISH" else
+                    "SHORT" if bias == "BEARISH" else ""))
+        buffer = event.get("confirmationBuffer")
+        if not isinstance(buffer, (int, float)):
+            buffer = canonical.get("confirmationBuffer")
+        buffer = float(buffer) if isinstance(buffer, (int, float)) else 0.0
+        confirmed_break_level = (
+            float(defense) - buffer if isinstance(defense, (int, float)) and side == "LONG"
+            else float(defense) + buffer if isinstance(defense, (int, float)) and side == "SHORT"
+            else None)
+        if defense_state == "BROKEN_PENDING_CLOSE":
+            reclaim_word = "站回" if side == "LONG" else "跌回"
+            break_word = "跌破" if side == "LONG" else "站上"
+            scenario_name = "Long" if side == "LONG" else "Short"
+            defense_name = "多方" if side == "LONG" else "空方"
+            return "\n".join([
+                "【XAUUSD 現在怎麼做】", "🟠 暫停新進場", f"現價：{price:.2f}",
+                f"市場方向：{'🟢 高週期仍偏多' if bias == 'BULLISH' else '🔴 高週期仍偏空' if bias == 'BEARISH' else '⚪ 高週期中性'}",
+                f"資料狀態：{health_text}",
+                (f"目前狀態：盤中已{'跌破' if side == 'LONG' else '站上'}"
+                 f"{defense_name}防守 {float(defense):.2f}，等待收盤確認"
+                 if isinstance(defense, (int, float)) else
+                 "目前狀態：盤中已穿越防守，等待收盤確認"),
+                "新進場：禁止",
+                "現在等：最新 15M K 棒正式收盤",
+                (f"✅ 收盤重新{reclaim_word} {float(defense):.2f} → 剛收回防守，判斷是否為假跌破並重算原方向入口"
+                 if isinstance(defense, (int, float)) else
+                 "✅ 收盤收回防守 → 判斷是否為假突破並重算入口"),
+                (f"❌ 收盤確認{break_word} {confirmed_break_level:.2f} → 取消目前 {scenario_name} Scenario；高週期方向保留，等待新結構"
+                 if confirmed_break_level is not None else
+                 f"❌ 收盤確認失守 → 取消目前 {scenario_name} Scenario；高週期方向保留，等待新結構"),
+                "目前不做多，也不提前追空。" if side == "LONG"
+                else "目前不做空，也不提前追多。",
+            ])
         if canonical_type == "DEFENSE_HELD":
             return "\n".join([
                 "✅【XAUUSD｜15M 防守確認守住】",
                 f"現價：{price:.2f}", f"市場方向：{'🟢 偏多' if bias == 'BULLISH' else '🔴 偏空'}",
+                f"資料狀態：{health_text}",
                 f"防守位置：{float(defense):.2f}" if isinstance(defense, (int, float)) else "防守位置：—",
                 "防守被救回後，後續15M收盤仍持續守住。",
                 "下一步：重新計算原方向的合理進場區；未通過 RR 前仍不進場。",
@@ -266,6 +311,7 @@ def format_decision_message(event: dict) -> str:
                 "🟠【XAUUSD｜防守剛收回，尚未確認守穩】",
                 f"現價：{price:.2f}",
                 f"市場方向：{'🟢 偏多' if bias == 'BULLISH' else '🔴 偏空'}",
+                f"資料狀態：{health_text}",
                 f"防守位置：{float(defense):.2f}" if isinstance(defense, (int, float)) else "防守位置：—",
                 "盤中曾失守，但最新15M收盤已重新收回防守位置。",
                 "現在：先不進場；等待下一根15M持續守住，或重新站回局部結構。",
@@ -273,6 +319,7 @@ def format_decision_message(event: dict) -> str:
         if canonical_type == "DEFENSE_BROKEN_CONFIRMED":
             return "\n".join([
                 "⚪【XAUUSD｜當前交易劇本已失效】", f"現價：{price:.2f}",
+                f"資料狀態：{health_text}",
                 f"防守位置：{float(defense):.2f}" if isinstance(defense, (int, float)) else "防守位置：—",
                 "15M 已收盤確認跌破／站上防守緩衝。",
                 f"高週期方向仍保留為：{'偏多' if bias == 'BULLISH' else '偏空' if bias == 'BEARISH' else '中性'}。",
@@ -281,7 +328,8 @@ def format_decision_message(event: dict) -> str:
         return "\n".join([
             "【XAUUSD 現在怎麼做】", "🟠 先不要進場", f"現價：{price:.2f}",
             f"市場方向：{'🟢 偏多' if bias == 'BULLISH' else '🔴 偏空' if bias == 'BEARISH' else '⚪ 中性'}",
-            "目前狀態：正在測試原方向防守",
+            f"資料狀態：{health_text}",
+            "目前狀態：價格接近原方向防守，但尚未方向性穿越",
             f"防守位置：{float(defense):.2f}" if isinstance(defense, (int, float)) else "防守位置：—",
             "現在等：這根 15M K 棒正式收盤。",
             "收盤守住 → 重新檢查原方向入口",

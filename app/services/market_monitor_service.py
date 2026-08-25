@@ -320,11 +320,16 @@ def evaluate_market_monitors(
             "dataHealth": decision_health.get("dataHealth"),
             "defenseState": current_defense,
             "defenseLevel": decision_health.get("defenseLevel"),
+            "defenseSide": decision_health.get("side"),
+            "confirmationBuffer": decision_health.get("confirmationBuffer"),
             "falseBreakDetected": decision_health.get("falseBreakDetected"),
             "closedBarTimestamp": ((decision_health.get("latestClosed15m") or
                                     decision_health.get("contextClosed15m") or {}).get(
                                         "closeTime")),
-            "transitionReason": "防守測試狀態發生實質變化",
+            "transitionReason": (
+                "盤中價格已穿越防守，等待15M收盤確認"
+                if current_defense == "BROKEN_PENDING_CLOSE"
+                else "防守測試狀態發生實質變化"),
         })
     final_input = {**data, **monitor_result, "signal_facts": signal_facts}
     final_state, final_events = evaluate_final_decision(
@@ -437,6 +442,8 @@ def evaluate_live_quote_state(
             "entryConfirmation": decision_health.get("entryConfirmation"),
             "dataHealth": decision_health.get("dataHealth"),
             "defenseState": new_defense, "defenseLevel": decision_health.get("defenseLevel"),
+            "defenseSide": decision_health.get("side"),
+            "confirmationBuffer": decision_health.get("confirmationBuffer"),
             "closedBarTimestamp": ((decision_health.get("latestClosed15m") or
                                     decision_health.get("contextClosed15m") or {}).get(
                                         "closeTime")),
