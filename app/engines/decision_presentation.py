@@ -239,6 +239,42 @@ def format_decision_message(event: dict) -> str:
             return ("⚠️【XAUUSD｜15M 下方連續出現承接】\n"
                     f"區域：{range_text}\n空方動能可能仍偏弱，但價格尚未跌破承接區。\n目前：不追空。")
     canonical = event.get("canonicalDecision") or {}
+    if canonical_type == "DATA_RECOVERED":
+        closed = event.get("latestClosedCandlePrice")
+        return "\n".join([
+            "✅【XAUUSD 行情資料已恢復】",
+            (f"最新15M收盤：{float(closed):.2f}" if isinstance(closed, (int, float))
+             else "最新15M收盤已恢復。"),
+            "策略已使用最新收盤重新計算；沒有新決策時不會重複通知。",
+        ])
+    if canonical_type in {"DEFENSE_TEST", "DEFENSE_HELD", "DEFENSE_BROKEN_CONFIRMED"}:
+        defense = event.get("defenseLevel") or canonical.get("defenseLevel")
+        price = float(event.get("currentPrice") or 0)
+        bias = str(event.get("marketBias") or canonical.get("marketBias") or "NEUTRAL")
+        if canonical_type == "DEFENSE_HELD":
+            return "\n".join([
+                "✅【XAUUSD｜15M 防守確認守住】",
+                f"現價：{price:.2f}", f"市場方向：{'🟢 偏多' if bias == 'BULLISH' else '🔴 偏空'}",
+                f"防守位置：{float(defense):.2f}" if isinstance(defense, (int, float)) else "防守位置：—",
+                "盤中短暫越過後，15M 收盤已重新守住。",
+                "下一步：重新計算原方向的合理進場區；未通過 RR 前仍不進場。",
+            ])
+        if canonical_type == "DEFENSE_BROKEN_CONFIRMED":
+            return "\n".join([
+                "⚪【XAUUSD｜原方向防守已失效】", f"現價：{price:.2f}",
+                f"防守位置：{float(defense):.2f}" if isinstance(defense, (int, float)) else "防守位置：—",
+                "15M 已收盤確認跌破／站上防守緩衝。",
+                "目前不直接反手；等待反向結構、回測、RR 與風控完成。",
+            ])
+        return "\n".join([
+            "【XAUUSD 現在怎麼做】", "🟠 先不要進場", f"現價：{price:.2f}",
+            f"市場方向：{'🟢 偏多' if bias == 'BULLISH' else '🔴 偏空' if bias == 'BEARISH' else '⚪ 中性'}",
+            "目前狀態：正在測試原方向防守",
+            f"防守位置：{float(defense):.2f}" if isinstance(defense, (int, float)) else "防守位置：—",
+            "現在等：這根 15M K 棒正式收盤。",
+            "收盤守住 → 重新檢查原方向入口",
+            "收盤確認失守 → 原方向取消並重新評估；目前不提前反手。",
+        ])
     if canonical_type == "MARKET_BEHAVIOR_CHANGED" and str(
             canonical.get("notificationRoute") or "NEW_ENTRY") != "POSITION_MANAGEMENT":
         labels = {
@@ -268,10 +304,6 @@ def format_decision_message(event: dict) -> str:
         completeness = canonical.get("decisionCompleteness") or {}
         candle = canonical.get("closedCandle") or {}
         action = str(canonical.get("primaryAction") or "WAIT")
-        if completeness and not completeness.get("valid") and route != "POSITION_MANAGEMENT":
-            return ("⚠️【XAUUSD 決策資料不完整】\n"
-                    "暫停交易判斷。\n"
-                    f"原因：{'、'.join(completeness.get('errors') or ['UNKNOWN'])}")
         if route == "POSITION_MANAGEMENT":
             lines = ["🔵【XAUUSD 持倉管理】",
                      f"現價：{float(event.get('currentPrice') or position.get('currentPrice') or 0):.2f}"]
@@ -292,6 +324,19 @@ def format_decision_message(event: dict) -> str:
                 "主通知已依實際持倉切換為持倉管理。",
             ])
             return "\n".join(lines)
+        entry_confirmation = str(canonical.get("entryConfirmation") or "")
+        if entry_confirmation in {"WAIT_15M_CLOSE", "BLOCKED_BY_DATA"}:
+            bias = str(canonical.get("marketBias") or "NEUTRAL")
+            return "\n".join([
+                "【XAUUSD 資料確認中】", "🟠 暫停新進場",
+                f"市場方向：{'🟢 偏多' if bias == 'BULLISH' else '🔴 偏空' if bias == 'BEARISH' else '⚪ 中性'}",
+                "資料狀態：最新 15M 收盤暫缺",
+                "系統仍保留原市場方向，但取得最新已收盤 K 棒以前，不產生新的 ENTRY_READY。",
+            ])
+        if completeness and not completeness.get("valid"):
+            return ("⚠️【XAUUSD 決策資料不完整】\n"
+                    "暫停交易判斷。\n"
+                    f"原因：{'、'.join(completeness.get('errors') or ['UNKNOWN'])}")
         title = ("🟢【XAUUSD｜現在可以進場】" if action in {"BUY", "SELL"}
                  else "🟡【XAUUSD｜現在先不要進場】")
         lines = [title, f"現價：{float(event.get('currentPrice') or 0):.2f}",
@@ -326,15 +371,6 @@ def format_decision_message(event: dict) -> str:
                 f"目前動作 {position.get('action')}")
         lines.append(f"收盤確認來源：最新已收15M {_closed_candle_text(candle) if candle else canonical.get('lastClosedCandleTime') or '—'}")
         return "\n".join(lines)
-    if canonical_type == "DATA_RECOVERED":
-        closed = event.get("latestClosedCandlePrice")
-        return "\n".join([
-            "✅【XAUUSD 行情資料已恢復】",
-            "行情狀態：資料已更新，可重新評估策略。",
-            (f"最新15M收盤：{float(closed):.2f}" if isinstance(closed, (int, float))
-             else "最新15M收盤：價格欄位仍缺失，暫不產生進場通知。"),
-            "策略已使用最新已收盤 K 棒重新計算。",
-        ])
     if canonical_type == "DATA_STALE":
         return "🔴【XAUUSD 行情資料延遲】\n資料恢復前暫停新進場；持倉防守提醒不會因此關閉。"
     if canonical_type in {"ENTRY_READY", "ENTRY_NOW"}:

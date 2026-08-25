@@ -22,6 +22,10 @@ from app.engines.breakout_setup_manager import (
 )
 from app.engines.data_health_gate import evaluate_data_health
 from app.engines.decision_assistant import evaluate_decision_assistant
+from app.engines.decision_health import (
+    evaluate_decision_health,
+    evaluate_defense_state,
+)
 from app.engines.dynamic_profit_protection import evaluate_dynamic_profit
 from app.engines.entry_opportunity import evaluate_entry_opportunities
 from app.engines.fake_breakout_recovery import evaluate_fake_breakout_recovery
@@ -80,6 +84,24 @@ def evaluate_market_monitors(
 ) -> dict:
     symbol = str(data.get("symbol") or "XAUUSD")
     normalized = dict(data.get("normalized_analysis") or {})
+    previous_decision_health = _load(symbol, "decision_health")
+    previous_final_decision = _load(symbol, "final_decision")
+    decision_health = evaluate_decision_health(
+        data, previous=previous_decision_health,
+        now=str(data.get("timestamp_utc") or "") or None)
+    decision_health.update(evaluate_defense_state(
+        defense_level=previous_final_decision.get("invalidationPrice"),
+        side=str(previous_final_decision.get("direction") or
+                 decision_health.get("marketBias") or "NEUTRAL"),
+        current_price=normalized.get("currentPrice"),
+        atr15=float(normalized.get("atr15") or 0),
+        closed_context=decision_health.get("latestClosed15m"),
+        entry_confirmation=str(decision_health.get("entryConfirmation") or
+                               "BLOCKED_BY_DATA"),
+        previous=previous_decision_health,
+    ))
+    _save(symbol, "decision_health", decision_health)
+    data = {**data, "decision_health_state": decision_health}
     health = evaluate_data_health(data)
     if not health["healthy"]:
         normalized["marketDataStatus"] = "STALE"
@@ -217,6 +239,7 @@ def evaluate_market_monitors(
     _save(symbol, "trend_continuation", continuation_state)
     plans = {plan.side: asdict(plan) for plan in build_hypothetical_exit_plans(data)}
     monitor_result = {
+        "decision_health_state": decision_health,
         "hypothetical_exit_advisor": {"plans": plans, "events": exit_events},
         "breakout_alert": breakout_view(breakout_state, breakout_event),
         "virtual_profit_tracker": {**virtual_state, "events": virtual_events},
@@ -265,9 +288,43 @@ def evaluate_market_monitors(
                     + assistant_events + opportunity_events)
     signal_facts += (double_sweep_events + break_events + recovery_events
                      + profit_events)
+    previous_health_name = str(previous_decision_health.get("dataHealth") or "")
+    current_health_name = str(decision_health.get("dataHealth") or "")
+    if previous_health_name and previous_health_name != current_health_name:
+        signal_facts.append({
+            "event_type": ("DATA_RECOVERED" if current_health_name in {
+                "HEALTHY", "RECOVERING"} else "DATA_STALE"),
+            "currentState": current_health_name,
+            "marketBias": decision_health.get("marketBias"),
+            "entryConfirmation": decision_health.get("entryConfirmation"),
+            "closedBarTimestamp": ((decision_health.get("latestClosed15m") or
+                                    decision_health.get("contextClosed15m") or {}).get(
+                                        "closeTime")),
+            "transitionReason": decision_health.get("reason"),
+        })
+    previous_defense = str(previous_decision_health.get("defenseState") or "")
+    current_defense = str(decision_health.get("defenseState") or "")
+    defense_event_types = {
+        "TESTING": "DEFENSE_TEST", "BROKEN_PENDING_CLOSE": "DEFENSE_TEST",
+        "HELD": "DEFENSE_HELD", "BROKEN_CONFIRMED": "DEFENSE_BROKEN_CONFIRMED",
+    }
+    if previous_defense != current_defense and current_defense in defense_event_types:
+        signal_facts.append({
+            "event_type": defense_event_types[current_defense],
+            "currentState": current_defense,
+            "marketBias": decision_health.get("marketBias"),
+            "entryConfirmation": decision_health.get("entryConfirmation"),
+            "defenseState": current_defense,
+            "defenseLevel": decision_health.get("defenseLevel"),
+            "falseBreakDetected": decision_health.get("falseBreakDetected"),
+            "closedBarTimestamp": ((decision_health.get("latestClosed15m") or
+                                    decision_health.get("contextClosed15m") or {}).get(
+                                        "closeTime")),
+            "transitionReason": "防守測試狀態發生實質變化",
+        })
     final_input = {**data, **monitor_result, "signal_facts": signal_facts}
     final_state, final_events = evaluate_final_decision(
-        final_input, _load(symbol, "final_decision")
+        final_input, previous_final_decision
     )
     from app.engines.canonical_decision import build_canonical_decision
     canonical = build_canonical_decision(final_input, final_state)
@@ -330,6 +387,22 @@ def evaluate_live_quote_state(
                  "snapshot_ts": quote_time,
                  "current_price": {**(data.get("current_price") or {}),
                                    "mid": price, "last_update": quote_time}}
+    previous_decision_health = _load(symbol, "decision_health")
+    decision_health = evaluate_decision_health(
+        candidate, previous=previous_decision_health, now=quote_time)
+    previous_final = _load(symbol, "final_decision")
+    decision_health.update(evaluate_defense_state(
+        defense_level=previous_final.get("invalidationPrice"),
+        side=str(previous_final.get("direction") or
+                 decision_health.get("marketBias") or "NEUTRAL"),
+        current_price=price, atr15=float(normalized.get("atr15") or 0),
+        closed_context=decision_health.get("latestClosed15m"),
+        entry_confirmation=str(decision_health.get("entryConfirmation") or
+                               "BLOCKED_BY_DATA"),
+        previous=previous_decision_health,
+    ))
+    candidate["decision_health_state"] = decision_health
+    _save(symbol, "decision_health", decision_health)
     from app.engines.freshness_state import evaluate_freshness_state
     from app.utils.timeutils import parse_utc
     candidate["freshness_state"] = evaluate_freshness_state(
@@ -343,9 +416,26 @@ def evaluate_live_quote_state(
         previous=_load(symbol, "regime_state"),
     )
     _save(symbol, "regime_state", regime_state)
+    live_facts: list[dict] = []
+    old_defense = str(previous_decision_health.get("defenseState") or "")
+    new_defense = str(decision_health.get("defenseState") or "")
+    defense_events = {
+        "TESTING": "DEFENSE_TEST", "BROKEN_PENDING_CLOSE": "DEFENSE_TEST",
+        "HELD": "DEFENSE_HELD", "BROKEN_CONFIRMED": "DEFENSE_BROKEN_CONFIRMED",
+    }
+    if old_defense != new_defense and new_defense in defense_events:
+        live_facts.append({
+            "event_type": defense_events[new_defense], "currentState": new_defense,
+            "marketBias": decision_health.get("marketBias"),
+            "entryConfirmation": decision_health.get("entryConfirmation"),
+            "defenseState": new_defense, "defenseLevel": decision_health.get("defenseLevel"),
+            "closedBarTimestamp": ((decision_health.get("latestClosed15m") or
+                                    decision_health.get("contextClosed15m") or {}).get(
+                                        "closeTime")),
+        })
     current, events = evaluate_final_decision(
         {**candidate, "normalized_analysis": normalized,
-         "regime_state_machine": regime_state}, _load(symbol, "final_decision")
+         "regime_state_machine": regime_state, "signal_facts": live_facts}, previous_final
     )
     from app.engines.realtime_presentation import build_realtime_presentation
     presentation = build_realtime_presentation(
@@ -356,9 +446,9 @@ def evaluate_live_quote_state(
         current["canEnter"] = False
         current["finalAction"] = "WAIT"
         current["humanSummary"] = "突破已確認，但目前離原進場區過遠；不追價，等待回踩。"
-    if presentation["defenseState"] == "POSITION_DEFENSE_TRIGGERED":
+    if presentation["defenseState"] in {"TESTING", "BROKEN_PENDING_CLOSE"}:
         current["canEnter"] = False
-        current["positionDefenseState"] = "POSITION_DEFENSE_TRIGGERED"
+        current["positionDefenseState"] = presentation["defenseState"]
     lifecycle_state, lifecycle_events = evaluate_signal_lifecycle(
         current, _load(symbol, "signal_lifecycle"), live_quote=True)
     _save(symbol, "signal_lifecycle", lifecycle_state)

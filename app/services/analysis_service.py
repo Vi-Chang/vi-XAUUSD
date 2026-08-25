@@ -595,6 +595,7 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
     result.wick_rejection_engine = monitors["wick_rejection_engine"]
     result.decision_assistant = monitors["decision_assistant"]
     result.final_decision_state = monitors["final_decision_state"]
+    result.decision_health_state = monitors["decision_health_state"]
     result.closed_candles = closed_candles
     from app.engines.realtime_presentation import build_realtime_presentation
     result.realtime_presentation = build_realtime_presentation(

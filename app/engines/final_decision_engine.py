@@ -12,6 +12,7 @@ from typing import Any, Literal, cast
 
 from app.config import get_settings
 from app.engines.data_health_gate import evaluate_data_health
+from app.engines.decision_health import evaluate_decision_health
 from app.engines.entry_location import classify_entry_location, stop_is_valid
 from app.engines.unified_decision_state import evaluate_unified_decision
 
@@ -274,6 +275,10 @@ def _summary(reason: str, action: str) -> str:
         "WAIT_CONFIRMATION": "機會仍在，但目前還不到可以下單的條件。",
         "BEHAVIOR_WAIT_PULLBACK": "大方向仍偏多，但15M正在緩步下降，暫停追多並等待止跌確認。",
         "BEHAVIOR_LONG_BLOCK": "15M出現急跌或反轉風險，暫停新的多單進場。",
+        "WAIT_15M_CLOSE": "大方向保留，但最新15M收盤待確認，暫停新進場。",
+        "BLOCKED_BY_DATA": "行情資料不足，等待最新已收盤15M後再評估。",
+        "SCENARIO_DEFENSE_INVALIDATED": "原方向防守已由15M收盤確認失效，重新評估市場結構。",
+        "DEFENSE_BREAK_WAIT_OPPOSITE_CONFIRMATION": "原方向防守失效，但反方向仍須完成回測、確認與風控。",
     }
     return messages.get(reason, "現在沒有足夠優勢，先等待新的市場條件。")
 
@@ -286,6 +291,12 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
     assistant = data.get("decision_assistant") or {}
     recovery = data.get("fake_breakout_recovery") or {}
     health = evaluate_data_health(data)
+    decision_health = (data.get("decision_health_state") or
+                       evaluate_decision_health(data, previous=previous))
+    market_bias = str(decision_health.get("marketBias") or "NEUTRAL")
+    entry_confirmation = str(decision_health.get("entryConfirmation") or
+                             "BLOCKED_BY_DATA")
+    defense_state = str(decision_health.get("defenseState") or "INACTIVE")
     settings = get_settings()
     current_price = float((data.get("normalized_analysis") or {}).get("currentPrice") or 0)
     spread = float((data.get("current_price") or {}).get("spread") or 0)
@@ -329,7 +340,12 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
     fact_types = {str(item.get("event_type") or "")
                   for item in data.get("signal_facts") or [] if isinstance(item, dict)}
     risk_gate = "PASS"
-    if not health["healthy"]:
+    if entry_confirmation != "READY":
+        action: FinalAction = "NO_TRADE"
+        primary = ("WAIT_15M_CLOSE" if entry_confirmation == "WAIT_15M_CLOSE"
+                   else "BLOCKED_BY_DATA")
+        risk_gate = "DATA_INVALID"
+    elif not health["healthy"]:
         action: FinalAction = "NO_TRADE"
         primary, risk_gate = "DATA_STALE", "DATA_INVALID"
     elif bool(event.get("event_lockout") or event.get("post_event_wait")):
@@ -346,6 +362,14 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
         action, primary, risk_gate = "WAIT", "BEHAVIOR_WAIT_PULLBACK", "WAIT"
     elif str(assistant.get("regime")) in {"RANGE", "NO_EDGE", "REVERSAL_RISK"}:
         action, primary, risk_gate = "NO_TRADE", "STRUCTURE_UNCLEAR", "NO_TRADE"
+    elif (defense_state == "BROKEN_CONFIRMED"
+          and (not selected or selected.direction == decision_health.get("side"))):
+        action, primary, risk_gate = "NO_TRADE", "SCENARIO_DEFENSE_INVALIDATED", "RISK_BLOCK"
+    elif (defense_state == "BROKEN_CONFIRMED" and selected
+          and selected.direction != decision_health.get("side")
+          and not (fact_types & {"RETEST_REJECTED", "OPPOSITE_SETUP_CONFIRMED"})):
+        action, primary, risk_gate = (
+            "NO_TRADE", "DEFENSE_BREAK_WAIT_OPPOSITE_CONFIRMATION", "RISK_BLOCK")
     elif (selected and selected.lifecycle_state == "ENTRY_READY"
           and entry_location == "IN_EXECUTABLE_ZONE" and valid_stop):
         if rr is None or rr < settings.decision_assistant_min_rr:
@@ -384,6 +408,7 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
         return round(value / hysteresis_delta) * hysteresis_delta if hysteresis_delta else value
     signature_payload = (
         action, primary, scenario_id, selected.scenario_version if selected else 1,
+        market_bias, entry_confirmation, defense_state,
         str(assistant.get("regime") or ""),
         tuple(stable_level(v) for v in zone) if zone else None,
         stable_level(selected.invalidation_price) if selected else None,
@@ -396,7 +421,10 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
     decision_id = hashlib.sha256(
         f"{data.get('symbol', 'XAUUSD')}|{version}|{signature}".encode()).hexdigest()[:24]
     state_map = {"ENTER_LONG": "LONG_READY", "ENTER_SHORT": "SHORT_READY",
-                 "NO_TRADE": "NO_TRADE", "MANAGE_POSITION": "MANAGE_POSITION",
+                 "NO_TRADE": (str(base.get("state") or "NO_TRADE")
+                              if primary in {"WAIT_15M_CLOSE", "BLOCKED_BY_DATA"}
+                              else "NO_TRADE"),
+                 "MANAGE_POSITION": "MANAGE_POSITION",
                  "WAIT": str(base.get("state") or "WAIT")}
     major_update = bool(fact_types & {
         "BULLISH_RESTORED", "BEARISH_CONFIRMED", "BREAKOUT_CONFIRMED",
@@ -461,11 +489,19 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
                 "livePriceState") == "LIVE_TESTING_RECLAIM",
         },
         "dataAgeSeconds": health.get("dataAgeSeconds"),
+        "marketBias": market_bias,
+        "dataHealth": decision_health.get("dataHealth"),
+        "entryConfirmation": entry_confirmation,
+        "defenseState": defense_state,
+        "defenseLevel": decision_health.get("defenseLevel"),
+        "falseBreakDetected": bool(decision_health.get("falseBreakDetected")),
         "notificationSeverity": severity,
     })
     from app.engines.market_direction import resolve_market_direction
     direction_view = resolve_market_direction(data, previous)
-    base["marketDirection"] = direction_view["direction"]
+    base["marketDirection"] = (market_bias if direction_view["direction"] in {
+        "UNKNOWN", "NEUTRAL", ""} and market_bias != "NEUTRAL"
+        else direction_view["direction"])
     base["marketDirectionSource"] = direction_view["source"]
     base["entrySignal"] = ("READY" if base.get("canEnter") else
                            "PAUSED" if not health["healthy"] else "WAIT")
@@ -518,9 +554,12 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
     events: list[dict] = []
     event_types: list[str] = []
     if changed:
-        if primary == "DATA_STALE":
+        if (previous and primary in {
+                "DATA_STALE", "WAIT_15M_CLOSE", "BLOCKED_BY_DATA"}
+                and str(previous.get("primaryReason") or "") != primary):
             event_types.append("DATA_STALE")
-        elif str(previous.get("primaryReason") or "") == "DATA_STALE":
+        elif str(previous.get("primaryReason") or "") in {
+                "DATA_STALE", "WAIT_15M_CLOSE", "BLOCKED_BY_DATA"}:
             event_types.append("DATA_RECOVERED")
         if action in {"ENTER_LONG", "ENTER_SHORT"}:
             event_types.append("ENTRY_READY")
@@ -542,6 +581,8 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
         "PROFIT_STATE_CHANGED",
         "FAKE_BREAKOUT_CONFIRMED", "OPPOSITE_SETUP_CONFIRMED",
         "RECOVERY_SETUP_INVALIDATED",
+        "DEFENSE_TEST", "DEFENSE_HELD", "DEFENSE_BROKEN_CONFIRMED",
+        "DATA_STALE", "DATA_RECOVERED",
     }
     # Lifecycle facts are state transitions in their own right. They must not
     # disappear merely because the high-level ENTER/WAIT/MANAGE action stayed
@@ -588,6 +629,12 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
             "marketBehaviorState": data.get("market_behavior_engine") or {},
             "marketDirection": base.get("marketDirection"),
             "entrySignal": base.get("entrySignal"),
+            "marketBias": base.get("marketBias"),
+            "dataHealth": base.get("dataHealth"),
+            "entryConfirmation": base.get("entryConfirmation"),
+            "defenseState": base.get("defenseState"),
+            "defenseLevel": base.get("defenseLevel"),
+            "primaryTriggerId": scenario_id,
             "notificationEligible": True,
             **{key: canonical_fact.get(key) for key in (
                 "tradePlanId", "tradeThesis", "warningLevel", "hardInvalidation",

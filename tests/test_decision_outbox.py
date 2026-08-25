@@ -479,7 +479,10 @@ async def test_t1_to_t6_stable_breakout_fingerprint_and_retry():
                      "triggerPrice": "4606.18", "chaseLimit": "4609.88",
                      "invalidationPrice": "4590.00",
                      "sourceCandleTime": "2026-08-21T13:45:00+00:00",
-                     "canonicalStateVersion": "1"}
+                     "canonicalStateVersion": "1",
+                     "canonicalState": "WAIT_BREAKOUT_CONFIRMATION",
+                     "marketBias": "NEUTRAL", "entryConfirmation": "",
+                     "defenseState": "", "primaryTriggerId": "BO-dedup-4606"}
     first = persist_decision_events("XAUUSD-DEDUP-T1-T6", [t1])
     assert len(first) == 1
     deliveries = []

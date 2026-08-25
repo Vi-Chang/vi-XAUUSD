@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from typing import Any
 
+from app.engines.decision_health import evaluate_decision_health, evaluate_defense_state
 from app.engines.freshness_state import evaluate_freshness_state
 from app.utils.timeutils import iso_utc, parse_utc
 
@@ -82,6 +83,8 @@ def build_realtime_presentation(data: dict, *, price: float | None = None,
                                 now: datetime | None = None) -> dict:
     now_utc = parse_utc(now or datetime.now(timezone.utc)) or datetime.now(timezone.utc)
     normalized = data.get("normalized_analysis") or {}
+    decision_health = (data.get("decision_health_state") or
+                       evaluate_decision_health(data, now=now_utc))
     current = _num(price if price is not None else normalized.get("currentPrice"))
     current = current if current is not None else _num((data.get("current_price") or {}).get("mid")) or 0.0
     setup = _active_setup(data)
@@ -93,11 +96,15 @@ def build_realtime_presentation(data: dict, *, price: float | None = None,
     invalidation = _num(setup.get("stopPrice") or setup.get("invalidationPrice"))
     targets = [_num(setup.get(f"tp{i}")) for i in range(1, 4)]
     targets = [value for value in targets if value is not None]
-    closed_price = _num(normalized.get("lastClosedCandlePrice"))
-    closed_at = normalized.get("lastClosedCandleTimestamp") or ""
+    latest_closed = decision_health.get("latestClosed15m") or {}
+    context_closed = decision_health.get("contextClosed15m") or {}
+    closed_price = _num(latest_closed.get("close"))
+    context_closed_price = _num(context_closed.get("close"))
+    closed_at = str(latest_closed.get("closeTime") or "")
     bullish = direction != "SHORT"
     crossed = bool(trigger is not None and (current >= trigger if bullish else current <= trigger))
-    confirmed = bool(trigger is not None and closed_price is not None
+    confirmed = bool(decision_health.get("entryConfirmation") == "READY"
+                     and trigger is not None and closed_price is not None
                      and (closed_price >= trigger if bullish else closed_price <= trigger))
     too_far = bool(chase is not None and (current > chase if bullish else current < chase))
     if confirmed and too_far:
@@ -112,10 +119,15 @@ def build_realtime_presentation(data: dict, *, price: float | None = None,
     else:
         opportunity = "WAITING"
         trigger_state = "WAIT_BREAKOUT_CONFIRMATION"
-    defense_state = "ACTIVE"
-    if invalidation is not None and ((direction == "SHORT" and current > invalidation)
-                                     or (direction == "LONG" and current < invalidation)):
-        defense_state = "POSITION_DEFENSE_TRIGGERED"
+    defense = evaluate_defense_state(
+        defense_level=invalidation, side=direction, current_price=current,
+        atr15=_num(normalized.get("atr15")) or 0.0,
+        closed_context=latest_closed,
+        entry_confirmation=str(decision_health.get("entryConfirmation") or
+                               "BLOCKED_BY_DATA"),
+        previous=decision_health,
+    )
+    defense_state = defense["defenseState"]
     next_close = _next_close(now_utc)
     freshness_input = {
         **data,
@@ -139,6 +151,11 @@ def build_realtime_presentation(data: dict, *, price: float | None = None,
     payload = {
         "currentPrice": current, "quoteTimeUtc": iso_utc(quote_time or normalized.get("marketDataTimestamp")),
         "latestClosed15mPrice": closed_price, "latestClosed15mTimeUtc": iso_utc(closed_at),
+        "contextClosed15mPrice": context_closed_price,
+        "contextClosed15mTimeUtc": iso_utc(context_closed.get("closeTime")),
+        "marketBias": decision_health.get("marketBias"),
+        "dataHealth": decision_health.get("dataHealth"),
+        "entryConfirmation": defense.get("entryConfirmation"),
         "triggerPrice": trigger, "triggerState": trigger_state,
         "intrabarCrossed": crossed, "closedConfirmed": confirmed,
         "distanceToTrigger": distance_trigger,
@@ -151,6 +168,8 @@ def build_realtime_presentation(data: dict, *, price: float | None = None,
         "targets": targets, "effectiveRR": rr,
         "priceInvariantValid": validate_trade_prices(direction, reference_entry, invalidation, targets),
         "opportunityState": opportunity, "defenseState": defense_state,
+        "defenseLevel": defense.get("defenseLevel"),
+        "falseBreakDetected": defense.get("falseBreakDetected"),
         "nextCandleCloseAtUtc": iso_utc(next_close),
         "secondsToCandleClose": max(0, int((next_close - now_utc).total_seconds())),
         "freshnessState": freshness, "activeSetupId": setup.get("setupId") or setup.get("setup_id"),
