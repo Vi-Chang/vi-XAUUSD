@@ -59,6 +59,14 @@ class QuotaExceededError(ProviderError):
     """免費層配額用盡;呼叫端應降頻或改用其他來源。"""
 
 
+class ProviderRateLimitedError(QuotaExceededError):
+    """Provider returned 429; callers should use cache until retry_after."""
+
+    def __init__(self, message: str, *, retry_after: float | None = None) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
 async def with_retry(fn: Callable[[], Awaitable[T]], *, retries: int = 3,
                      base_delay: float = 1.0, max_delay: float = 30.0,
                      provider: str = "?") -> T:
@@ -74,10 +82,14 @@ async def with_retry(fn: Callable[[], Awaitable[T]], *, retries: int = 3,
             if attempt >= retries:
                 break
             delay = min(max_delay, base_delay * (2 ** attempt)) * (1 + random.random() * 0.3)
+            from app.services.secret_sanitizer import sanitize_text
             logger.warning("provider %s failed (attempt %d/%d): %s — retry in %.1fs",
-                           provider, attempt + 1, retries, exc, delay)
+                           provider, attempt + 1, retries, sanitize_text(exc), delay)
             await asyncio.sleep(delay)
-    raise ProviderError(f"{provider}: retries exhausted: {last_exc}") from last_exc
+    from app.services.secret_sanitizer import sanitize_text
+    # The original transport exception may embed credential-bearing URLs.
+    raise ProviderError(
+        f"{provider}: retries exhausted: {sanitize_text(last_exc)}") from None
 
 
 class MarketDataProvider(ABC):

@@ -24,6 +24,7 @@ from app.engines.data_health_gate import evaluate_data_health
 from app.engines.decision_assistant import evaluate_decision_assistant
 from app.engines.dynamic_profit_protection import evaluate_dynamic_profit
 from app.engines.entry_opportunity import evaluate_entry_opportunities
+from app.engines.fake_breakout_recovery import evaluate_fake_breakout_recovery
 from app.engines.final_decision_engine import evaluate_final_decision
 from app.engines.hypothetical_exit_advisor import (
     build_hypothetical_exit_plans,
@@ -195,6 +196,10 @@ def evaluate_market_monitors(
     break_state, break_events = evaluate_break_lifecycle(
         m15_closed, data=data, previous=_load(symbol, "break_lifecycle"))
     _save(symbol, "break_lifecycle", break_state)
+    recovery_state, recovery_events = evaluate_fake_breakout_recovery(
+        data=data, break_state=break_state,
+        previous=_load(symbol, "fake_breakout_recovery"))
+    _save(symbol, "fake_breakout_recovery", recovery_state)
     breakout_setup_state, breakout_setup_events = evaluate_breakout_setups(
         {**data, "entry_engine": entry, "latest_closed_15m": latest_closed_15m},
         stored_breakout_setups)
@@ -224,6 +229,8 @@ def evaluate_market_monitors(
             **continuation_state, "events": continuation_events},
         "double_sweep_statistical": {
             **double_sweep_state, "events": double_sweep_events},
+        "fake_breakout_recovery": {
+            **recovery_state, "events": recovery_events},
     }
     wick_state, wick_events = evaluate_wick_rejection(
         m15_closed, data=data, previous=_load(symbol, "wick_rejection"))
@@ -256,7 +263,8 @@ def evaluate_market_monitors(
                     + virtual_events + trade_plan_events + breakout_setup_events
                     + continuation_events + regime_events + behavior_events
                     + assistant_events + opportunity_events)
-    signal_facts += double_sweep_events + break_events + profit_events
+    signal_facts += (double_sweep_events + break_events + recovery_events
+                     + profit_events)
     final_input = {**data, **monitor_result, "signal_facts": signal_facts}
     final_state, final_events = evaluate_final_decision(
         final_input, _load(symbol, "final_decision")

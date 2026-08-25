@@ -51,9 +51,12 @@ async def lifespan(app: FastAPI):
     setup_logging()
     s = get_settings()
     init_db()
-    state.provider = get_primary_provider()
+    from app.services.market_data_service import as_market_data_service
+    state.provider = as_market_data_service(get_primary_provider())
     from app.providers import get_fast_quote_provider
-    state.fast_provider = get_fast_quote_provider()
+    fast_provider = get_fast_quote_provider()
+    state.fast_provider = (
+        as_market_data_service(fast_provider) if fast_provider is not None else None)
     logger.info("tiered: fast quote provider = %s",
                 state.fast_provider.name if state.fast_provider else
                 f"none (L1 degraded to {state.provider.name})")
@@ -62,7 +65,7 @@ async def lifespan(app: FastAPI):
     if (s.twelve_data_api_key and not s.mock_data_mode
             and state.provider.name != "twelve_data"):
         from app.providers.twelve_data import TwelveDataProvider
-        state.secondary = TwelveDataProvider()
+        state.secondary = as_market_data_service(TwelveDataProvider())
     from datetime import datetime, timezone
     state.started_at = datetime.now(timezone.utc)
     # 容器重啟後從持久化分析恢復健康狀態，避免 API 有資料但
@@ -77,15 +80,37 @@ async def lifespan(app: FastAPI):
                         "所有寫入端點已停用(fail-closed),/health/ready 將回報 not-ready。"
                         "請修正組態後重啟。", _auth_why)
     scheduler = None
-    if not s.disable_scheduler:
+    from app.services.scheduler_ownership import SchedulerOwnership
+    scheduler_ownership = SchedulerOwnership(s.redis_url)
+    owns_scheduler = await scheduler_ownership.acquire() if not s.disable_scheduler else False
+    state.scheduler_ownership = scheduler_ownership
+    # In a multi-replica deployment only the scheduler owner may consume the
+    # external market-data budget. Followers serve the shared DB/LKG cache.
+    allow_external_market_data = bool(s.disable_scheduler or owns_scheduler)
+    for market_provider in (state.provider, state.fast_provider, state.secondary):
+        setter = getattr(market_provider, "set_external_fetch_allowed", None)
+        if callable(setter):
+            setter(allow_external_market_data)
+    if not s.disable_scheduler and owns_scheduler:
         scheduler = build_scheduler()
         scheduler.start()
         state.scheduler_started = True
         logger.info("scheduler started (mock=%s, provider=%s)",
                     s.mock_data_mode, state.provider.name)
+    elif not s.disable_scheduler:
+        state.scheduler_follower = True
+        logger.info("scheduler disabled on this replica; another instance owns polling")
     yield
     if scheduler:
         scheduler.shutdown(wait=False)
+    await scheduler_ownership.release()
+    # Lifespan can run more than once in tests, rolling restarts and embedded
+    # ASGI hosts.  Do not leave a released ownership object behind: jobs would
+    # otherwise interpret the next lifecycle as a live follower and silently
+    # skip all evaluations.
+    state.scheduler_started = False
+    state.scheduler_follower = False
+    state.scheduler_ownership = None
     if state.provider:
         await state.provider.close()
     if state.fast_provider:
@@ -315,6 +340,12 @@ async def _run_full_analysis_shared(trigger: str) -> dict:
     from datetime import datetime, timezone
 
     from app.services.single_flight import run_analysis_shared
+    if getattr(state, "scheduler_follower", False):
+        if state.latest_result is not None:
+            return state.latest_result
+        raise HTTPException(
+            status_code=503,
+            detail="此副本不負責行情同步，請稍後讀取主排程產生的分析。")
     try:
         result = await run_analysis_shared(state.provider, trigger=trigger)
     except asyncio.TimeoutError as exc:

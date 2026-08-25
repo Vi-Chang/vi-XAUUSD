@@ -14,6 +14,14 @@ def test_expected_closed_15m_uses_candle_open_timestamp_after_grace():
         2026, 8, 13, 16, 30, tzinfo=timezone.utc)
 
 
+def test_0007_taipei_still_uses_2345_as_latest_closed_15m():
+    # 2026-08-25 00:07 Asia/Taipei == 2026-08-24 16:07 UTC.  The 00:00
+    # candle is still forming, so the latest closed candle opened at 23:45.
+    now = datetime(2026, 8, 24, 16, 7, tzinfo=timezone.utc)
+    assert expected_closed_15m(now, delay_seconds=0) == datetime(
+        2026, 8, 24, 15, 45, tzinfo=timezone.utc)
+
+
 def test_scheduler_checks_candle_close_every_30_seconds():
     from app.services.scheduler import build_scheduler
 

@@ -32,6 +32,7 @@ def test_case_b_close_break_then_follow_through_confirms():
     confirmed, _ = evaluate_break_lifecycle(second, data=data(), previous=pending)
     assert pending["state"] == "BREAK_CONFIRMATION_PENDING"
     assert confirmed["state"] == "BREAK_CONFIRMED"
+    assert confirmed["directionalState"] == "BEAR_BREAKOUT_CONFIRMED"
 
 
 def test_case_c_close_break_then_fast_reclaim_does_not_invalidate_htf():

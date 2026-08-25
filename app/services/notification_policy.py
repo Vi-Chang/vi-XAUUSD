@@ -23,6 +23,8 @@ IMPORTANT = {
     "BREAK_PENDING", "BREAK_CONFIRMED", "RECLAIM_FAILED",
     "LIQUIDITY_SWEEP_CANDIDATE", "PROFIT_GIVEBACK_ALERT",
     "PROFIT_STATE_CHANGED",
+    "FAKE_BREAKOUT_CONFIRMED", "OPPOSITE_SETUP_CONFIRMED",
+    "RECOVERY_SETUP_INVALIDATED",
 }
 INFO = {"REGIME_MAJOR_CHANGE", "MARKET_CLOSED", "SETUP_CREATED", "SETUP_ARMED"}
 WAIT_STATES = {"WAIT", "NO_TRADE", "WAIT_CONFIRMATION"}
@@ -45,19 +47,30 @@ def priority(event_type: str, payload: dict) -> str:
 def eligibility(payload: dict) -> dict:
     event_type = str(payload.get("event_type") or "DECISION_UPDATED")
     level = priority(event_type, payload)
+    user_priority = {
+        "CRITICAL": "P0", "ACTION": "P1", "IMPORTANT": "P2",
+        "INFO": "P3", "DEBUG": "P4",
+    }.get(level, "P4")
     if event_type == "CANDLE_FINALIZED":
-        return {"eligible": False, "reasonCode": "SKIP_LOW_PRIORITY", "priority": "DEBUG"}
+        return {"eligible": False, "reasonCode": "SKIP_LOW_PRIORITY",
+                "priority": "DEBUG"}
     if event_type in {"NO_TRADE", "WAIT"}:
-        return {"eligible": False, "reasonCode": "SKIP_SAME_STATE", "priority": "DEBUG"}
+        return {"eligible": False, "reasonCode": "SKIP_SAME_STATE",
+                "priority": "DEBUG"}
     if level == "DEBUG":
-        return {"eligible": False, "reasonCode": "SKIP_LOW_PRIORITY", "priority": level}
-    return {"eligible": True, "reasonCode": f"SEND_{level}_EVENT", "priority": level}
+        return {"eligible": False, "reasonCode": "SKIP_LOW_PRIORITY",
+                "priority": level}
+    return {"eligible": True, "reasonCode": f"SEND_{level}_EVENT",
+            "priority": level, "userPriority": user_priority}
 
 
 def actionability_ttl_seconds(event_type: str) -> int | None:
     if event_type in {"ENTRY_NOW", "ENTRY_READY"}:
         return 5 * 60
-    if event_type in {"WAIT_RETEST", "DOUBLE_SWEEP_CONFIRMED", "DATA_RECOVERED"}:
+    if event_type in {
+        "WAIT_RETEST", "DOUBLE_SWEEP_CONFIRMED", "DATA_RECOVERED",
+        "FAKE_BREAKOUT_CONFIRMED", "OPPOSITE_SETUP_CONFIRMED",
+    }:
         return 30 * 60
     if event_type in {
         "STOP_TRIGGERED", "POSITION_EXIT", "POSITION_DEFEND",

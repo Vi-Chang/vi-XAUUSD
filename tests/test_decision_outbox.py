@@ -42,6 +42,7 @@ from app.services.decision_outbox import (
     deliver_pending_telegram,
     format_telegram_event,
     persist_decision_events,
+    reconcile_unknown_deliveries,
     telegram_delivery_status,
 )
 
@@ -148,7 +149,7 @@ async def test_outbox_retries_persists_message_id_and_deduplicates_restart():
         stored = db.execute(
             select(DecisionEvent).where(DecisionEvent.event_id == event["eventId"])
         ).scalar_one()
-        assert notification.status == "SENT"
+        assert notification.status == "CONFIRMED"
         assert notification.message_id == "tg-message-991"
         assert notification.sent_at is not None
         assert stored.payload["currentPrice"] == event["currentPrice"]
@@ -164,7 +165,7 @@ async def test_outbox_retries_persists_message_id_and_deduplicates_restart():
         )
         assert len(count) == 1
     status = telegram_delivery_status()
-    assert status["status"] == "SENT"
+    assert status["status"] == "CONFIRMED"
     assert status["messageId"] == "tg-message-991"
 
 
@@ -215,7 +216,7 @@ async def test_health_test_notification_is_not_cancelled_by_current_market_decis
     with db_session() as db:
         row = db.execute(select(TelegramNotification).where(
             TelegramNotification.event_id == event["eventId"])).scalar_one()
-        assert row.status == "SENT"
+        assert row.status == "CONFIRMED"
         assert row.message_id == "telegram-health-message-1"
 
 
@@ -477,7 +478,8 @@ async def test_t1_to_t6_stable_breakout_fingerprint_and_retry():
                      "direction": "LONG", "status": "WAIT_BREAKOUT_CONFIRMATION",
                      "triggerPrice": "4606.18", "chaseLimit": "4609.88",
                      "invalidationPrice": "4590.00",
-                     "sourceCandleTime": "2026-08-21T13:45:00+00:00"}
+                     "sourceCandleTime": "2026-08-21T13:45:00+00:00",
+                     "canonicalStateVersion": "1"}
     first = persist_decision_events("XAUUSD-DEDUP-T1-T6", [t1])
     assert len(first) == 1
     deliveries = []
@@ -542,6 +544,35 @@ async def test_telegram_timeout_is_not_automatically_resent():
     assert await deliver_pending_telegram(
         sender=ambiguous_timeout, event_id=created[0]["eventId"]) == 0
     assert calls == 1
+    with db_session() as db:
+        notice = db.execute(select(TelegramNotification).where(
+            TelegramNotification.event_id == created[0]["eventId"])).scalar_one()
+        assert notice.status == "DELIVERY_UNKNOWN"
+
+
+@pytest.mark.asyncio
+async def test_delivery_unknown_receipt_and_same_fingerprint_never_resend():
+    event = _breakout_dedup_event(
+        event_id="unknown-fingerprint-1", trigger=4696.75, chase=4700.0)
+    event.update({"decisionVersion": 7,
+                  "candleCloseTime": "2026-08-24T06:00:00+00:00"})
+    created = persist_decision_events("XAUUSD-UNKNOWN-FP", [event])
+    calls = 0
+
+    async def ambiguous_receipt(_message):
+        nonlocal calls
+        calls += 1
+        return "DELIVERY_UNKNOWN"
+
+    assert await deliver_pending_telegram(
+        sender=ambiguous_receipt, event_id=created[0]["eventId"]) == 0
+    for index in range(2, 4):
+        repeated = {**event, "eventId": f"unknown-fingerprint-{index}"}
+        assert persist_decision_events("XAUUSD-UNKNOWN-FP", [repeated]) == []
+    assert await deliver_pending_telegram(
+        sender=ambiguous_receipt, event_id=created[0]["eventId"]) == 0
+    assert calls == 1
+    assert reconcile_unknown_deliveries()["unresolved"] >= 1
     with db_session() as db:
         notice = db.execute(select(TelegramNotification).where(
             TelegramNotification.event_id == created[0]["eventId"])).scalar_one()

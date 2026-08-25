@@ -54,14 +54,28 @@ class AppState:
         # ── 監控用(readiness/health)──
         self.last_quote_ok_at: datetime | None = None  # 最後一次成功取得報價
         self.scheduler_started = False  # 排程是否已啟動
+        self.scheduler_follower = False
+        self.scheduler_ownership = None
         self.last_market_freshness: str | None = None
         self.last_trigger_cross_key: str | None = None
+        self.last_market_data_health: str | None = None
+        # Full-analysis failures are handled as one persistent incident.  Quote
+        # monitoring continues while the last known-good market structure is
+        # exposed in fail-closed mode.
+        from app.services.analysis_failure_recovery import AnalysisFailureRecovery
+
+        self.analysis_recovery = AnalysisFailureRecovery()
 
     def mark(self, job: str) -> None:
         self.last_job_run[job] = datetime.now(timezone.utc)
 
 
 state = AppState()
+
+
+def _owns_scheduler() -> bool:
+    owner = getattr(state, "scheduler_ownership", None)
+    return owner is None or bool(getattr(owner, "owned", False))
 
 
 def _dump(payload: dict) -> str:
@@ -158,6 +172,8 @@ def _analysis_closed_15m() -> datetime | None:
 
 async def job_candle_close_refresh() -> None:
     """Refresh once a newly closed 15M candle should be available."""
+    if not _owns_scheduler():
+        return
     if not market_is_open():
         return
     state.mark("candle_close_refresh")
@@ -191,6 +207,8 @@ async def job_candle_close_refresh() -> None:
 
 
 async def job_quote_l1() -> None:
+    if not _owns_scheduler():
+        return
     if not market_is_open():
         return
     state.mark("quote_l1")
@@ -199,8 +217,10 @@ async def job_quote_l1() -> None:
     try:
         tick = await provider.get_live_price()
         from app.services.api_counter import bump
-
-        bump(provider.name)
+        # Twelve Data counts every physical HTTP attempt inside its adapter so
+        # retries are visible. Other providers retain scheduler-level counting.
+        if provider.name != "twelve_data":
+            bump(provider.name)
         state.quote_cache.add(tick)
         state.l1_fail_count = 0
         state.l1_alerted = False
@@ -235,6 +255,25 @@ async def job_quote_l1() -> None:
                 "time": int(tick.quote_time.timestamp()),
             }
         )
+        provider_health_fn = getattr(provider, "health_snapshot", None)
+        provider_health = provider_health_fn() if callable(provider_health_fn) else {}
+        # A rate-limited quote may legitimately return LKG data. Re-run the
+        # canonical analysis immediately so the entry gate and one-time
+        # DEGRADED notification change together. A successful HALF_OPEN probe
+        # likewise forces recovery synchronization without waiting for L2.
+        if (provider_health.get("status") == "DEGRADED"
+                and state.last_market_data_health != "DEGRADED"):
+            await run_full_analysis(
+                trigger="market_data_degraded",
+                reason_zh="行情供應商暫時受限，使用最後有效資料並暫停新進場",
+            )
+            return
+        if provider_health.get("recoverySyncPending"):
+            await run_full_analysis(
+                trigger="market_data_recovered",
+                reason_zh="行情供應商恢復，立即補齊各週期並重新判斷",
+            )
+            return
         if state.latest_result:
             from app.services.market_monitor_service import evaluate_live_quote_state
 
@@ -329,6 +368,8 @@ async def job_quote_l1() -> None:
 
 
 async def job_structure_l2() -> None:
+    if not _owns_scheduler():
+        return
     if not market_is_open():
         return
     state.mark("structure_l2")
@@ -432,11 +473,34 @@ async def run_full_analysis(*, trigger: str, reason_zh: str | None) -> None:
 
         tick = state.quote_cache.fresh_tick(max_age_seconds=l1_interval_seconds() * 3)
         # single-flight:與手動 API / 首載共用同一道鎖,並發只實際跑一次
-        result = await run_analysis_shared(
-            state.provider, trigger=trigger, tick=tick, cached_only=degraded
+        async def _run_analysis():
+            return await run_analysis_shared(
+                state.provider, trigger=trigger, tick=tick, cached_only=degraded
+            )
+
+        result, degraded_result = await state.analysis_recovery.execute(
+            _run_analysis,
+            notifier=state.notifier,
+            current=state.latest_result,
+            symbol="XAUUSD",
+            module="full_analysis",
         )
+        if result is None:
+            if degraded_result:
+                state.latest_result = degraded_result
+                await broadcast_all(
+                    {"type": "analysis_degraded", "data": degraded_result}
+                )
+            return
         state.latest_result = result.model_dump()
         state.last_full_analysis = datetime.now(timezone.utc)
+        from app.services.market_data_notifications import notify_market_data_transition
+        state.last_market_data_health = await notify_market_data_transition(
+            notifier=state.notifier,
+            previous=state.last_market_data_health,
+            health=state.latest_result.get("market_data_health") or {},
+            payload=state.latest_result,
+        )
 
         action = result.decision.action
         entry = state.latest_result.get("entry_engine") or {}
@@ -469,16 +533,25 @@ async def run_full_analysis(*, trigger: str, reason_zh: str | None) -> None:
         await broadcast_private({"type": "analysis", "data": full})
     except Exception as exc:
         logger.exception("full_analysis failed")
-        if state.notifier:
-            await state.notifier.notify(
-                "RISK", "analysis_error", f"分析失敗:{exc}", severity="ERROR"
-            )
+        # Failures after the analysis call (projection, presentation, broadcast,
+        # etc.) share the same incident policy: one durable alert per fingerprint
+        # and a last-known-good snapshot.  Never emit the raw exception to users.
+        degraded_result = await state.analysis_recovery.report_failure(
+            exc,
+            notifier=state.notifier,
+            current=state.latest_result,
+            symbol="XAUUSD",
+            module="full_analysis_postprocess",
+        )
+        state.latest_result = degraded_result
 
 
 # ═══ 其他既有 jobs ═════════════════════════════════════════
 
 
 async def job_cross_check() -> None:
+    if not _owns_scheduler():
+        return
     """Twelve Data 交叉驗證(主力=TD 時 secondary 為 None,自動跳過)。"""
     if not market_is_open() or state.secondary is None:
         return
@@ -562,8 +635,12 @@ async def job_outcome_backfill() -> None:
 async def job_telegram_outbox() -> None:
     """Retry-safe Telegram delivery; rows survive restarts."""
     state.mark("telegram_outbox")
-    from app.services.decision_outbox import deliver_pending_telegram
+    from app.services.decision_outbox import (
+        deliver_pending_telegram,
+        reconcile_unknown_deliveries,
+    )
 
+    reconcile_unknown_deliveries()
     await deliver_pending_telegram()
 
 

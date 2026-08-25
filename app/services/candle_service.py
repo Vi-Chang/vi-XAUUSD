@@ -137,12 +137,34 @@ def store_candles(candles: list[Candle]) -> int:
 
 async def refresh_candles(provider: MarketDataProvider, timeframes: tuple[str, ...],
                           count: int = 300, symbol: str = "XAUUSD") -> dict[str, list[Candle]]:
-    """抓取並儲存;斷線/缺漏由 count 覆蓋範圍自動補齊(重抓即補)。"""
+    """Refresh core timeframes first and degrade one timeframe independently."""
     out: dict[str, list[Candle]] = {}
-    for tf in timeframes:
-        candles = await provider.get_candles(symbol, tf, count)
-        store_candles(candles)
-        out[tf] = candles
+    rank = {"15M": 0, "1H": 1, "4H": 2, "1D": 3, "5M": 4, "30M": 5, "1W": 6}
+    ordered = sorted(dict.fromkeys(timeframes), key=lambda item: rank.get(item, 99))
+    core = {"15M", "1H", "4H", "1D"}
+    for tf in ordered:
+        try:
+            from app.services.market_data_service import MarketDataService
+            if isinstance(provider, MarketDataService):
+                durable = load_candles_from_db(tf, count, symbol)
+                provider.prime_candles(tf, durable, symbol)
+                candles = await provider.get_candles(
+                    symbol, tf, count, caller="MarketAnalysisScheduler",
+                    reason="canonical_analysis")
+            else:
+                candles = await provider.get_candles(symbol, tf, count)
+            store_candles(candles)
+            out[tf] = candles
+        except Exception as exc:
+            cached = load_candles_from_db(tf, count, symbol)
+            logger.warning("timeframe %s refresh degraded; using %d LKG candles: %s",
+                           tf, len(cached), type(exc).__name__)
+            if hasattr(provider, "mark_timeframe_degraded"):
+                provider.mark_timeframe_degraded(tf, exc, cached)
+            if cached or tf not in core:
+                out[tf] = cached
+                continue
+            raise
     return out
 
 

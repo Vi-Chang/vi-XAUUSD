@@ -89,10 +89,41 @@ def collect_signal_candidates(data: dict) -> list[SignalCandidate]:
     """Convert heterogeneous engine output to one auditable candidate schema."""
     candidates: list[SignalCandidate] = []
     assistant = data.get("decision_assistant") or {}
+    recovery = data.get("fake_breakout_recovery") or {}
+    recovery_active = bool(recovery.get("active")) and str(recovery.get("state")) in {
+        "WAIT_CONFIRMATION", "LONG_SETUP_CONFIRMED", "SHORT_SETUP_CONFIRMED"}
+    recovery_direction = str(recovery.get("oppositeDirection") or "").upper()
+    invalidated_direction = str(recovery.get("invalidatedBreakoutDirection") or "").upper()
+    recovery_boost = int(recovery.get("oppositeBiasBoost") or 0)
     setup_ledgers: list[dict] = []
+    if recovery_active:
+        next_action = recovery.get("nextAction") or {}
+        targets = list(next_action.get("targets") or [])
+        setup_ledgers.append({
+            "setupId": f"FBR-{recovery.get('sourceFailureId')}",
+            "lineageId": str(recovery.get("sourceFailureId") or ""),
+            "direction": recovery_direction, "status": "WATCHING",
+            "signalScore": min(100, 50 + recovery_boost),
+            "breakoutTrigger": next_action.get("triggerLevel"),
+            "stopPrice": next_action.get("invalidationLevel"),
+            "tp1": targets[0] if targets else None,
+            "tp2": targets[1] if len(targets) > 1 else None,
+            "tp3": targets[2] if len(targets) > 2 else None,
+            "expiresAt": recovery.get("expiresAt"),
+            "type": "FAKE_BREAKOUT_RECOVERY",
+            "passedReasons": [
+                str(recovery.get("breakoutFailureState") or ""),
+                str(recovery.get("liquiditySweepState") or ""),
+            ],
+            "missingConditions": ["等待新的15M收盤完成反向確認"],
+        })
     opportunity_engine = data.get("entry_opportunity_engine") or {}
     unified_opportunities = list(opportunity_engine.get("opportunities") or [])
     for opportunity in unified_opportunities:
+        # Distant legacy anchors remain visible as deep-pullback backups, but
+        # cannot compete for the canonical next action.
+        if opportunity.get("primary_eligible") is False:
+            continue
         zone = opportunity.get("entry_zone") or {}
         setup_ledgers.append({
             "setupId": opportunity.get("opportunity_id"),
@@ -103,8 +134,9 @@ def collect_signal_candidates(data: dict) -> list[SignalCandidate]:
             "entryZoneLow": zone.get("lower"), "entryZoneHigh": zone.get("upper"),
             "stopPrice": opportunity.get("tactical_stop"),
             "tp1": opportunity.get("target1"),
+            "breakoutTrigger": opportunity.get("trigger_level"),
             "expiresAt": opportunity.get("expires_at"),
-            "type": opportunity.get("type"),
+            "type": opportunity.get("entry_type") or opportunity.get("type"),
             # Only the post-confirmation, current execution RR can grant entry.
             "riskReward": opportunity.get("executable_rr"),
             "estimatedRR": opportunity.get("estimated_rr"),
@@ -142,6 +174,11 @@ def collect_signal_candidates(data: dict) -> list[SignalCandidate]:
             continue
         seen.add(key)
         raw_direction = str(item.get("direction") or "NEUTRAL").upper()
+        # A confirmed fast reclaim cancels the old break direction for this
+        # recovery window.  It does not grant the opposite trade; it only
+        # removes stale candidates and boosts fresh opposite-side candidates.
+        if recovery_active and raw_direction == invalidated_direction:
+            continue
         direction = cast(Direction, raw_direction if raw_direction in {"LONG", "SHORT"}
                          else "NEUTRAL")
         trigger = _number(item.get("breakoutTrigger") or item.get("triggerPrice"))
@@ -152,10 +189,16 @@ def collect_signal_candidates(data: dict) -> list[SignalCandidate]:
         reasons = list(item.get("passedReasons") or item.get("reasonCodes") or [])
         missing = list(item.get("missingConditions") or [])
         assistant_direction = str(assistant.get("direction") or "NEUTRAL").upper()
+        signal_score = int(item.get("signalScore") or 50)
+        if recovery_active and raw_direction == recovery_direction:
+            signal_score = min(100, signal_score + recovery_boost)
         candidates.append(SignalCandidate(
             source=str(item.get("type") or "scenario_engine"), timeframe="15M",
-            direction=direction, strength=int(item.get("signalScore") or 50),
-            confidence=int(item.get("confidence") or item.get("signalScore") or 50),
+            direction=direction, strength=signal_score,
+            confidence=min(100, int(item.get("confidence") or
+                                    item.get("signalScore") or 50)
+                           + (recovery_boost if recovery_active and
+                              raw_direction == recovery_direction else 0)),
             reason_codes=[str(x) for x in reasons + missing], trigger_price=trigger,
             invalidation_price=invalidation, entry_zone=_zone(item),
             chase_limit=_number(item.get("maxChasePrice")),
@@ -241,6 +284,7 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
     base, _legacy_events = evaluate_unified_decision(data, previous)
     candidates = collect_signal_candidates(data)
     assistant = data.get("decision_assistant") or {}
+    recovery = data.get("fake_breakout_recovery") or {}
     health = evaluate_data_health(data)
     settings = get_settings()
     current_price = float((data.get("normalized_analysis") or {}).get("currentPrice") or 0)
@@ -419,6 +463,15 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
         "dataAgeSeconds": health.get("dataAgeSeconds"),
         "notificationSeverity": severity,
     })
+    from app.engines.market_direction import resolve_market_direction
+    direction_view = resolve_market_direction(data, previous)
+    base["marketDirection"] = direction_view["direction"]
+    base["marketDirectionSource"] = direction_view["source"]
+    base["entrySignal"] = ("READY" if base.get("canEnter") else
+                           "PAUSED" if not health["healthy"] else "WAIT")
+    if recovery.get("active"):
+        base["fakeBreakoutRecovery"] = recovery
+        base["nextAction"] = recovery.get("nextAction") or {}
     ready_directions = {
         candidate.direction for candidate in candidates
         if candidate.lifecycle_state == "ENTRY_READY"
@@ -450,6 +503,14 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
                      "decisionId": safe_decision_id,
                      "decisionChanged": changed,
                      "decisionVersion": version})
+    # This field is consumed by both the dashboard and Telegram.  Derive it
+    # only after the consistency validator has had the final word so a
+    # fail-closed decision can never retain a stale READY label.
+    base["entrySignal"] = (
+        "READY" if bool(base.get("canEnter"))
+        else "PAUSED" if str(base.get("state") or "") in {"DATA_STALE", "NO_TRADE"}
+        else "WAIT"
+    )
     # Event publication must use the post-validation canonical result. Keeping
     # the pre-validation locals could emit ENTRY_READY after fail-closed.
     action = cast(FinalAction, str(base.get("finalAction") or "NO_TRADE"))
@@ -479,6 +540,8 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
         "BREAK_PENDING", "BREAK_CONFIRMED", "RECLAIM_FAILED",
         "LIQUIDITY_SWEEP_CANDIDATE", "PROFIT_GIVEBACK_ALERT",
         "PROFIT_STATE_CHANGED",
+        "FAKE_BREAKOUT_CONFIRMED", "OPPOSITE_SETUP_CONFIRMED",
+        "RECOVERY_SETUP_INVALIDATED",
     }
     # Lifecycle facts are state transitions in their own right. They must not
     # disappear merely because the high-level ENTER/WAIT/MANAGE action stayed
@@ -523,6 +586,8 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
             "signalFacts": list(data.get("signal_facts") or []),
             "marketBehavior": behavior,
             "marketBehaviorState": data.get("market_behavior_engine") or {},
+            "marketDirection": base.get("marketDirection"),
+            "entrySignal": base.get("entrySignal"),
             "notificationEligible": True,
             **{key: canonical_fact.get(key) for key in (
                 "tradePlanId", "tradeThesis", "warningLevel", "hardInvalidation",
@@ -532,5 +597,9 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
                 "opportunityId")
                if canonical_fact.get(key) is not None},
         })
+        if canonical_fact.get("fakeBreakoutRecovery"):
+            events[-1]["fakeBreakoutRecovery"] = canonical_fact["fakeBreakoutRecovery"]
+            events[-1]["nextAction"] = canonical_fact["fakeBreakoutRecovery"].get(
+                "nextAction") or {}
     base["events"] = events
     return base, events

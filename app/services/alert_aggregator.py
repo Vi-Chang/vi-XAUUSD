@@ -136,6 +136,9 @@ def notification_fingerprint_parts(event: dict) -> dict[str, str]:
         "chaseLimit": _price(chase),
         "invalidationPrice": _price(invalidation),
         "sourceCandleTime": str(source_time),
+        "canonicalStateVersion": str(
+            event.get("canonicalStateVersion") or event.get("decisionVersion") or
+            (event.get("canonicalDecision") or {}).get("decisionVersion") or "1"),
     }
     if str(event.get("event_type") or "") in {"DATA_STALE", "DATA_RECOVERED"}:
         # Freshness alerts are transitions, not candle-scoped market setups.
@@ -185,6 +188,11 @@ def notification_fingerprint(event: dict) -> str:
 
 def alert_category(event: dict) -> str:
     event_type = str(event.get("event_type") or "")
+    if event_type in {
+        "FAKE_BREAKOUT_CONFIRMED", "OPPOSITE_SETUP_CONFIRMED",
+        "RECOVERY_SETUP_INVALIDATED",
+    }:
+        return "MEANINGFUL_SCENARIO_UPDATE"
     if event_type in {"DOUBLE_SWEEP_CONFIRMED", "DOUBLE_SWEEP_EDGE_CONSUMED"}:
         return "MEANINGFUL_SCENARIO_UPDATE"
     if event.get("tradePlanId"):

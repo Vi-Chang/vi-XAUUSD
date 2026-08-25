@@ -64,6 +64,15 @@ class Settings(BaseSettings):
     twelve_data_api_key: str = ""
     twelve_data_daily_limit: int = 800
     twelve_data_minute_limit: int = 8
+    twelve_data_transient_retries: int = 1
+    twelve_data_rate_limit_base_backoff_seconds: int = 30
+    twelve_data_rate_limit_max_backoff_seconds: int = 240
+    twelve_data_rate_limit_jitter_ratio: float = 0.20
+    market_data_incremental_candle_count: int = 5
+    market_data_refresh_seconds: dict[str, int] = {
+        "5M": 60, "15M": 90, "30M": 150, "1H": 240,
+        "4H": 480, "1D": 1200, "1W": 3600,
+    }
 
     # ── 事件 / 跨市場(Phase 6)──
     finnhub_api_key: str = ""
@@ -238,6 +247,8 @@ class Settings(BaseSettings):
     decision_assistant_missed_entry_atr: float = 0.70
     decision_assistant_trigger_hysteresis_atr: float = 0.10
     decision_assistant_min_price_delta: float = 0.50
+    entry_anchor_max_distance_atr_mult: float = 1.20
+    entry_anchor_max_distance_price_pct: float = 0.0035
     long_breakout_threshold_atr: float = 0.10
     short_breakout_threshold_atr: float = 0.12
     long_pullback_threshold_atr: float = 0.70
@@ -260,6 +271,12 @@ class Settings(BaseSettings):
     break_confirmation_threshold: int = 65
     reclaim_confirmation_threshold: int = 60
     break_follow_through_bars: int = 3
+    # 弱突破快速收復後，僅提高反方向候選分數；Canonical Engine 仍須完成
+    # 收盤、位置、停損與 RR 閘門才可授予 ENTRY_READY。
+    failed_breakout_quality_threshold: int = 35
+    failed_breakout_opposite_boost_min: int = 8
+    failed_breakout_opposite_boost_max: int = 20
+    fake_breakout_recovery_expiry_bars: int = 4
     whipsaw_failed_break_count: int = 3
     whipsaw_position_size_multiplier: float = 0.60
     rapid_extension_atr_threshold: float = 1.50
@@ -296,6 +313,8 @@ class Settings(BaseSettings):
     # 第 1 層:報價層(快速報價源:Capital.com/OANDA;無 Key 時降級用 TD 300s)
     tier1_quote_seconds: int = 60
     tier1_fail_alert_after: int = 5          # 連續失敗 N 次才發一則系統警告
+    analysis_retry_delays_seconds: tuple[float, ...] = (1.0, 3.0, 8.0)
+    analysis_error_cooldown_seconds: int = 600
     # 第 2 層:結構層(純程式邏輯,禁 AI)
     outcome_backfill_seconds: int = 300
     outcome_backfill_lookback_days: int = 30

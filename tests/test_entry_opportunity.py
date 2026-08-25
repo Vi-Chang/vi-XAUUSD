@@ -139,3 +139,96 @@ def test_failed_break_reclaim_requires_next_closed_hold_before_entry_ready():
     assert shallow["reclaim_confirmation_required"] is True
     assert shallow["state"] != "ENTRY_READY"
     assert shallow["executable_rr"] is None
+
+
+def continuation_payload(*, price: float, candle: dict,
+                         timestamp: str = "2026-08-24T06:00:00+00:00") -> dict:
+    data = payload(price=price, candle=candle, target=4720.0)
+    data["timestamp_utc"] = timestamp
+    setup = data["breakout_setup_manager"]["activeSetup"]
+    setup.update({
+        "breakoutTrigger": 4655.60,
+        "entryZoneLow": 4655.60,
+        "entryZoneHigh": 4659.34,
+        "pullbackEntryZoneLow": 4646.99,
+        "pullbackEntryZoneHigh": 4650.72,
+        "atr15": 10.0,
+    })
+    normalized = data["normalized_analysis"]
+    normalized.update({
+        "currentPrice": price,
+        "atr15": 10.0,
+        "timeframeAssessments": [
+            {"timeframe": "1H", "trend": "bullish"},
+            {"timeframe": "4H", "trend": "bullish"},
+        ],
+        "confirmationLevels": [
+            {"kind": "support", "timeframe": "15M", "price": 4650.85},
+            {"kind": "support", "timeframe": "1H", "price": 4648.0},
+            {"kind": "resistance", "timeframe": "15M", "price": 4696.75},
+        ],
+    })
+    return data
+
+
+def test_stale_entry_anchor_becomes_deep_backup_not_primary_trigger():
+    data = continuation_payload(
+        price=4693.0,
+        candle={"open": 4680.0, "high": 4694.0, "low": 4678.0, "close": 4681.47},
+    )
+    state, _ = evaluate_entry_opportunities(data)
+    primary = next(item for item in state["opportunities"]
+                   if item["opportunity_id"] == state["primaryOpportunityId"])
+    assert primary["type"] == "BREAKOUT_RETEST"
+    old_zones = [item for item in state["opportunities"]
+                 if (item["entry_zone"]["upper"] or 0) < 4660]
+    assert old_zones
+    assert all(item["anchor_role"] == "DEEP_PULLBACK_BACKUP"
+               and item["primary_eligible"] is False for item in old_zones)
+    canonical_candidates = collect_signal_candidates({
+        **data, "entry_opportunity_engine": state,
+    })
+    assert canonical_candidates
+    assert all(not (candidate.entry_zone and candidate.entry_zone[1] < 4660)
+               for candidate in canonical_candidates)
+
+
+def test_breakout_continuation_requires_retest_then_becomes_entry_ready():
+    breakout = continuation_payload(
+        price=4699.0,
+        candle={"open": 4692.0, "high": 4700.0, "low": 4691.0, "close": 4698.5},
+    )
+    first, _ = evaluate_entry_opportunities(breakout)
+    candidate = by_type(first, "BREAKOUT_RETEST")
+    assert candidate["state"] == "WAIT_BREAKOUT_RETEST"
+    assert candidate["entry_type"] == "BREAKOUT_RETEST"
+
+    retest = continuation_payload(
+        price=4697.0,
+        timestamp="2026-08-24T06:15:00+00:00",
+        candle={"open": 4697.0, "high": 4699.0, "low": 4692.0, "close": 4697.2},
+    )
+    retest["normalized_analysis"]["lastClosedCandleTimestamp"] = (
+        "2026-08-24T06:00:00+00:00")
+    second, _ = evaluate_entry_opportunities(retest, first)
+    ready = by_type(second, "BREAKOUT_RETEST")
+    assert ready["state"] == "ENTRY_READY"
+    assert ready["entry_type"] == "BREAKOUT_RETEST"
+    assert ready["executable_rr"] >= 1.5
+    canonical_candidates = collect_signal_candidates({
+        **retest, "entry_opportunity_engine": second,
+    })
+    assert any(candidate.lifecycle_state == "ENTRY_READY"
+               and candidate.setup_type == "BREAKOUT_RETEST"
+               for candidate in canonical_candidates)
+
+
+def test_breakout_without_later_retest_never_grants_buy_now():
+    data = continuation_payload(
+        price=4699.0,
+        candle={"open": 4692.0, "high": 4700.0, "low": 4691.0, "close": 4698.5},
+    )
+    state, _ = evaluate_entry_opportunities(data)
+    candidate = by_type(state, "BREAKOUT_RETEST")
+    assert candidate["state"] == "WAIT_BREAKOUT_RETEST"
+    assert candidate["executable_rr"] is None
