@@ -207,7 +207,11 @@ async def job_candle_close_refresh() -> None:
         # A lightweight candle refresh can update lastClosedCandleTimestamp before
         # the canonical decision is recomputed.  Do one full sync for the new
         # bucket when data is already GOOD but the decision remains fail-closed.
-        if is_new_bucket and _decision_recovery_sync_needed():
+        if (
+            is_new_bucket
+            and current == expected
+            and _decision_recovery_sync_needed()
+        ):
             await run_full_analysis(
                 trigger="candle_close_recovery_sync",
                 reason_zh="最新 15 分鐘 K 棒已收盤，資料恢復後同步重算決策",

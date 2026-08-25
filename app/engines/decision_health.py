@@ -324,6 +324,12 @@ def resolve_data_health_hysteresis(
                 health = "HEALTHY"
                 transition = f"{previous_health}_TO_HEALTHY"
                 success_count = 0
+        elif api_ok and data_fresh and candle_fresh and not market_advanced:
+            # Re-evaluating the same still-fresh observation is neutral.  It is
+            # not recovery evidence, but it must not erase a previously accepted
+            # advancing sample either (scheduler retries and single-flight joins
+            # can legitimately replay the same timestamp).
+            failure_count = 0
         else:
             success_count = 0
             failure_count += 1

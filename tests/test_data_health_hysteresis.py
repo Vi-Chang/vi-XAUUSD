@@ -65,6 +65,26 @@ def test_case_c_success_with_unchanged_timestamp_is_not_recovery():
     assert success["dataHealthEvent"] is None
 
 
+def test_same_fresh_timestamp_preserves_prior_recovery_evidence():
+    healthy = _step({}, 0)
+    degraded = _step(_step(healthy, 1, available=False), 2, available=False)
+    first = _step(degraded, 3)
+    duplicate = _step(
+        first,
+        4,
+        market_time=BASE + timedelta(minutes=3),
+        candle_time=BASE.replace(minute=30),
+    )
+    recovered = _step(duplicate, 5)
+
+    assert first["freshnessSuccessCount"] == 1
+    assert duplicate["marketTimestampAdvanced"] is False
+    assert duplicate["freshnessSuccessCount"] == 1
+    assert duplicate["dataHealth"] == "DEGRADED"
+    assert recovered["dataHealth"] == "HEALTHY"
+    assert recovered["dataHealthEvent"]["event_type"] == "DATA_RECOVERED"
+
+
 def test_case_d_two_fresh_advancing_polls_recover_once():
     healthy = _step({}, 0)
     degraded = _step(_step(healthy, 1, available=False), 2, available=False)
