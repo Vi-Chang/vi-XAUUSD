@@ -524,6 +524,8 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
         "marketBiasChanged": bool(final.get("marketBiasChanged", False)),
         "defenseState": decision_health.get("defenseState"),
         "defenseLevel": decision_health.get("defenseLevel"),
+        "defenseSide": decision_health.get("side"),
+        "confirmationBuffer": decision_health.get("confirmationBuffer"),
         "falseBreakDetected": bool(decision_health.get("falseBreakDetected")),
         "activeLongScenario": decision_health.get("activeLongScenario", "ACTIVE"),
         "activeShortScenario": decision_health.get("activeShortScenario", "ACTIVE"),
