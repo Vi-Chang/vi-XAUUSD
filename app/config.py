@@ -291,6 +291,10 @@ class Settings(BaseSettings):
     failed_breakout_opposite_boost_min: int = 8
     failed_breakout_opposite_boost_max: int = 20
     fake_breakout_recovery_expiry_bars: int = 4
+    scalp_trigger_max_distance_atr_mult: float = 0.75
+    scalp_trigger_max_distance_price_pct: float = 0.0015
+    scalp_trigger_zone_atr_mult: float = 0.18
+    scalp_trigger_invalidation_atr_mult: float = 0.35
     whipsaw_failed_break_count: int = 3
     whipsaw_position_size_multiplier: float = 0.60
     rapid_extension_atr_threshold: float = 1.50

@@ -262,6 +262,8 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
         scenario_validity = "PENDING_CONFIRMATION"
     behavior = str(behavior_state.get("market_behavior") or "RANGE")
     rr_ok = bool(selected.get("rrPassed")) if selected else False
+    recovery_scalp = bool(selected and
+                          selected.get("opportunityType") == "FAKE_BREAKOUT_RECOVERY")
     confirmation_closed = (trigger_level is None or
                            (confirmation or {}).get("status") == "CLOSED_CONFIRMED")
     can_enter = (bool(final.get("canEnter")) and rr_ok and not stale
@@ -280,9 +282,10 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
     if (direction == "SHORT" and rejection_state == "REPEATED_LOWER_WICK_REJECTION"
             and rejection_breakout != "BREAKOUT_CONFIRMED"):
         can_enter = False
-    if direction == "LONG" and behavior in {
-            "SLOW_BEARISH_DRIFT", "STRONG_DECLINE",
-            "REVERSAL_WARNING", "REVERSAL_CONFIRMED"}:
+    if direction == "LONG" and behavior in {"STRONG_DECLINE", "REVERSAL_CONFIRMED"}:
+        can_enter = False
+    if direction == "LONG" and not recovery_scalp and behavior in {
+            "SLOW_BEARISH_DRIFT", "REVERSAL_WARNING"}:
         can_enter = False
     # Candidate lifecycle is diagnostic only. Do not let nested cards expose a
     # green permission that contradicts the canonical new-entry decision.
@@ -308,7 +311,9 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
         }
     if not can_enter and fake_recovery.get("active"):
         recovery_action = fake_recovery.get("nextAction") or {}
-        recovery_trigger = _number(recovery_action.get("triggerLevel"))
+        recovery_trigger = _number(
+            (recovery_action.get("primaryScalpTrigger") or {}).get("level")
+            or recovery_action.get("triggerLevel"))
         recovery_direction = str(fake_recovery.get("oppositeDirection") or direction)
         if recovery_trigger is not None:
             canonical_trigger = {
@@ -509,6 +514,19 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
         "primaryReason": primary_reason,
         "canonicalNextTrigger": canonical_trigger,
         "primaryNextTrigger": canonical_trigger,
+        "primaryScalpTrigger": (
+            fake_recovery.get("primaryScalpTrigger")
+            or (fake_recovery.get("nextAction") or {}).get("primaryScalpTrigger")),
+        "structuralConfirmationTrigger": (
+            fake_recovery.get("structuralConfirmationTrigger")
+            or (fake_recovery.get("nextAction") or {}).get(
+                "structuralConfirmationTrigger")),
+        "nearestExecutableLongTrigger": (
+            (fake_recovery.get("nextAction") or {}).get("primaryScalpTrigger")
+            if str(fake_recovery.get("oppositeDirection") or "") == "LONG" else None),
+        "nearestExecutableShortTrigger": (
+            (fake_recovery.get("nextAction") or {}).get("primaryScalpTrigger")
+            if str(fake_recovery.get("oppositeDirection") or "") == "SHORT" else None),
         "engineSelectedSetupId": engine_selected_id or None,
         "activeSetupId": selected.get("setupId") or None,
         "activeSetupType": selected.get("route") or None,
@@ -625,9 +643,10 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
             "tradeStatus": ("SCENARIO_INVALIDATED" if scenario_validity in {
                                 "INVALIDATED", "STALE"} else
                             "WAIT_DATA_CONFIRMATION" if stale or not closed_available else
-                            "WAIT_BEHAVIOR_CONFIRMATION" if direction == "LONG" and
-                            behavior in {"SLOW_BEARISH_DRIFT", "STRONG_DECLINE",
-                                         "REVERSAL_WARNING", "REVERSAL_CONFIRMED"} else
+                            "WAIT_BEHAVIOR_CONFIRMATION" if direction == "LONG" and (
+                                behavior in {"STRONG_DECLINE", "REVERSAL_CONFIRMED"}
+                                or (not recovery_scalp and behavior in {
+                                    "SLOW_BEARISH_DRIFT", "REVERSAL_WARNING"})) else
                             "NO_ENTRY_RR" if selected and not rr_ok else
                             "ENTRY_READY" if can_enter else "WAIT_CONFIRMATION"),
             "selectedSetup": selected or None,

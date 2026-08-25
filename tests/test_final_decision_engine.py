@@ -240,3 +240,36 @@ def test_confirmed_opposite_setup_still_requires_and_can_pass_canonical_risk_gat
     assert decision["finalAction"] == "ENTER_LONG"
     assert decision["canEnter"] is True
     assert decision["entrySignal"] == "READY"
+
+
+def test_scalp_recovery_confirmation_is_not_vetoed_by_old_trend_wait_state():
+    data = market()
+    data["breakout_setup_manager"] = {"activeSetup": {}, "setups": []}
+    data["decision_health_state"] = {
+        "marketBias": "BULLISH", "dataHealth": "HEALTHY",
+        "entryConfirmation": "WAIT_NEW_STRUCTURE", "defenseState": "INACTIVE",
+    }
+    data["fake_breakout_recovery"] = {
+        "active": True,
+        "state": "LONG_SETUP_CONFIRMED",
+        "scalpEntryReady": True,
+        "executableRR": 2.0,
+        "sourceFailureId": "failed-short-scalp",
+        "invalidatedBreakoutDirection": "SHORT",
+        "oppositeDirection": "LONG",
+        "oppositeBiasBoost": 20,
+        "expiresAt": "2026-08-21T16:00:00Z",
+        "nextAction": {
+            "triggerLevel": 100.0,
+            "entryZoneLow": 100.0,
+            "entryZoneHigh": 101.0,
+            "invalidationLevel": 98.0,
+            "targets": [104.0, 106.0, 108.0],
+            "estimatedRR": 2.0,
+        },
+    }
+    decision, _ = evaluate_final_decision(data)
+    assert decision["selectedSetupType"] == "FAKE_BREAKOUT_RECOVERY"
+    assert decision["entryConfirmation"] == "READY"
+    assert decision["finalAction"] == "ENTER_LONG"
+    assert decision["canEnter"] is True
