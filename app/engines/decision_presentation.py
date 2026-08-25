@@ -138,7 +138,8 @@ def _closed_candle_text(candle: dict) -> str:
 def format_decision_message(event: dict) -> str:
     canonical_type = str(event.get("event_type") or "")
     if canonical_type in {
-            "EARLY_ENTRY_WATCH", "EARLY_ENTRY_PREPARE", "EARLY_ENTRY_MISSED",
+            "EARLY_ENTRY_WATCH", "EARLY_ENTRY_PREPARE", "EARLY_ENTRY_REPLACED",
+            "EARLY_ENTRY_MISSED",
             "EARLY_ENTRY_INVALIDATED"}:
         side = str(event.get("candidateSide") or event.get("direction") or "LONG")
         word = "做多" if side == "LONG" else "做空"
@@ -161,6 +162,14 @@ def format_decision_message(event: dict) -> str:
             "BREAKOUT_COMPRESSION": "價格靠近突破位並收斂",
         }.get(reasons[0] if reasons else "", "價格與結構正在形成候選機會")
         price = float(event.get("currentPrice") or 0)
+        if canonical_type == "EARLY_ENTRY_REPLACED":
+            verb = "重新站回" if side == "LONG" else "重新跌回"
+            return "\n".join([
+                f"🟡【新的{word}機會形成】", f"現價：{price:.2f}",
+                f"新觀察區：{zone_text}",
+                "原因：舊候選區已失效，系統已立即依最新短線結構重新掃描。",
+                f"下一步：等待15M收盤{verb}新確認位置，通過風控後才可進場。",
+            ])
         if canonical_type == "EARLY_ENTRY_WATCH":
             lines = [f"👀【開始留意{word}機會】", f"現價：{price:.2f}",
                      f"觀察區：{zone_text}",

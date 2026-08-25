@@ -83,11 +83,74 @@ def test_prepare_invalidates_after_confirmed_directional_support_break():
 
 def test_prepare_becomes_missed_when_remaining_rr_is_not_safe():
     state, _ = evaluate_early_entry_candidate(_data(), {"state": "IDLE"})
+    state = apply_canonical_entry_result(
+        state, {"canEnter": True, "primaryAction": "BUY", "dataHealth": "HEALTHY"},
+        evaluated_at="2026-08-25T04:05:00+00:00")
     missed, events = evaluate_early_entry_candidate(
         _data(price=104.0, break_state="LEVEL_TEST"), state)
     assert missed["state"] == "MISSED_LONG"
     assert missed["transitionReason"] in {"PRICE_TOO_EXTENDED", "RR_TOO_LOW"}
     assert events[0]["eventKey"].endswith(":MISSED")
+
+
+def test_price_that_never_touched_or_became_actionable_is_not_missed():
+    watching, _ = evaluate_early_entry_candidate(
+        _data(price=102.0, break_state="LEVEL_TEST"), {"state": "IDLE"})
+    assert watching["state"] == "WATCH_LONG"
+    assert watching["zone_touched"] is False
+    moved, events = evaluate_early_entry_candidate(
+        _data(price=104.0, break_state="LEVEL_TEST"), watching)
+    assert moved["state"] == "WATCH_LONG"
+    assert moved["missedGateBlockedReason"] == "ENTRY_WAS_NEVER_ACTIONABLE"
+    assert events == []
+
+
+def test_active_candidate_zone_is_immutable_without_transition_reason():
+    state, _ = evaluate_early_entry_candidate(_data(), {"state": "IDLE"})
+    changed = _data(price=100.1)
+    changed["entry_opportunity_engine"]["opportunities"][0]["entry_zone"] = {
+        "lower": 93.0, "upper": 95.0}
+    repeated, events = evaluate_early_entry_candidate(changed, state)
+    assert repeated["candidateZone"] == {"low": 99.0, "high": 101.0}
+    assert repeated["setup_id"] == state["setup_id"]
+    assert repeated["zoneTransitionReason"] == "ACTIVE_ZONE_LOCKED_NO_CONFIRMED_TRANSITION"
+    assert repeated["pendingZoneCandidate"] == {"low": 93.0, "high": 95.0}
+    assert events == []
+
+
+def test_invalidated_prepare_immediately_rescans_new_micro_structure():
+    state, _ = evaluate_early_entry_candidate(_data(), {"state": "IDLE"})
+    changed = _data(price=96.8, break_state="LEVEL_TEST", behavior="RECOVERING")
+    changed["decision_health_state"].update({
+        "defenseState": "BROKEN_CONFIRMED", "scenarioId": state["setup_id"]})
+    changed["entry_opportunity_engine"]["opportunities"].append({
+        "opportunity_id": "OP-LONG-NEW-HL", "setup_id": "BASE-NEW-HL",
+        "side": "LONG", "type": "SHALLOW_PULLBACK", "state": "WAIT_CONFIRMATION",
+        "primary_eligible": True, "entry_zone": {"lower": 96.0, "upper": 98.0},
+        "tactical_stop": 94.0, "target1": 104.0, "estimated_rr": 2.0,
+        "opportunity_score": 85, "distance_from_current": 0.0,
+    })
+    replacement, events = evaluate_early_entry_candidate(changed, state)
+    assert replacement["setup_id"] != state["setup_id"]
+    assert replacement["state"] == "PREPARE_LONG"
+    assert replacement["zoneTransitionReason"] == "OLD_SETUP_INVALIDATED_NEW_MICRO_STRUCTURE"
+    assert len(events) == 1
+    assert events[0]["event_type"] == "EARLY_ENTRY_REPLACED"
+    message = format_decision_message(events[0])
+    assert "新的做多機會形成" in message
+    assert "舊候選區已失效" in message
+    assert "新觀察區：96.00–98.00" in message
+
+
+def test_intrabar_stop_cross_does_not_replace_candidate_before_confirmation():
+    state, _ = evaluate_early_entry_candidate(_data(), {"state": "IDLE"})
+    pending, events = evaluate_early_entry_candidate(
+        _data(price=96.8, break_state="LEVEL_TEST"), state)
+    assert pending["state"] == "PREPARE_LONG"
+    assert pending["setup_id"] == state["setup_id"]
+    assert pending["intrabarStopCrossed"] is True
+    assert pending["zoneTransitionReason"] == "ACTIVE_ZONE_LOCKED_NO_CONFIRMED_TRANSITION"
+    assert events == []
 
 
 def test_short_is_a_true_mirror_and_above_zone_is_not_short_chasing():

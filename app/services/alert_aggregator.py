@@ -280,6 +280,8 @@ def alert_category(event: dict) -> str:
         return "ENTRY_READY"
     if event_type == "EARLY_ENTRY_PREPARE":
         return "PREPARE"
+    if event_type == "EARLY_ENTRY_REPLACED":
+        return "PREPARE"
     if event_type == "EARLY_ENTRY_WATCH":
         return "WATCHING"
     if event_type == "EARLY_ENTRY_MISSED":

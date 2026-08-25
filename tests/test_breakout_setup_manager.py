@@ -102,6 +102,18 @@ def test_breakout_above_chase_switches_to_pullback_instead_of_entry():
     assert not any(event["event_type"].endswith("ENTRY_READY") for event in events)
 
 
+def test_wait_retest_never_becomes_missed_without_prior_actionable_entry():
+    state, _ = advance(snapshot())
+    state, _ = advance(snapshot(price=4580, closed=4569,
+        at="2026-08-21T10:01:00+00:00"), state)
+    state, events = advance(snapshot(price=4579, closed=4569,
+        at="2026-08-21T10:02:00+00:00"), state)
+    setup = state["activeSetup"]
+    assert setup["status"] == "WAIT_RETEST"
+    assert setup["tradeState"] == "WAIT"
+    assert not any(event["event_type"] == "MISSED_ENTRY" for event in events)
+
+
 def test_new_structure_does_not_move_locked_active_trigger():
     state, _ = advance(snapshot())
     old = deepcopy(state["activeSetup"])

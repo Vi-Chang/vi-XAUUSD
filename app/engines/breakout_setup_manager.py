@@ -353,7 +353,9 @@ def _evaluate_setup(setup: dict, data: dict) -> tuple[dict, list[dict]]:
                           blockedReason="訊號已確認，後續關鍵價用於持倉管理，不再新增進場門檻")
             events.append(_event(result, "ENTER", "MANAGE", "HOLD"))
     elif old == "WAIT_RETEST":
-        result["tradeState"] = "MISSED"
+        # Waiting for a retest is not a missed entry.  This setup has not been
+        # executable unless an ENTRY_READY event was actually reached first.
+        result["tradeState"] = "WAIT"
         in_retest = float(result["retestZoneLow"]) <= price <= float(result["retestZoneHigh"])
         retest_holds = in_retest and isinstance(closed, (int, float)) and (
             (direction == "LONG" and float(closed) >= trigger)
