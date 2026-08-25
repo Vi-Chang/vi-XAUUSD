@@ -77,6 +77,21 @@ def _last_close(frame: pd.DataFrame | None) -> float | None:
     return float(frame.iloc[-1]["close"])
 
 
+def _defense_scenario_identity(previous_final: dict,
+                               previous_health: dict) -> tuple[str, int, str]:
+    """Resolve the lifecycle boundary used by the defense event ledger."""
+    scenario_id = str(previous_final.get("selectedScenarioId") or
+                      previous_health.get("scenarioId") or "UNSCOPED")
+    version = int(previous_final.get("selectedScenarioVersion") or
+                  previous_health.get("scenarioVersion") or 1)
+    same_scenario = str(previous_health.get("scenarioId") or "") == scenario_id
+    structure_version = str(
+        previous_health.get("structureVersion")
+        if same_scenario and previous_health.get("structureVersion") is not None
+        else previous_final.get("selectedScenarioVersion") or version)
+    return scenario_id, version, structure_version
+
+
 def evaluate_market_monitors(
     data: dict, *, m15_closed: pd.DataFrame | None = None,
     h1_closed: pd.DataFrame | None = None, h4_closed: pd.DataFrame | None = None,
@@ -89,6 +104,8 @@ def evaluate_market_monitors(
     decision_health = evaluate_decision_health(
         data, previous=previous_decision_health,
         now=str(data.get("timestamp_utc") or "") or None)
+    scenario_id, scenario_version, structure_version = _defense_scenario_identity(
+        previous_final_decision, previous_decision_health)
     decision_health.update(evaluate_defense_state(
         defense_level=previous_final_decision.get("invalidationPrice"),
         side=str(previous_final_decision.get("direction") or
@@ -101,6 +118,8 @@ def evaluate_market_monitors(
         previous=previous_decision_health,
         reclaim_level=((previous_final_decision.get("canonicalDecision") or {}).get(
             "canonicalNextTrigger") or {}).get("level") or normalized.get("triggerLevel"),
+        scenario_id=scenario_id, scenario_version=scenario_version,
+        structure_version=structure_version,
     ))
     _save(symbol, "decision_health", decision_health)
     data = {**data, "decision_health_state": decision_health}
@@ -323,6 +342,9 @@ def evaluate_market_monitors(
             "defenseSide": decision_health.get("side"),
             "confirmationBuffer": decision_health.get("confirmationBuffer"),
             "falseBreakDetected": decision_health.get("falseBreakDetected"),
+            "scenarioId": decision_health.get("scenarioId"),
+            "scenarioState": decision_health.get("scenarioState"),
+            "marketContext": decision_health.get("marketContext"),
             "closedBarTimestamp": ((decision_health.get("latestClosed15m") or
                                     decision_health.get("contextClosed15m") or {}).get(
                                         "closeTime")),
@@ -330,6 +352,18 @@ def evaluate_market_monitors(
                 "盤中價格已穿越防守，等待15M收盤確認"
                 if current_defense == "BROKEN_PENDING_CLOSE"
                 else "防守測試狀態發生實質變化"),
+        })
+    reclaim_event = decision_health.get("reclaimEvent")
+    if reclaim_event and not previous_decision_health.get("reclaimEvent"):
+        signal_facts.append({
+            **dict(reclaim_event), "event_type": "NEW_RECLAIM_EVENT",
+            "currentState": "WAIT_NEW_STRUCTURE",
+            "marketBias": decision_health.get("marketBias"),
+            "dataHealth": decision_health.get("dataHealth"),
+            "entryConfirmation": decision_health.get("entryConfirmation"),
+            "scenarioId": reclaim_event.get("newScenarioId"),
+            "marketContext": decision_health.get("marketContext"),
+            "transitionReason": "舊劇本維持失效；reclaim 只建立全新候選劇本",
         })
     final_input = {**data, **monitor_result, "signal_facts": signal_facts}
     final_state, final_events = evaluate_final_decision(
@@ -400,6 +434,8 @@ def evaluate_live_quote_state(
     decision_health = evaluate_decision_health(
         candidate, previous=previous_decision_health, now=quote_time)
     previous_final = _load(symbol, "final_decision")
+    scenario_id, scenario_version, structure_version = _defense_scenario_identity(
+        previous_final, previous_decision_health)
     decision_health.update(evaluate_defense_state(
         defense_level=previous_final.get("invalidationPrice"),
         side=str(previous_final.get("direction") or
@@ -411,6 +447,8 @@ def evaluate_live_quote_state(
         previous=previous_decision_health,
         reclaim_level=((previous_final.get("canonicalDecision") or {}).get(
             "canonicalNextTrigger") or {}).get("level") or normalized.get("triggerLevel"),
+        scenario_id=scenario_id, scenario_version=scenario_version,
+        structure_version=structure_version,
     ))
     candidate["decision_health_state"] = decision_health
     _save(symbol, "decision_health", decision_health)
@@ -444,9 +482,24 @@ def evaluate_live_quote_state(
             "defenseState": new_defense, "defenseLevel": decision_health.get("defenseLevel"),
             "defenseSide": decision_health.get("side"),
             "confirmationBuffer": decision_health.get("confirmationBuffer"),
+            "scenarioId": decision_health.get("scenarioId"),
+            "scenarioState": decision_health.get("scenarioState"),
+            "marketContext": decision_health.get("marketContext"),
             "closedBarTimestamp": ((decision_health.get("latestClosed15m") or
                                     decision_health.get("contextClosed15m") or {}).get(
                                         "closeTime")),
+        })
+    reclaim_event = decision_health.get("reclaimEvent")
+    if reclaim_event and not previous_decision_health.get("reclaimEvent"):
+        live_facts.append({
+            **dict(reclaim_event), "event_type": "NEW_RECLAIM_EVENT",
+            "currentState": "WAIT_NEW_STRUCTURE",
+            "marketBias": decision_health.get("marketBias"),
+            "dataHealth": decision_health.get("dataHealth"),
+            "entryConfirmation": decision_health.get("entryConfirmation"),
+            "scenarioId": reclaim_event.get("newScenarioId"),
+            "marketContext": decision_health.get("marketContext"),
+            "transitionReason": "舊劇本維持失效；reclaim 只建立全新候選劇本",
         })
     current, events = evaluate_final_decision(
         {**candidate, "normalized_analysis": normalized,
