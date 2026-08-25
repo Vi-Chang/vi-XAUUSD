@@ -568,6 +568,14 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
         "entryZone": ({"low": zone[0], "high": zone[1]} if zone else None),
         "chaseLimit": chase_limit,
         "invalidationPrice": selected.invalidation_price if selected else None,
+        "defenseBinding": ({
+            "strategyId": scenario_id,
+            "side": selected.direction,
+            "level": selected.invalidation_price,
+            "createdAt": created_at,
+            "sourceTimeframe": "15M",
+            "sourceCandleId": candle_time,
+        } if selected and selected.invalidation_price is not None else None),
         "targets": targets,
         "qualityScore": selected.confidence if selected else raw_score,
         "qualityGrade": ("A" if raw_score >= 80 else "B" if raw_score >= 65

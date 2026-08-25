@@ -108,6 +108,7 @@ def build_semantic_decision(payload: dict) -> dict[str, Any]:
         "strategyPhase": str(payload.get("strategyPhase") or
                              canonical.get("scenarioState") or
                              payload.get("currentState") or "WAIT"),
+        "waitReason": str(payload.get("waitReason") or canonical.get("waitReason") or ""),
         "scenarioId": str(payload.get("scenarioId") or payload.get("setupId") or
                           canonical.get("activeSetupId") or ""),
     }
@@ -134,6 +135,7 @@ def detect_meaningful_transition(previous: dict | None,
         ("entryZoneState", "ENTRY_ZONE_STATE_CHANGED"),
         ("rrState", "RR_STATE_CHANGED"), ("dataHealthState", "DATA_HEALTH_CHANGED"),
         ("strategyPhase", "STRATEGY_PHASE_CHANGED"),
+        ("waitReason", "WAIT_REASON_CHANGED"),
         ("scenarioId", "SCENARIO_CHANGED"), ("triggerType", "TRIGGER_CHANGED"),
         ("bias4h", "BACKGROUND_BIAS_CHANGED"),
     )

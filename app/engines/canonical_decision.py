@@ -5,6 +5,7 @@ from typing import Any
 
 from app.config import get_settings
 from app.engines.candle_confirmation_registry import build_confirmation_registry
+from app.engines.close_gate import build_close_gate, closed_candle_identity
 from app.engines.confidence import get_confidence_grade
 from app.engines.data_health_gate import evaluate_data_health
 from app.engines.decision_health import evaluate_decision_health
@@ -506,6 +507,18 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
                 completeness_errors.append("TACTICAL_DEFENSE_MISSING")
     multi_timeframe_bias = derive_multi_timeframe_bias(
         normalized, canonical_bias=market_bias)
+    close_gate = None
+    if action == "WAIT" and entry_confirmation == "WAIT_15M_CLOSE" and decision_timestamp:
+        close_gate = build_close_gate(
+            symbol=str(data.get("symbol") or "XAUUSD"), evaluated_at=decision_timestamp,
+            strategy_id=str(selected.get("setupId") or "NO_ACTIVE_STRATEGY"),
+            direction=direction,
+            trigger_or_defense_reference=(_number(decision_health.get("defenseLevel"))
+                                          or _number(trigger_level)),
+        )
+    closed_candle_id = (closed_candle_identity(
+        str(data.get("symbol") or "XAUUSD"), "15M", candle_time)
+        if candle_time else None)
     result = {
         "schemaVersion": "canonical-trading-decision-v2",
         "timestamp": decision_timestamp,
@@ -523,6 +536,9 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
         "breakoutFailureState": rejection_breakout,
         "primaryAction": action,
         "primaryReason": primary_reason,
+        "waitReason": ("WAIT_FOR_15M_CLOSE" if close_gate else None),
+        "closeGate": close_gate,
+        "closedCandleId": closed_candle_id,
         "canonicalNextTrigger": canonical_trigger,
         "primaryNextTrigger": canonical_trigger,
         "primaryScalpTrigger": (
@@ -591,6 +607,10 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
         "defenseState": decision_health.get("defenseState"),
         "defenseLevel": decision_health.get("defenseLevel"),
         "defenseSide": decision_health.get("side"),
+        "defenseBinding": final.get("defenseBinding"),
+        "defenseRejected": bool(decision_health.get("defenseRejected")),
+        "defenseRejectReason": decision_health.get("defenseRejectReason"),
+        "activeStrategySide": direction if selected else None,
         "confirmationBuffer": decision_health.get("confirmationBuffer"),
         "falseBreakDetected": bool(decision_health.get("falseBreakDetected")),
         "activeLongScenario": decision_health.get("activeLongScenario", "ACTIVE"),

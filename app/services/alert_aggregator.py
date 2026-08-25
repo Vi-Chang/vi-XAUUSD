@@ -228,6 +228,10 @@ def notification_fingerprint_parts(event: dict) -> dict[str, str]:
         "rrState": str(semantic["rrState"]),
         "positionState": str(semantic["positionState"]),
         "strategyPhase": str(semantic["strategyPhase"]),
+        "waitReason": str(semantic["waitReason"]),
+        "targetCloseTime": str(((event.get("canonicalDecision") or {}).get(
+            "closeGate") or event.get("closeGate") or {}).get(
+                "targetCandleCloseTime") or ""),
     }
     if event_type in {"DATA_DELAYED", "DATA_STALE", "DATA_RECOVERED"}:
         # Freshness alerts are transitions, not candle-scoped market setups.

@@ -111,10 +111,12 @@ def evaluate_market_monitors(
         now=str(data.get("timestamp_utc") or "") or None)
     scenario_id, scenario_version, structure_version = _defense_scenario_identity(
         previous_final_decision, previous_decision_health)
+    defense_binding = dict(previous_final_decision.get("defenseBinding") or {})
     decision_health.update(evaluate_defense_state(
-        defense_level=previous_final_decision.get("invalidationPrice"),
-        side=str(previous_final_decision.get("direction") or
-                 decision_health.get("marketBias") or "NEUTRAL"),
+        defense_level=defense_binding.get("level", previous_final_decision.get(
+            "invalidationPrice")),
+        side=str(defense_binding.get("side") or previous_final_decision.get(
+            "direction") or "NEUTRAL"),
         current_price=normalized.get("currentPrice"),
         atr15=float(normalized.get("atr15") or 0),
         closed_context=decision_health.get("latestClosed15m"),
@@ -125,6 +127,9 @@ def evaluate_market_monitors(
             "canonicalNextTrigger") or {}).get("level") or normalized.get("triggerLevel"),
         scenario_id=scenario_id, scenario_version=scenario_version,
         structure_version=structure_version,
+        defense_strategy_id=str(defense_binding.get("strategyId") or scenario_id),
+        defense_side=str(defense_binding.get("side") or previous_final_decision.get(
+            "direction") or ""),
     ))
     _save(symbol, "decision_health", decision_health)
     data = {**data, "decision_health_state": decision_health}
@@ -459,10 +464,12 @@ def evaluate_live_quote_state(
     previous_final = _load(symbol, "final_decision")
     scenario_id, scenario_version, structure_version = _defense_scenario_identity(
         previous_final, previous_decision_health)
+    defense_binding = dict(previous_final.get("defenseBinding") or {})
     decision_health.update(evaluate_defense_state(
-        defense_level=previous_final.get("invalidationPrice"),
-        side=str(previous_final.get("direction") or
-                 decision_health.get("marketBias") or "NEUTRAL"),
+        defense_level=defense_binding.get("level", previous_final.get(
+            "invalidationPrice")),
+        side=str(defense_binding.get("side") or previous_final.get(
+            "direction") or "NEUTRAL"),
         current_price=price, atr15=float(normalized.get("atr15") or 0),
         closed_context=decision_health.get("latestClosed15m"),
         entry_confirmation=str(decision_health.get("entryConfirmation") or
@@ -472,6 +479,9 @@ def evaluate_live_quote_state(
             "canonicalNextTrigger") or {}).get("level") or normalized.get("triggerLevel"),
         scenario_id=scenario_id, scenario_version=scenario_version,
         structure_version=structure_version,
+        defense_strategy_id=str(defense_binding.get("strategyId") or scenario_id),
+        defense_side=str(defense_binding.get("side") or previous_final.get(
+            "direction") or ""),
     ))
     candidate["decision_health_state"] = decision_health
     _save(symbol, "decision_health", decision_health)

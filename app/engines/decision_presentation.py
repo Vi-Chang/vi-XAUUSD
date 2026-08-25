@@ -376,9 +376,9 @@ def _format_decision_message_legacy(event: dict) -> str:
             "DEGRADED": "🟠 15M 資料延遲", "DEGRADED_15M": "🟠 15M 資料延遲",
             "STALE": "🔴 行情資料過期",
         }.get(data_health, "🟠 資料狀態待確認")
-        side = str(event.get("defenseSide") or canonical.get("defenseSide") or
-                   ("LONG" if bias == "BULLISH" else
-                    "SHORT" if bias == "BEARISH" else ""))
+        # A market bias is not a strategy side. Defense events are rendered
+        # only from the side bound to the active scenario.
+        side = str(event.get("defenseSide") or canonical.get("defenseSide") or "")
         buffer = event.get("confirmationBuffer")
         if not isinstance(buffer, (int, float)):
             buffer = canonical.get("confirmationBuffer")
@@ -516,11 +516,22 @@ def _format_decision_message_legacy(event: dict) -> str:
                                 "PENDING_CONFIRMATION")
         if entry_confirmation in {"WAIT_15M_CLOSE", "BLOCKED_BY_DATA"}:
             bias = str(canonical.get("marketBias") or "NEUTRAL")
+            strategy_side = str(canonical.get("activeStrategySide") or "")
+            side_text = ("做多" if strategy_side == "LONG" else
+                         "做空" if strategy_side == "SHORT" else "目前沒有有效交易劇本")
+            close_gate = canonical.get("closeGate") or {}
+            target_text = _local_time(str(close_gate.get("targetCandleCloseTime") or ""))
+            target_clock = target_text[-5:] if target_text and target_text != "未知" else ""
+            candle_text = (_closed_candle_text(candle) if candle.get("available") else
+                           "上一根有效15M資料確認中")
             lines = [
-                "【XAUUSD 資料確認中】", "🟠 暫停新進場",
+                "🟠【XAUUSD｜等待15M收盤確認】", "目前動作：暫停新進場",
                 f"市場方向：{'🟢 偏多' if bias == 'BULLISH' else '🔴 偏空' if bias == 'BEARISH' else '⚪ 中性'}",
+                f"目前交易劇本：{side_text}",
                 "資料狀態：最新 15M 收盤暫缺",
-                "系統仍保留原市場方向，但取得最新已收盤 K 棒以前，不產生新的 ENTRY_READY。",
+                f"等待：15M {target_clock} 收盤" if target_clock else "等待：下一個固定15M邊界收盤",
+                f"上一根確認：{candle_text}",
+                "系統仍保留市場方向；同一根等待期間現價變動只更新面板，不重複通知。",
                 "原進場、停損與止盈：暫不具執行效力。",
             ]
             if (scenario_validity in {"INVALIDATED", "STALE"}

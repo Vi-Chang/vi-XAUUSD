@@ -418,12 +418,56 @@ def is_confirmed_break(level: float, side: str, closed_candle: dict | None,
     return False
 
 
+def evaluate_defense(
+    *, side: str, current_price: float | None, closed_candle: dict | None,
+    defense_level: float | None, confirmation_mode: str = "CLOSED_CANDLE",
+    atr15: float = 0.0, active_strategy_id: str = "",
+    defense_strategy_id: str = "", defense_side: str = "",
+) -> dict:
+    """Single side-aware crossing result shared by strategy and presentation."""
+    direction = str(side).upper()
+    bound_side = str(defense_side or direction).upper()
+    active_id = str(active_strategy_id or "")
+    bound_id = str(defense_strategy_id or active_id)
+    level, current = _number(defense_level), _number(current_price)
+    stale = bool((active_id and bound_id and active_id != bound_id) or
+                 (direction in {"LONG", "SHORT"} and bound_side != direction))
+    if stale:
+        return {"state": "REJECT_STALE_DEFENSE", "valid": False,
+                "reason": "DEFENSE_BINDING_MISMATCH", "level": None,
+                "side": direction}
+    if level is None or current is None or direction not in {"LONG", "SHORT"}:
+        return {"state": "INACTIVE", "valid": False,
+                "reason": "DEFENSE_INPUT_INCOMPLETE", "level": level,
+                "side": direction}
+    settings = get_settings()
+    atr = max(_number(atr15) or 0.0, 0.01)
+    buffer = atr * float(settings.defense_confirmation_buffer_atr_mult)
+    approach = max(atr * float(settings.defense_approaching_atr_mult), current * 0.0001)
+    live_breach = current < level if direction == "LONG" else current > level
+    confirmed = bool(
+        confirmation_mode == "CLOSED_CANDLE"
+        and is_confirmed_break(level, direction, closed_candle, buffer=buffer))
+    distance = abs(current - level)
+    state = ("CONFIRMED_BREACH" if confirmed else
+             "INTRABAR_BREACH" if live_breach else
+             "APPROACHING" if distance <= approach * 2 else "SAFE")
+    return {
+        "state": state, "valid": True, "reason": "",
+        "level": level, "side": direction, "distance": distance,
+        "testing": state == "APPROACHING" and distance <= approach,
+        "confirmationBuffer": buffer, "approachDistance": approach,
+        "strategyId": active_id or bound_id,
+    }
+
+
 def evaluate_defense_state(
     *, defense_level: float | None, side: str, current_price: float | None,
     atr15: float = 0.0, closed_context: dict | None = None,
     entry_confirmation: str = "READY", previous: dict | None = None,
     reclaim_level: float | None = None, scenario_id: str = "",
     scenario_version: int = 1, structure_version: str = "1",
+    defense_strategy_id: str = "", defense_side: str = "",
 ) -> dict:
     """Classify a live defense test while requiring close confirmation to fail."""
     previous = previous or {}
@@ -462,10 +506,29 @@ def evaluate_defense_state(
     settings = get_settings()
     atr = max(_number(atr15) or 0.0, 0.01)
     buffer = atr * float(settings.defense_confirmation_buffer_atr_mult)
-    approach = max(atr * float(settings.defense_approaching_atr_mult), current * 0.0001)
-    broken_live = current < level if direction == "LONG" else current > level
-    confirmed = (entry_confirmation == "READY" and
-                 is_confirmed_break(level, direction, closed_context, buffer=buffer))
+    crossing = evaluate_defense(
+        side=direction, current_price=current, closed_candle=closed_context,
+        defense_level=level,
+        confirmation_mode=("CLOSED_CANDLE" if entry_confirmation == "READY" else "INTRABAR"),
+        atr15=atr, active_strategy_id=scenario_id,
+        defense_strategy_id=defense_strategy_id or scenario_id,
+        defense_side=defense_side or direction,
+    )
+    if not crossing["valid"]:
+        return {
+            "defenseState": "INACTIVE", "defenseLevel": None,
+            "defenseRejected": True, "defenseRejectReason": crossing["reason"],
+            "falseBreakDetected": False, "longScenarioInvalidated": False,
+            "shortScenarioInvalidated": False, "shortNow": False,
+            "activeLongScenario": "ACTIVE", "activeShortScenario": "ACTIVE",
+            "shortTermStructure": "UNCHANGED", "searchNextScenario": False,
+            "nextScenarioCandidates": [], "scenarioId": scenario_id,
+            "scenarioVersion": scenario_version, "structureVersion": structure_version,
+            "scenarioState": "ACTIVE", "confirmedStrategyEvents": confirmed_events,
+            "entryConfirmation": entry_confirmation,
+        }
+    broken_live = crossing["state"] == "INTRABAR_BREACH"
+    confirmed = crossing["state"] == "CONFIRMED_BREACH"
     # A different scenario id is a fresh lifecycle boundary.  The historical
     # event ledger remains available, but its terminal defense state is not
     # copied into the new scenario.
@@ -516,9 +579,8 @@ def evaluate_defense_state(
     elif broken_live:
         state = "BROKEN_PENDING_CLOSE"
     else:
-        distance = abs(current - level)
-        state = ("TESTING" if distance <= approach else
-                 "APPROACHING" if distance <= approach * 2 else "INACTIVE")
+        state = ("TESTING" if crossing.get("testing") else
+                 "APPROACHING" if crossing["state"] == "APPROACHING" else "INACTIVE")
     proposed_state = state
     if not is_allowed_scenario_transition(
             old_state, proposed_state, scenario_terminal=scenario_terminal):
@@ -581,6 +643,7 @@ def evaluate_defense_state(
         }
     return {
         "defenseState": state, "defenseLevel": level,
+        "defenseEvaluation": crossing, "defenseRejected": False,
         "confirmationBuffer": round(buffer, 6),
         "falseBreakDetected": false_break,
         "longScenarioInvalidated": scenario_broken and direction == "LONG",
