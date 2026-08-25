@@ -193,7 +193,14 @@ async def job_candle_close_refresh() -> None:
     s = get_settings()
     expected = expected_closed_15m()
     current = _analysis_closed_15m()
-    is_new_bucket = state.candle_refresh_bucket != expected
+    # ``None`` means scheduler bootstrap, not a newly advanced candle bucket.
+    # Treating bootstrap as a transition would immediately replay the same
+    # market timestamp and reset the data-health recovery evidence accumulated
+    # by startup analysis.
+    is_new_bucket = (
+        state.candle_refresh_bucket is not None
+        and state.candle_refresh_bucket != expected
+    )
     if current is not None and current >= expected:
         state.candle_refresh_bucket = expected
         state.candle_refresh_attempts = 0
