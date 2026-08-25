@@ -424,10 +424,10 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
     decision_id = hashlib.sha256(
         f"{data.get('symbol', 'XAUUSD')}|{version}|{signature}".encode()).hexdigest()[:24]
     state_map = {"ENTER_LONG": "LONG_READY", "ENTER_SHORT": "SHORT_READY",
-                 "NO_TRADE": (str(base.get("state") or "NO_TRADE")
-                              if primary in {
-                                  "WAIT_15M_CLOSE", "WAIT_NEW_STRUCTURE",
-                                  "BLOCKED_BY_DATA"}
+                 "NO_TRADE": ("WAIT_NEW_STRUCTURE"
+                              if primary == "WAIT_NEW_STRUCTURE"
+                              else str(base.get("state") or "NO_TRADE")
+                              if primary in {"WAIT_15M_CLOSE", "BLOCKED_BY_DATA"}
                               else "NO_TRADE"),
                  "MANAGE_POSITION": "MANAGE_POSITION",
                  "WAIT": str(base.get("state") or "WAIT")}
