@@ -59,7 +59,10 @@ def validate_and_build(raw: dict, resolve_table: dict[str, dict], *,
         errors.append("action=Wait 但 wait_condition 空白:禁止純觀望")
 
     # ── ID 反查 ──
-    ids = {k: raw.get(k) for k in ("entry_id", "stop_loss_id", "tp1_id", "tp2_id", "tp3_id")}
+    ids: dict[str, str | None] = {
+        key: value if isinstance(value := raw.get(key), str) and value else None
+        for key in ("entry_id", "stop_loss_id", "tp1_id", "tp2_id", "tp3_id")
+    }
     unknown = [v for v in ids.values() if v and v not in resolve_table]
     if unknown:
         errors.append(f"引用了不存在的價位 ID:{unknown}")
@@ -72,9 +75,9 @@ def validate_and_build(raw: dict, resolve_table: dict[str, dict], *,
             direction = "LONG" if action_type == "Buy" else "SHORT"
             entry = _mid(resolve_table[ids["entry_id"]])
             sl = _mid(resolve_table[ids["stop_loss_id"]])
-            tps = [_mid(resolve_table[ids[k]]) for k in ("tp1_id", "tp2_id", "tp3_id")
-                   if ids[k]]
-            tps = [t for t in tps if t is not None]
+            tps = [value for key in ("tp1_id", "tp2_id", "tp3_id")
+                   if (target_id := ids[key])
+                   and (value := _mid(resolve_table[target_id])) is not None]
             if entry is None or sl is None:
                 errors.append("entry/stop_loss ID 無法反查出價位")
             else:
@@ -110,6 +113,8 @@ def validate_and_build(raw: dict, resolve_table: dict[str, dict], *,
 
     if errors:
         return None, errors
+    assert pair is not None
+    assert sc_norm is not None
 
     # ── 事件鎖定:程式蓋章(不退回)──
     gate_note = ""

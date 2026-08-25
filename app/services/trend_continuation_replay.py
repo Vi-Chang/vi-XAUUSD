@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any
 
 import pandas as pd
 
@@ -13,7 +14,8 @@ def replay_continuation(
     m15: pd.DataFrame, h1: pd.DataFrame, h4: pd.DataFrame,
     *, data_factory: Callable[[pd.Series], dict], outcome_bars: int = 8,
 ) -> dict:
-    records, previous = [], {}
+    records: list[dict[str, Any]] = []
+    previous: dict[str, Any] = {}
     ordered = m15.sort_values("close_time").reset_index(drop=True)
     for index in range(19, len(ordered)):
         visible = ordered.iloc[:index + 1]
@@ -27,26 +29,28 @@ def replay_continuation(
         previous = state
         selected = state.get("selected")
         candidates = state.get("candidates") or []
-        primary = selected or next((item for item in candidates
-                                    if item.get("type") == "SHALLOW_PULLBACK_LONG"), {})
+        primary: dict[str, Any] = selected or next((item for item in candidates
+                                                    if item.get("type") == "SHALLOW_PULLBACK_LONG"), {})
         future = ordered.iloc[index + 1:index + 1 + outcome_bars]
         entry = primary.get("suggestedEntry")
         stop = primary.get("stopPrice")
-        risk = float(entry) - float(stop) if entry is not None and stop is not None else 0
-        mfe = (float(future["high"].max()) - float(entry)) if risk > 0 and not future.empty else 0
-        mae = (float(entry) - float(future["low"].min())) if risk > 0 and not future.empty else 0
+        entry_value = float(entry) if isinstance(entry, (int, float)) else 0.0
+        stop_value = float(stop) if isinstance(stop, (int, float)) else 0.0
+        risk = entry_value - stop_value if entry_value and stop_value else 0.0
+        mfe = (float(future["high"].max()) - entry_value) if risk > 0 and not future.empty else 0.0
+        mae = (entry_value - float(future["low"].min())) if risk > 0 and not future.empty else 0.0
         outcome, realized_r, bars_to_outcome = "OPEN", 0.0, None
         if risk > 0:
             for future_index, (_, future_bar) in enumerate(future.iterrows(), 1):
                 # OHLC cannot reveal intrabar ordering; use conservative stop-first.
-                if float(future_bar["low"]) <= float(stop):
+                if float(future_bar["low"]) <= stop_value:
                     outcome, realized_r, bars_to_outcome = "STOP", -1.0, future_index
                     break
                 if float(future_bar["high"]) >= float(primary.get("tp1") or 1e100):
                     outcome, realized_r, bars_to_outcome = "TP1", 1.5, future_index
                     break
             if outcome == "OPEN" and not future.empty:
-                realized_r = round((float(future.iloc[-1]["close"]) - float(entry)) / risk, 2)
+                realized_r = round((float(future.iloc[-1]["close"]) - entry_value) / risk, 2)
         records.append({"candleTime": str(cutoff), "close": round(float(bar["close"]), 2),
                         "marketType": state.get("marketType"), "trendScore": state.get("trendScore"),
                         "decision": state.get("status"), "setupId": primary.get("setupId"),

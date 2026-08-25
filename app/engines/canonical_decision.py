@@ -441,7 +441,9 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
     # never silently become the stop or target of an existing holding.
     position_rr = None
     position_stop = _number(primary_position.get("tacticalDefenseLevel"))
-    position_targets = [float(value) for value in primary_position.get("targets") or []
+    raw_position_targets = primary_position.get("targets")
+    position_targets = [float(value) for value in (
+        raw_position_targets if isinstance(raw_position_targets, list) else [])
                         if isinstance(value, (int, float))]
     if known and actual_entry is not None and position_stop is not None and position_targets:
         target = position_targets[0]

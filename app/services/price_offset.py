@@ -256,7 +256,14 @@ def apply_offset_to_result(result: dict) -> dict:
             lv["offset_applied"] = value
 
     for key in ("long_scenario", "short_scenario"):
-        _shift((out.get(key) or {}).get("resolved_prices"))
+        scenario = out.get(key)
+        resolved_prices = scenario.get("resolved_prices") if isinstance(scenario, dict) else None
+        if isinstance(resolved_prices, dict):
+            _shift(resolved_prices)
     # V2 AI 交易方案的反查價位同樣校正為券商掛單價
-    _shift(((out.get("ai_strategy") or {}).get("trade_plan") or {}).get("resolved"))
+    ai_strategy = out.get("ai_strategy")
+    trade_plan = ai_strategy.get("trade_plan") if isinstance(ai_strategy, dict) else None
+    resolved = trade_plan.get("resolved") if isinstance(trade_plan, dict) else None
+    if isinstance(resolved, dict):
+        _shift(resolved)
     return out

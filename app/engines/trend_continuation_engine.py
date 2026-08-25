@@ -44,8 +44,10 @@ def _unmirror_short(long_result: dict, settings) -> tuple[dict, list[dict]]:
     mapped: list[dict] = []
     for original in long_result.get("candidates") or []:
         item = dict(original)
-        item["type"] = type_map.get(item.get("type"), item.get("type"))
-        item["status"] = status_map.get(item.get("status"), item.get("status"))
+        original_type = str(item.get("type") or "")
+        original_status = str(item.get("status") or "")
+        item["type"] = type_map.get(original_type, original_type)
+        item["status"] = status_map.get(original_status, original_status)
         item["direction"] = "SHORT"
         for key in ("suggestedEntry", "stopPrice", "tp1", "tp2", "tp3"):
             if item.get(key) is not None:

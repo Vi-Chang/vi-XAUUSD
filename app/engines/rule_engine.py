@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from typing import Literal
 
 import pandas as pd
 
@@ -150,7 +151,7 @@ def detect_chase(direction: str, *, price: float, atr15: float,
     return flags
 
 
-def _latest_structure_event_id(direction: str,
+def _latest_structure_event_id(direction: Literal["LONG", "SHORT"],
                                structures: dict[str, StructureReport]) -> str | None:
     """本 setup 對應的最新 15M 結構事件識別碼(BUGFIX R3:可追溯)。
 
@@ -172,7 +173,7 @@ def _latest_structure_event_id(direction: str,
     return None
 
 
-def _build_scenario(direction: str, conditions: list[str], *, price: float,
+def _build_scenario(direction: Literal["LONG", "SHORT"], conditions: list[str], *, price: float,
                     levels: list[CandidateLevel], atr15: float,
                     structures: dict[str, StructureReport],
                     spread: float = 0.0) -> tuple[Scenario, list[float]]:
@@ -202,7 +203,8 @@ def _build_scenario(direction: str, conditions: list[str], *, price: float,
     structure_confirmed = any(c.startswith("STRUCT") for c in conditions)
     n = len(conditions)
     confirmations_passed = n >= 3 and structure_confirmed
-    status = "PREPARE" if confirmations_passed else "WATCH"
+    status: Literal["WATCH", "PREPARE", "TRIGGERED", "INVALIDATED", "INVALID"] = (
+        "PREPARE" if confirmations_passed else "WATCH")
 
     # ── P1 產生端不變式:產不出合法 SL 就不產出停損(不硬湊、不送出矛盾組合)──
     from app.engines.scenario_safety import (
@@ -225,17 +227,19 @@ def _build_scenario(direction: str, conditions: list[str], *, price: float,
     stop_source_label = (
         f"{stop_ref.timeframe} 已確認結構{'低點' if up else '高點'}" if stop_ref else "")
     target_zones = [PriceZone(t.price_low, t.price_high) for t in targets]
-    structure_reasons = (["缺少進場區或停損，價格結構無效"]
-                         if entry_zone is None or stop_px is None else
-                         validate_price_structure(
-                             direction, entry=entry_zone, planned_entry=entry_px,
-                             stop_loss=stop_px, targets=target_zones))
-    rr_details = [] if structure_reasons else [
-        calculate_risk_reward(
-            direction, evaluation_entry_price=entry_px, stop_loss=stop_px,
-            target_price=(target.low if up else target.high), spread=spread)
-        for target in target_zones
-    ]
+    if entry_zone is None or entry_px is None or stop_px is None:
+        structure_reasons = ["缺少進場區或停損，價格結構無效"]
+        rr_details = []
+    else:
+        structure_reasons = validate_price_structure(
+            direction, entry=entry_zone, planned_entry=entry_px,
+            stop_loss=stop_px, targets=target_zones)
+        rr_details = [] if structure_reasons else [
+            calculate_risk_reward(
+                direction, evaluation_entry_price=entry_px, stop_loss=stop_px,
+                target_price=(target.low if up else target.high), spread=spread)
+            for target in target_zones
+        ]
     rr = [detail["ratio"] for detail in rr_details if detail.get("available")]
     tp_mids = [t.mid for t in targets]
 
@@ -290,7 +294,8 @@ def _build_scenario(direction: str, conditions: list[str], *, price: float,
     if reject:
         status = "WATCH"
 
-    lifecycle = "NO_SETUP"
+    from app.engines.scenario_safety import LifecycleStatus
+    lifecycle: LifecycleStatus = "NO_SETUP"
     if entry_zone and target_zones:
         lifecycle = lifecycle_status(
             direction, current_price=price, entry=entry_zone,

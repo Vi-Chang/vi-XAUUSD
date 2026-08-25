@@ -19,8 +19,8 @@ def assert_trigger_frozen(previous: dict, current: dict) -> None:
     """CI/runtime invariant: one setup id can never move its primary trigger."""
     if (previous.get("setupId") == current.get("setupId")
             and previous.get("triggerLocked")
-            and float(previous.get("primaryTrigger") or previous.get("breakoutTrigger"))
-            != float(current.get("primaryTrigger") or current.get("breakoutTrigger"))):
+            and _number(previous.get("primaryTrigger") or previous.get("breakoutTrigger"))
+            != _number(current.get("primaryTrigger") or current.get("breakoutTrigger"))):
         raise AssertionError("MOVING_GOALPOST: primaryTrigger changed for locked setup")
 
 
@@ -317,7 +317,7 @@ def _evaluate_setup(setup: dict, data: dict) -> tuple[dict, list[dict]]:
         result.update(status="BREAKOUT_CONFIRMED", breakoutConfirmedAt=now,
                       confirmedCandleTime=candle_time,
                       primaryTriggerConfirmed=True, confirmedAt=now,
-                      confirmedPrice=float(closed), tradeState="READY",
+                      confirmedPrice=_number(closed), tradeState="READY",
                       blockedReason="突破已由15M收盤確認，評估突破進場或回踩")
         events.append(_event(result, old, result["status"], "BREAKOUT_CONFIRMED"))
         old = "BREAKOUT_CONFIRMED"

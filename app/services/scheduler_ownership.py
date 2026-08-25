@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -14,7 +15,7 @@ class SchedulerOwnership:
         self.ttl_seconds = ttl_seconds
         self.token = uuid.uuid4().hex
         self.key = "xauusd:scheduler:owner"
-        self.client = None
+        self.client: Any = None
         self.task: asyncio.Task | None = None
         self.owned = False
 

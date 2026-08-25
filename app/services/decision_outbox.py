@@ -535,7 +535,7 @@ async def deliver_pending_telegram(
                 updated_at=now,
                 sender_worker_id=worker_id,
             ).execution_options(synchronize_session=False))
-            if result.rowcount != 1:
+            if getattr(result, "rowcount", 0) != 1:
                 _audit_log(payload=payload, event_key=str(row.event_key or ""),
                            payload_hash=str(row.payload_hash or ""),
                            result="ATOMIC_CLAIM_LOST", worker_id=worker_id)

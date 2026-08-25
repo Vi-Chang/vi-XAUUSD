@@ -70,6 +70,7 @@ class QuoteCache:
             self._bucket_start = bucket
             self._bucket_hi = self._bucket_lo = tick.mid
         else:
+            assert self._bucket_hi is not None and self._bucket_lo is not None
             self._bucket_hi = max(self._bucket_hi, tick.mid)
             self._bucket_lo = min(self._bucket_lo, tick.mid)
         return True

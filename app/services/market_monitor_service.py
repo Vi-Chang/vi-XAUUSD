@@ -189,16 +189,20 @@ def evaluate_market_monitors(
     _save(symbol, "double_sweep", double_sweep_state)
     sweep = double_sweep_state.get("event") or {}
     if entry.get("status") == "ENTRY_TRIGGERED" and sweep:
+        reference_low = sweep.get("referenceLow")
+        reference_high = sweep.get("referenceHigh")
+        sweep_description = "流動性掃掠後重新收回，reclaim 成立"
+        if entry.get("direction") == "LONG" and isinstance(reference_low, (int, float)):
+            sweep_description = f"{float(reference_low):.2f} 下方掃低後重新收回，多方 reclaim 成立"
+        elif isinstance(reference_high, (int, float)):
+            sweep_description = f"{float(reference_high):.2f} 上方掃高後重新跌回，空方 reclaim 成立"
         entry.update({
             "strategy_type": ("SWEEP_RECLAIM_LONG" if entry.get("direction") == "LONG"
                               else "SWEEP_RECLAIM_SHORT"),
             "sweep_low": sweep.get("referenceLow"),
             "sweep_high": sweep.get("referenceHigh"),
             "atr15": normalized.get("atr15"),
-            "thesis_description": (
-                f"{float(sweep.get('referenceLow')):.2f} 下方掃低後重新收回，多方 reclaim 成立"
-                if entry.get("direction") == "LONG" else
-                f"{float(sweep.get('referenceHigh')):.2f} 上方掃高後重新跌回，空方 reclaim 成立"),
+            "thesis_description": sweep_description,
             "thesis_evidence": ["LIQUIDITY_SWEEP", "RECLAIM", "CLOSED_CANDLE"],
             "mae_profile": double_sweep_state.get("profile") or {},
         })

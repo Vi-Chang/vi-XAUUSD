@@ -13,8 +13,11 @@ import json
 
 def _ema_stack(ind: dict) -> str:
     e20, e50, e200 = ind.get("ema20"), ind.get("ema50"), ind.get("ema200")
-    if None in (e20, e50, e200):
+    if not all(isinstance(value, (int, float)) for value in (e20, e50, e200)):
         return "NA"
+    assert isinstance(e20, (int, float))
+    assert isinstance(e50, (int, float))
+    assert isinstance(e200, (int, float))
     if e20 > e50 > e200:
         return "20>50>200"
     if e20 < e50 < e200:

@@ -6,6 +6,12 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 Direction = Literal["LONG", "SHORT"]
+LifecycleStatus = Literal[
+    "NO_SETUP", "BREAKOUT_PENDING", "WAITING_FOR_ENTRY", "READY",
+    "CONFIRMED_WAIT_RETEST", "WAITING_FOR_CONFIRMATION",
+    "MISSED_ENTRY_WAIT_RETEST", "FAILED_BREAKOUT", "EXPIRED", "INVALID",
+    "POSITION_MANAGEMENT", "WATCH",
+]
 
 
 def stable_setup_id(*, symbol: str, direction: Direction, timeframe: str,
@@ -128,7 +134,7 @@ def calculate_risk_reward(
 def lifecycle_status(
     direction: Direction, *, current_price: float, entry: PriceZone,
     first_target: PriceZone, structure_valid: bool, confirmations_passed: bool,
-) -> str:
+) -> LifecycleStatus:
     if not structure_valid:
         return "INVALID"
     if direction == "LONG":

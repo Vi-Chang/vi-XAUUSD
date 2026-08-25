@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import hashlib
-from typing import Any
+from typing import Any, Literal, cast
 
 from app.engines.entry_location import classify_entry_location, stop_is_valid
 
@@ -125,7 +125,7 @@ def evaluate_decision_assistant(data: dict, *, latest_candle: dict | None = None
     if active:
         candidates.append(active)
     primary_opportunity = opportunity_engine.get("bestReachableOpportunity") or {}
-    selected = ({
+    selected: dict[str, Any] = ({
         "setupId": primary_opportunity.get("opportunity_id"),
         "direction": primary_opportunity.get("side"),
         "status": primary_opportunity.get("state"),
@@ -139,11 +139,16 @@ def evaluate_decision_assistant(data: dict, *, latest_candle: dict | None = None
         "type": primary_opportunity.get("type"),
         "expiresAt": primary_opportunity.get("expires_at"),
     } if primary_opportunity else {})
-    selected = selected or next((x for x in candidates if str(x.get("status")) in READY
-                     or str(x.get("status", "")).startswith("ENTRY_READY_")), None)
-    selected = selected or (active if active else next(iter(candidates), {}))
-    direction = str(selected.get("direction") or ("LONG" if "BULL" in regime else
-                                                    "SHORT" if "BEAR" in regime else "NONE"))
+    ready_selected = next(
+        (x for x in candidates if str(x.get("status")) in READY
+         or str(x.get("status", "")).startswith("ENTRY_READY_")), None)
+    if not selected and ready_selected:
+        selected = ready_selected
+    if not selected:
+        selected = active if active else next(iter(candidates), {})
+    direction = cast(Literal["LONG", "SHORT", "NONE"], str(
+        selected.get("direction") or ("LONG" if "BULL" in regime else
+                                      "SHORT" if "BEAR" in regime else "NONE")))
     current = _num(n.get("currentPrice"))
     atr = max(_num(selected.get("atrValue") or selected.get("atr15") or n.get("atr15")), .01)
     low, high = _num(selected.get("entryZoneLow")), _num(selected.get("entryZoneHigh"))
@@ -153,7 +158,9 @@ def evaluate_decision_assistant(data: dict, *, latest_candle: dict | None = None
     chase_penalty = round(min(35, max(0, distance_atr - .10) * 30))
     rr = _num(selected.get("riskReward"))
     estimated_rr = _num(selected.get("estimatedRR"))
-    if not rr and not primary_opportunity and low and high and isinstance(selected.get("stopPrice"), (int, float)) and isinstance(selected.get("tp1"), (int, float)):
+    if (direction in {"LONG", "SHORT"} and not rr and not primary_opportunity
+            and low and high and isinstance(selected.get("stopPrice"), (int, float))
+            and isinstance(selected.get("tp1"), (int, float))):
         from app.engines.scenario_safety import calculate_risk_reward
         entry_edge = high if direction == "LONG" else low
         details = calculate_risk_reward(

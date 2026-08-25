@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Literal, cast
 
 from sqlalchemy import select
 
@@ -30,7 +31,10 @@ def _load(symbol: str) -> ShortAlertState:
             DirectionalAlertState.symbol == symbol)).scalar_one_or_none()
         if row is None:
             return ShortAlertState()
-        status = "BEARISH_WATCH" if row.status == "SHORT_CONFIRMED" else row.status
+        status = cast(Literal[
+            "NEUTRAL", "SHORT_WATCH", "BEARISH_WATCH", "SHORT_ENTRY_READY",
+            "SHORT_INVALIDATED"],
+            "BEARISH_WATCH" if row.status == "SHORT_CONFIRMED" else row.status)
         return ShortAlertState(status=status, level=row.level,
             invalidation_level=row.invalidation_level, zone_low=row.zone_low,
             zone_high=row.zone_high,

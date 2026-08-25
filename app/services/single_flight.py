@@ -65,7 +65,10 @@ class SingleFlight:
             if task is None or task.done():
                 task = asyncio.create_task(self._wrapped(factory))
                 self._inflight[key] = task
-                task.add_done_callback(lambda t, k=key: self._reap(k, t))
+                def reap(done_task: asyncio.Task, task_key: str = key) -> None:
+                    self._reap(task_key, done_task)
+
+                task.add_done_callback(reap)
             else:
                 self.collapsed_count += 1
         # shield:等待者逾時/被取消不會連累仍在跑的核心分析,其他等待者仍取得結果

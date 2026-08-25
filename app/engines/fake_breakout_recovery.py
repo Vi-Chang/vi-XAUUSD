@@ -121,6 +121,10 @@ def evaluate_fake_breakout_recovery(
     if not failed:
         return ({"schemaVersion": "fake-breakout-recovery-v1", "state": "IDLE",
                  "active": False, "updatedAt": now}, [])
+    if not isinstance(level, (int, float)):
+        return ({"schemaVersion": "fake-breakout-recovery-v1", "state": "IDLE",
+                 "active": False, "updatedAt": now,
+                 "stateReason": "缺少可驗證的失敗突破價位"}, [])
 
     direction = "LONG" if state == "FAILED_BREAKDOWN" else "SHORT"
     invalidated_direction = "SHORT" if direction == "LONG" else "LONG"

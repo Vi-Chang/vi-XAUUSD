@@ -137,11 +137,13 @@ def evaluate_wick_rejection(frame: pd.DataFrame | None, *, data: dict,
     breakout = "NONE"
     failures = 0
     if resistance is not None:
+        assert zone is not None
         failures = sum(1 for high, idx in sig_upper if high >= resistance and _finite(closes.iloc[idx]) <= zone["high"])
         breakout = ("BREAKOUT_CONFIRMED" if last_close > zone["high"] + buffer and prev_close > zone["high"] else
                     "BREAKOUT_FAILED" if failures >= settings.wick_repeated_min_count else
                     "BREAKOUT_ATTEMPT" if _finite(highs.iloc[-1]) > resistance and last_close <= zone["high"] else "NONE")
     elif support is not None:
+        assert zone is not None
         failures = sum(1 for low, idx in sig_lower if low <= support and _finite(closes.iloc[idx]) >= zone["low"])
         breakout = ("BREAKOUT_CONFIRMED" if last_close < zone["low"] - buffer and prev_close < zone["low"] else
                     "BREAKOUT_FAILED" if failures >= settings.wick_repeated_min_count else

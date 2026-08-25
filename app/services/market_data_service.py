@@ -21,7 +21,7 @@ class RequestDeduplicator:
 
     def __init__(self) -> None:
         self._lock: asyncio.Lock | None = None
-        self._loop = None
+        self._loop: asyncio.AbstractEventLoop | None = None
         self._inflight: dict[str, asyncio.Task] = {}
 
     def _loop_lock(self) -> asyncio.Lock:
