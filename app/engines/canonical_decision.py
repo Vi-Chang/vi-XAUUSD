@@ -8,6 +8,8 @@ from app.engines.candle_confirmation_registry import build_confirmation_registry
 from app.engines.confidence import get_confidence_grade
 from app.engines.data_health_gate import evaluate_data_health
 from app.engines.decision_health import evaluate_decision_health
+from app.engines.multi_timeframe_bias import derive_multi_timeframe_bias
+from app.engines.scalp_decision import build_scalp_decision_snapshot
 from app.engines.scenario_execution import resolve_scenario_validity
 
 TERMINAL_SETUP_STATES = {"INVALIDATED", "ARCHIVED", "EXPIRED", "SETUP_EXPIRED",
@@ -486,6 +488,8 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
                 completeness_errors.append("ACTUAL_ENTRY_MISSING")
             if item.get("tacticalDefenseLevel") is None:
                 completeness_errors.append("TACTICAL_DEFENSE_MISSING")
+    multi_timeframe_bias = derive_multi_timeframe_bias(
+        normalized, canonical_bias=market_bias)
     result = {
         "schemaVersion": "canonical-trading-decision-v2",
         "timestamp": decision_timestamp,
@@ -545,6 +549,7 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
         "closedCandleAvailable": closed_available,
         "closedCandleErrorReason": closed_error,
         "marketBias": market_bias,
+        "multiTimeframeBias": multi_timeframe_bias,
         "dataHealth": decision_health.get("dataHealth"),
         "entryConfirmation": entry_confirmation,
         "scenarioValidity": scenario_validity,
@@ -672,6 +677,14 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
             "requiresIndependentOppositeConfirmation": True,
         },
     }
+    scalp_snapshot = build_scalp_decision_snapshot(data, result)
+    result.update({
+        "tradingHorizon": scalp_snapshot["tradingHorizon"],
+        "scalpDecision": scalp_snapshot,
+        "preferredScalpSide": scalp_snapshot["preferredSide"],
+        "nextLongScalpOpportunity": scalp_snapshot["nextLongScalpOpportunity"],
+        "nextShortScalpOpportunity": scalp_snapshot["nextShortScalpOpportunity"],
+    })
     from app.engines.decision_consistency import (
         fail_closed_canonical,
         validate_canonical_contract,

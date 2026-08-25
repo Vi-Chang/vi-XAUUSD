@@ -53,7 +53,7 @@ def test_closed_breakout_and_inside_zone_is_ready():
     message = format_decision_message(setup("ENTRY_READY_BREAKOUT", price=4607.2, closed=4607.0))
     assert message.startswith("🟢🟢【進場條件成立】")
     assert "方向：做多" in message and "建議進場區：4606.18–4609.88" in message
-    assert "TP1：4620.00" in message
+    assert "第一停利：4620.00" in message
 
 
 def test_internal_ready_without_canonical_permission_is_not_actionable():

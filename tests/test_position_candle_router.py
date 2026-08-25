@@ -51,8 +51,8 @@ def test_position_known_routes_primary_telegram_to_management():
     message = format_decision_message({"event_type": "CANDLE_FINALIZED",
         "currentPrice": 4668.66, "canonicalDecision": canonical})
     assert "【XAUUSD 持倉管理】" in message
-    assert "成本 4663.38" in message and "目前動作：HOLD" in message
-    assert "新開部位：WAIT" in message and "現在先不要進場" not in message
+    assert "成本 4663.38" in message and "目前動作：續抱" in message
+    assert "新開部位：等待" in message and "現在先不要進場" not in message
     assert "22:30–22:45" in message
 
     behavior_message = format_decision_message({
@@ -79,7 +79,7 @@ def test_data_gap_blocks_entry_but_keeps_position_risk_output():
     assert not canonical["newEntryDecision"]["canEnter"]
     message = format_decision_message({"event_type": "CANDLE_FINALIZED",
         "currentPrice": 4668.66, "canonicalDecision": canonical})
-    assert "已收15M資料缺口：DATA_GAP" in message
+    assert "已收15M資料缺口：已收K線資料缺口" in message
     assert "短線持倉防守：4659.8" in message
 
 

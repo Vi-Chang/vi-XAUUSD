@@ -179,11 +179,15 @@ async def run_monitor(state) -> None:
         logger.error("telegram delivery unhealthy: %s", delivery_failures)
         ambiguous = any(item.endswith(":DELIVERY_UNKNOWN")
                         for item in delivery_failures)
+        if ambiguous:
+            # An ambiguous receipt is reconciled by the durable outbox. Sending
+            # another Telegram about Telegram can itself duplicate and exposes
+            # transport diagnostics to the end user.
+            logger.warning("telegram delivery receipt unknown; reconciliation queue owns retry")
+            return
         await state.notifier.notify(
             "RISK", "telegram_delivery_failure",
-            ("🔴 系統通知\n部分 Telegram 訊息傳送狀態尚未確認，"
-             "策略分析仍正常運作。" if ambiguous else
-             "🔴 系統通知\n部分 Telegram 訊息傳送失敗，策略分析仍正常運作。"),
+            "⚠️【通知服務異常】\n有一則重要交易通知可能未成功送達。",
             severity="ERROR", force_push=True,
             persistent_cooldown_seconds=30 * 60)
         return

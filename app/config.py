@@ -365,6 +365,17 @@ class Settings(BaseSettings):
     # 統一市場判斷：週期、證據家族與突破確認參數（唯一可校正位置）。
     regime_weights: dict[str, float] = {"1D": 0.35, "4H": 0.35, "1H": 0.20, "15M": 0.10}
     entry_weights: dict[str, float] = {"1D": 0.05, "4H": 0.15, "1H": 0.35, "15M": 0.45}
+    # Execution horizon is intentionally independent from the broader regime
+    # score above.  Daily context may adjust risk, but cannot veto a valid
+    # closed-15M scalp entry.
+    trading_horizon: str = "SCALP_INTRADAY"
+    scalp_bias_weights: dict[str, float] = {"15M": 0.58, "1H": 0.42,
+                                            "4H": 0.0, "1D": 0.0}
+    scalp_setup_ttl_bars_low_vol: int = 8
+    scalp_setup_ttl_bars_normal: int = 6
+    scalp_setup_ttl_bars_high_vol: int = 4
+    scalp_high_vol_atr_price_ratio: float = 0.0015
+    scalp_normal_vol_atr_price_ratio: float = 0.0008
     evidence_family_weights: dict[str, float] = {
         "structure": 0.35, "trend": 0.25, "momentum": 0.20,
         "oscillator": 0.10, "volatility": 0.10,
