@@ -570,6 +570,7 @@ class AnalysisResult(BaseModel):
     virtual_profit_tracker: dict = Field(default_factory=dict)
     trade_plan_manager: dict = Field(default_factory=dict)
     breakout_setup_manager: dict = Field(default_factory=dict)
+    early_entry_candidate: dict = Field(default_factory=dict)
     trend_continuation_engine: dict = Field(default_factory=dict)
     double_sweep_statistical: dict = Field(default_factory=dict)
     fake_breakout_recovery: dict = Field(default_factory=dict)
