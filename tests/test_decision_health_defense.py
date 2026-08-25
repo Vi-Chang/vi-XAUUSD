@@ -4,13 +4,16 @@ from app.engines.decision_health import (
     evaluate_decision_health,
     evaluate_defense_state,
     get_latest_valid_closed_15m,
+    is_allowed_scenario_transition,
     is_confirmed_break,
+    resolve_market_context,
 )
 from app.engines.decision_presentation import format_decision_message
 from app.engines.scenario_execution import can_execute_scenario
 from app.services.alert_aggregator import (
     is_meaningful_change,
     notification_fingerprint,
+    notification_state_regression,
 )
 
 NOW = datetime(2026, 8, 25, 1, 20, tzinfo=timezone.utc)
@@ -202,3 +205,173 @@ def test_case_g_defense_break_invalidates_scenario_but_preserves_htf_bias():
     assert result["searchNextScenario"] is True
     assert result["nextScenarioCandidates"] == ["DEEP_PULLBACK", "BREAKDOWN_RETEST"]
     assert result["shortNow"] is False
+
+
+def _confirmed_scenario() -> dict:
+    return evaluate_defense_state(
+        defense_level=4656.07, side="LONG", current_price=4650.0,
+        atr15=2.0,
+        closed_context={"close": 4650.0,
+                        "closeTime": "2026-08-25T02:45:00+00:00"},
+        entry_confirmation="READY", previous={}, scenario_id="LONG-A",
+        scenario_version=3, structure_version="SV-17")
+
+
+def test_state_transition_matrix_makes_confirmed_and_invalidated_terminal():
+    assert is_allowed_scenario_transition("TESTING", "BROKEN_PENDING_CLOSE")
+    assert is_allowed_scenario_transition("BROKEN_PENDING_CLOSE", "RECLAIMED")
+    assert is_allowed_scenario_transition("BROKEN_PENDING_CLOSE", "BROKEN_CONFIRMED")
+    assert not is_allowed_scenario_transition(
+        "BROKEN_CONFIRMED", "BROKEN_PENDING_CLOSE")
+    assert not is_allowed_scenario_transition(
+        "BROKEN_CONFIRMED", "RECLAIMED", scenario_terminal=True)
+
+
+def test_replay_case_a_confirmed_break_persists_monotonic_event():
+    result = _confirmed_scenario()
+    assert result["defenseState"] == "BROKEN_CONFIRMED"
+    assert result["scenarioState"] == "INVALIDATED"
+    assert result["scenarioTerminal"] is True
+    assert result["canReopen"] is False
+    assert len(result["confirmedStrategyEvents"]) == 1
+    event = result["confirmedStrategyEvents"][0]
+    assert event["scenarioId"] == "LONG-A"
+    assert event["eventType"] == "DEFENSE_BROKEN_CONFIRMED"
+    assert event["structureVersion"] == "SV-17"
+
+
+def test_replay_case_b_stale_data_cannot_downgrade_confirmed_break():
+    previous = _confirmed_scenario()
+    result = evaluate_defense_state(
+        defense_level=4656.07, side="LONG", current_price=4646.7,
+        atr15=2.0, closed_context=None, entry_confirmation="BLOCKED_BY_DATA",
+        previous=previous, scenario_id="LONG-A", scenario_version=3,
+        structure_version="SV-17")
+    assert result["defenseState"] == "BROKEN_CONFIRMED"
+    assert result["scenarioState"] == "INVALIDATED"
+    assert result["entryConfirmation"] == "BLOCKED_BY_DATA"
+    assert len(result["confirmedStrategyEvents"]) == 1
+
+    later_close = evaluate_defense_state(
+        defense_level=4656.07, side="LONG", current_price=4648.0,
+        atr15=2.0,
+        closed_context={"close": 4648.0,
+                        "closeTime": "2026-08-25T03:00:00+00:00"},
+        entry_confirmation="READY", previous=result, scenario_id="LONG-A",
+        scenario_version=3, structure_version="SV-17")
+    assert later_close["defenseState"] == "BROKEN_CONFIRMED"
+    assert len(later_close["confirmedStrategyEvents"]) == 1
+
+
+def test_replay_case_c_reclaim_creates_new_identity_without_reviving_old_scenario():
+    previous = _confirmed_scenario()
+    result = evaluate_defense_state(
+        defense_level=4656.07, side="LONG", current_price=4662.0,
+        atr15=2.0,
+        closed_context={"close": 4662.0,
+                        "closeTime": "2026-08-25T03:00:00+00:00"},
+        entry_confirmation="READY", previous=previous, scenario_id="LONG-A",
+        scenario_version=3, structure_version="SV-17")
+    assert result["defenseState"] == "BROKEN_CONFIRMED"
+    assert result["scenarioState"] == "INVALIDATED"
+    assert result["activeDefenseRole"] == "REFERENCE"
+    assert result["historicalDefenseLevel"] == 4656.07
+    assert result["reclaimEvent"]["previousScenarioId"] == "LONG-A"
+    assert result["reclaimEvent"]["newScenarioId"] != "LONG-A"
+    assert result["reclaimEvent"]["entry"] is None
+    assert result["reclaimEvent"]["stopLoss"] is None
+    assert result["reclaimEvent"]["targets"] == []
+    assert result["reclaimEvent"]["requiresFullTradePlanRecalculation"] is True
+
+
+def test_replay_case_d_new_scenario_id_starts_fresh_lifecycle():
+    old = _confirmed_scenario()
+    new_id = "LONG-B"
+    result = evaluate_defense_state(
+        defense_level=4660.0, side="LONG", current_price=4665.0,
+        atr15=2.0,
+        closed_context={"close": 4665.0,
+                        "closeTime": "2026-08-25T03:15:00+00:00"},
+        entry_confirmation="READY", previous=old, scenario_id=new_id,
+        scenario_version=1, structure_version="SV-18")
+    assert result["scenarioId"] == new_id
+    assert result["scenarioState"] == "ACTIVE"
+    assert result["scenarioTerminal"] is False
+    assert result["defenseState"] != "BROKEN_CONFIRMED"
+    assert old["confirmedStrategyEvents"][0]["scenarioId"] == "LONG-A"
+
+
+def test_replay_case_e_htf_bias_and_local_correction_are_independent():
+    data = _data()
+    data["normalized_analysis"]["timeframeAssessments"] = [
+        {"timeframe": "1D", "trend": "bullish"},
+        {"timeframe": "4H", "trend": "bullish"},
+        {"timeframe": "1H", "trend": "bearish"},
+        {"timeframe": "15M", "trend": "bearish"},
+    ]
+    health = evaluate_decision_health(data, now=NOW)
+    context = resolve_market_context(data, htf_bias=health["marketBias"])
+    assert context == {
+        "htfBias": "BULLISH", "structure1h": "BEARISH_CORRECTION",
+        "structure15m": "BEARISH", "shortTermState": "CORRECTIVE_BEARISH",
+        "activeScenarioDirection": "NONE",
+    }
+
+
+def test_replay_case_f_long_invalidated_does_not_create_short_entry():
+    result = _confirmed_scenario()
+    assert result["activeLongScenario"] == "INVALIDATED"
+    assert result["activeShortScenario"] == "ACTIVE"
+    assert result["shortNow"] is False
+    assert result["entryConfirmation"] == "WAIT_NEW_STRUCTURE"
+
+
+def test_replay_case_g_telegram_blocks_same_scenario_state_regression():
+    previous = {
+        "setupId": "LONG-A", "direction": "LONG",
+        "currentState": "INVALIDATED", "scenarioState": "INVALIDATED",
+        "scenarioValidity": "INVALIDATED", "defenseState": "BROKEN_CONFIRMED",
+    }
+    stale_snapshot = {
+        "setupId": "LONG-A", "direction": "LONG",
+        "currentState": "BROKEN_PENDING_CLOSE", "scenarioState": "ACTIVE",
+        "scenarioValidity": "ACTIVE", "defenseState": "BROKEN_PENDING_CLOSE",
+    }
+    blocked, reason = notification_state_regression(previous, stale_snapshot)
+    assert blocked is True
+    assert reason == "STATE_REGRESSION_BLOCKED"
+
+    fresh_scenario = {**stale_snapshot, "setupId": "LONG-B"}
+    assert notification_state_regression(previous, fresh_scenario) == (
+        False, "DIFFERENT_SCENARIO")
+
+
+def test_invalidated_telegram_separates_htf_and_local_structures():
+    message = format_decision_message({
+        "event_type": "DEFENSE_BROKEN_CONFIRMED",
+        "currentPrice": 4646.7, "marketBias": "BULLISH",
+        "dataHealth": "STALE", "defenseState": "BROKEN_CONFIRMED",
+        "defenseLevel": 4656.07, "defenseSide": "LONG",
+        "marketContext": {
+            "htfBias": "BULLISH", "structure1h": "BEARISH_CORRECTION",
+            "structure15m": "BEARISH", "activeScenarioDirection": "LONG",
+        },
+    })
+    assert "高週期方向：🟢 偏多" in message
+    assert "1H 結構：🟠 空方修正" in message
+    assert "15M 結構：🔴 偏空" in message
+    assert "資料狀態：🔴 行情資料過期" in message
+    assert "永久失效" in message
+    assert "正在測試原防守" not in message
+
+
+def test_data_stale_message_preserves_invalidated_scenario_fact():
+    message = format_decision_message({
+        "event_type": "DATA_STALE",
+        "canonicalDecision": {
+            "scenarioState": "INVALIDATED", "scenarioValidity": "INVALIDATED",
+            "entryConfirmation": "BLOCKED_BY_DATA", "marketBias": "BULLISH",
+        },
+    })
+    assert "原交易劇本：仍維持已確認失效" in message
+    assert "不會讓策略狀態退回" in message

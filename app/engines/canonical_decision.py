@@ -530,6 +530,15 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
         "activeLongScenario": decision_health.get("activeLongScenario", "ACTIVE"),
         "activeShortScenario": decision_health.get("activeShortScenario", "ACTIVE"),
         "shortTermStructure": decision_health.get("shortTermStructure", "UNCHANGED"),
+        "marketContext": dict(decision_health.get("marketContext") or {}),
+        "scenarioState": decision_health.get("scenarioState", "ACTIVE"),
+        "scenarioTerminal": bool(decision_health.get("scenarioTerminal")),
+        "historicalDefenseLevel": decision_health.get("historicalDefenseLevel"),
+        "activeDefenseRole": decision_health.get("activeDefenseRole", "ACTIVE_DEFENSE"),
+        "confirmedStrategyEvents": list(
+            decision_health.get("confirmedStrategyEvents") or []),
+        "reclaimEvent": decision_health.get("reclaimEvent"),
+        "pendingNewScenarioId": decision_health.get("pendingNewScenarioId"),
         "searchNextScenario": bool(decision_health.get("searchNextScenario")),
         "nextScenarioCandidates": list(
             decision_health.get("nextScenarioCandidates") or []),

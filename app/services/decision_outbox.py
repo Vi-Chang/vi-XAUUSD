@@ -22,6 +22,7 @@ from app.engines.trigger_lifecycle import validate_notification
 from app.services.alert_aggregator import (
     aggregate_signal_facts,
     is_meaningful_change,
+    notification_state_regression,
 )
 from app.services.notification_policy import (
     canonical_dedupe_key,
@@ -45,6 +46,7 @@ class DeliveryUnknownError(RuntimeError):
 def _last_sent_market_decision(db, symbol: str, payload: dict) -> dict | None:
     """Find the latest delivered decision in the same direction/market stream."""
     direction = str(payload.get("direction") or "NONE")
+    scenario_id = str(payload.get("scenarioId") or payload.get("setupId") or "")
     rows = db.execute(
         select(DecisionEvent)
         .join(TelegramNotification,
@@ -54,11 +56,15 @@ def _last_sent_market_decision(db, symbol: str, payload: dict) -> dict | None:
         .order_by(TelegramNotification.sent_at.desc())
         .limit(50)
     ).scalars().all()
+    fallback = None
     for row in rows:
         old = dict(row.payload or {})
-        if str(old.get("direction") or "NONE") == direction:
+        old_scenario = str(old.get("scenarioId") or old.get("setupId") or "")
+        if scenario_id and old_scenario == scenario_id:
             return old
-    return None
+        if str(old.get("direction") or "NONE") == direction:
+            fallback = fallback or old
+    return fallback
 
 
 def persist_decision_events(symbol: str, events: list[dict]) -> list[dict]:
@@ -159,6 +165,25 @@ def persist_decision_events(symbol: str, events: list[dict]) -> list[dict]:
                     "positionId": payload.get("positionId"),
                     "snapshotId": payload.get("snapshotId")}, created_at=now))
             previous_sent = _last_sent_market_decision(db, symbol, payload)
+            regressed, regression_reason = notification_state_regression(
+                previous_sent, payload)
+            if regressed:
+                logger.warning(
+                    "STATE_REGRESSION_BLOCKED scenario=%s event=%s",
+                    payload.get("setupId") or payload.get("scenarioId"), event_id,
+                )
+                db.add(NotificationAudit(
+                    event_id=event_id,
+                    event_type=str(payload.get("event_type") or ""),
+                    eligible=False,
+                    reason_code="STATE_REGRESSION_BLOCKED",
+                    dedupe_key=semantic_key,
+                    payload={"previousState": (previous_sent or {}).get("currentState"),
+                             "currentState": payload.get("currentState"),
+                             "reason": regression_reason},
+                    created_at=now,
+                ))
+                continue
             meaningful, reason = is_meaningful_change(previous_sent, payload)
             if not meaningful:
                 logger.info(

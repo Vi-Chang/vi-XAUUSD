@@ -6,6 +6,8 @@ for a new entry and whether a runtime defense level has actually failed.
 """
 from __future__ import annotations
 
+import hashlib
+import logging
 import math
 from datetime import datetime, timezone
 from typing import Any
@@ -21,6 +23,118 @@ DEFENSE_STATES = {
     "APPROACHING", "TESTING", "BROKEN_PENDING_CLOSE", "RECLAIMED", "HELD",
     "BROKEN_CONFIRMED", "INACTIVE",
 }
+
+logger = logging.getLogger(__name__)
+
+TERMINAL_SCENARIO_STATES = {"INVALIDATED", "SCENARIO_INVALIDATED"}
+CONFIRMED_EVENT_TYPES = {"DEFENSE_BROKEN_CONFIRMED"}
+DEFENSE_TRANSITIONS = {
+    "": DEFENSE_STATES,
+    "INACTIVE": {"INACTIVE", "APPROACHING", "TESTING", "BROKEN_PENDING_CLOSE",
+                 "BROKEN_CONFIRMED"},
+    "APPROACHING": {"INACTIVE", "APPROACHING", "TESTING", "BROKEN_PENDING_CLOSE",
+                    "BROKEN_CONFIRMED"},
+    "TESTING": {"INACTIVE", "APPROACHING", "TESTING", "BROKEN_PENDING_CLOSE",
+                "RECLAIMED", "BROKEN_CONFIRMED"},
+    "BROKEN_PENDING_CLOSE": {"BROKEN_PENDING_CLOSE", "RECLAIMED",
+                             "BROKEN_CONFIRMED"},
+    "RECLAIMED": {"RECLAIMED", "HELD", "BROKEN_PENDING_CLOSE",
+                  "BROKEN_CONFIRMED"},
+    "HELD": {"HELD", "TESTING", "BROKEN_PENDING_CLOSE", "BROKEN_CONFIRMED"},
+    # A confirmed break is immutable inside the same scenario lifecycle.
+    "BROKEN_CONFIRMED": {"BROKEN_CONFIRMED"},
+}
+
+
+def is_allowed_scenario_transition(previous_state: str, next_state: str,
+                                   *, scenario_terminal: bool = False) -> bool:
+    """Return whether one scenario may move to ``next_state``.
+
+    Price can move around before confirmation, but a confirmed break or an
+    invalidated scenario is a one-way fact.  A reclaim after that fact belongs
+    to a new scenario, never to the old lifecycle.
+    """
+    old, new = str(previous_state or ""), str(next_state or "")
+    if scenario_terminal or old == "BROKEN_CONFIRMED":
+        return new == "BROKEN_CONFIRMED"
+    return new in DEFENSE_TRANSITIONS.get(old, {old})
+
+
+def persist_confirmed_strategy_event(previous_events: list[dict] | None,
+                                     event: dict | None) -> list[dict]:
+    """Append one immutable confirmed event, deduplicated by event identity."""
+    events = [dict(item) for item in (previous_events or [])]
+    if not event:
+        return events
+    payload = dict(event)
+    event_id = str(payload.get("eventId") or "")
+    if not event_id:
+        raw = "|".join(str(payload.get(key) or "") for key in (
+            "scenarioId", "structureVersion", "eventType", "level",
+            "closedBarTimestamp", "confirmedClose",
+        ))
+        event_id = hashlib.sha256(raw.encode()).hexdigest()[:32]
+        payload["eventId"] = event_id
+    if not any(str(item.get("eventId") or "") == event_id for item in events):
+        events.append(payload)
+    return events[-50:]
+
+
+def _confirmed_break_event(events: list[dict], scenario_id: str,
+                           structure_version: str) -> dict | None:
+    for event in reversed(events):
+        if (str(event.get("eventType")) in CONFIRMED_EVENT_TYPES
+                and str(event.get("scenarioId") or "") == scenario_id
+                and str(event.get("structureVersion") or "1") == structure_version):
+            return event
+    return None
+
+
+def _structure_label(value: Any) -> str:
+    raw = str(value or "").upper()
+    if "BEAR" in raw or "DOWN" in raw:
+        return "BEARISH"
+    if "BULL" in raw or "UP" in raw:
+        return "BULLISH"
+    if "RANGE" in raw or "SIDE" in raw:
+        return "RANGE"
+    return "UNKNOWN"
+
+
+def resolve_market_context(data: dict, *, htf_bias: str,
+                           active_scenario_direction: str = "NONE") -> dict:
+    """Keep HTF bias, 1H/15M structure and active scenario independent."""
+    normalized = data.get("normalized_analysis") or {}
+    assessments = {
+        str(row.get("timeframe") or "").upper(): row
+        for row in normalized.get("timeframeAssessments") or []
+    }
+    h1 = assessments.get("1H") or {}
+    m15 = assessments.get("15M") or {}
+    structure_1h = _structure_label(
+        h1.get("structure") or h1.get("trend") or h1.get("momentum"))
+    structure_15m = _structure_label(
+        m15.get("structure") or m15.get("trend") or m15.get("momentum"))
+    if htf_bias == "BULLISH" and structure_1h == "BEARISH":
+        structure_1h = "BEARISH_CORRECTION"
+    elif htf_bias == "BEARISH" and structure_1h == "BULLISH":
+        structure_1h = "BULLISH_CORRECTION"
+    short_term = (
+        "CORRECTIVE_BEARISH"
+        if htf_bias == "BULLISH" and (
+            structure_1h == "BEARISH_CORRECTION" or structure_15m == "BEARISH")
+        else "CORRECTIVE_BULLISH"
+        if htf_bias == "BEARISH" and (
+            structure_1h == "BULLISH_CORRECTION" or structure_15m == "BULLISH")
+        else structure_15m
+    )
+    return {
+        "htfBias": htf_bias,
+        "structure1h": structure_1h,
+        "structure15m": structure_15m,
+        "shortTermState": short_term,
+        "activeScenarioDirection": str(active_scenario_direction or "NONE").upper(),
+    }
 
 
 def _number(value: Any) -> float | None:
@@ -148,21 +262,43 @@ def evaluate_defense_state(
     *, defense_level: float | None, side: str, current_price: float | None,
     atr15: float = 0.0, closed_context: dict | None = None,
     entry_confirmation: str = "READY", previous: dict | None = None,
-    reclaim_level: float | None = None,
+    reclaim_level: float | None = None, scenario_id: str = "",
+    scenario_version: int = 1, structure_version: str = "1",
 ) -> dict:
     """Classify a live defense test while requiring close confirmation to fail."""
     previous = previous or {}
+    scenario_id = str(scenario_id or previous.get("scenarioId") or "UNSCOPED")
+    structure_version = str(structure_version or previous.get("structureVersion") or "1")
+    previous_scenario_id = str(previous.get("scenarioId") or scenario_id)
+    same_scenario = previous_scenario_id == scenario_id
+    previous_scenario_state = str(previous.get("scenarioState") or "ACTIVE")
+    scenario_terminal = bool(
+        same_scenario and previous_scenario_state in TERMINAL_SCENARIO_STATES)
+    confirmed_events = list(previous.get("confirmedStrategyEvents") or [])
+    persisted_break = _confirmed_break_event(
+        confirmed_events, scenario_id, structure_version)
+    if persisted_break is not None:
+        scenario_terminal = True
     level = _number(defense_level)
     current = _number(current_price)
     direction = str(side).upper()
     if level is None or current is None or direction not in {"LONG", "SHORT"}:
-        return {"defenseState": "INACTIVE", "defenseLevel": level,
-                "falseBreakDetected": False, "longScenarioInvalidated": False,
-                "shortScenarioInvalidated": False, "shortNow": False,
-                "activeLongScenario": "ACTIVE", "activeShortScenario": "ACTIVE",
-                "shortTermStructure": "STABLE", "searchNextScenario": False,
-                "nextScenarioCandidates": [],
-                "entryConfirmation": entry_confirmation}
+        if scenario_terminal and persisted_break is not None:
+            level = _number(persisted_break.get("level"))
+            direction = str(persisted_break.get("direction") or direction).upper()
+            current = current if current is not None else level
+        else:
+            return {"defenseState": "INACTIVE", "defenseLevel": level,
+                    "falseBreakDetected": False, "longScenarioInvalidated": False,
+                    "shortScenarioInvalidated": False, "shortNow": False,
+                    "activeLongScenario": "ACTIVE", "activeShortScenario": "ACTIVE",
+                    "shortTermStructure": "STABLE", "searchNextScenario": False,
+                    "nextScenarioCandidates": [], "scenarioId": scenario_id,
+                    "scenarioVersion": scenario_version,
+                    "structureVersion": structure_version,
+                    "scenarioState": "ACTIVE", "confirmedStrategyEvents": confirmed_events,
+                    "entryConfirmation": entry_confirmation}
+    assert level is not None and current is not None
     settings = get_settings()
     atr = max(_number(atr15) or 0.0, 0.01)
     buffer = atr * float(settings.defense_confirmation_buffer_atr_mult)
@@ -170,7 +306,10 @@ def evaluate_defense_state(
     broken_live = current < level if direction == "LONG" else current > level
     confirmed = (entry_confirmation == "READY" and
                  is_confirmed_break(level, direction, closed_context, buffer=buffer))
-    old_state = str(previous.get("defenseState") or "")
+    # A different scenario id is a fresh lifecycle boundary.  The historical
+    # event ledger remains available, but its terminal defense state is not
+    # copied into the new scenario.
+    old_state = str(previous.get("defenseState") or "") if same_scenario else ""
     closed_price = _number((closed_context or {}).get("close"))
     closed_time = str((closed_context or {}).get("closeTime") or "")
     previous_basis_time = str(previous.get("defenseBasisCandleTime") or "")
@@ -199,7 +338,11 @@ def evaluate_defense_state(
         and ((direction == "LONG" and closed_price > reclaim)
              or (direction == "SHORT" and closed_price < reclaim))
     )
-    if confirmed:
+    if scenario_terminal:
+        # A later stale/live snapshot may describe an earlier market phase, but
+        # it cannot revoke an already persisted closed-candle fact.
+        state = "BROKEN_CONFIRMED"
+    elif confirmed:
         state = "BROKEN_CONFIRMED"
     elif continued_hold or reclaimed_structure:
         state = "HELD"
@@ -216,17 +359,66 @@ def evaluate_defense_state(
         distance = abs(current - level)
         state = ("TESTING" if distance <= approach else
                  "APPROACHING" if distance <= approach * 2 else "INACTIVE")
+    proposed_state = state
+    if not is_allowed_scenario_transition(
+            old_state, proposed_state, scenario_terminal=scenario_terminal):
+        logger.warning(
+            "STATE_REGRESSION_BLOCKED scenario=%s previous=%s proposed=%s",
+            scenario_id, old_state, proposed_state,
+        )
+        state = "BROKEN_CONFIRMED" if (
+            scenario_terminal or old_state == "BROKEN_CONFIRMED") else old_state
     scenario_broken = state == "BROKEN_CONFIRMED"
+    confirmed_event = None
+    if scenario_broken and persisted_break is None and confirmed and not scenario_terminal:
+        confirmed_event = {
+            "scenarioId": scenario_id,
+            "scenarioVersion": scenario_version,
+            "structureVersion": structure_version,
+            "eventType": "DEFENSE_BROKEN_CONFIRMED",
+            "level": level,
+            "direction": direction,
+            "closedBarTimestamp": closed_time,
+            "confirmedClose": closed_price,
+            "confirmedAt": closed_time or datetime.now(timezone.utc).isoformat(),
+        }
+        confirmed_events = persist_confirmed_strategy_event(
+            confirmed_events, confirmed_event)
     false_break = bool(
         first_reclaim or continued_hold or same_reclaim_candle
         or (previous.get("falseBreakDetected") and state in {"RECLAIMED", "HELD"})
     )
-    if state in {"TESTING", "BROKEN_PENDING_CLOSE"}:
+    if entry_confirmation == "BLOCKED_BY_DATA":
+        # Data health blocks new confirmation only.  It does not mutate the
+        # already confirmed strategy timeline.
+        resolved_confirmation = "BLOCKED_BY_DATA"
+    elif state in {"TESTING", "BROKEN_PENDING_CLOSE"}:
         resolved_confirmation = "WAIT_15M_CLOSE"
     elif state in {"RECLAIMED", "BROKEN_CONFIRMED"}:
         resolved_confirmation = "WAIT_NEW_STRUCTURE"
     else:
         resolved_confirmation = entry_confirmation
+    reclaim_after_terminal = bool(
+        scenario_terminal and holds_defense and closed_time
+        and closed_time != str((persisted_break or {}).get("closedBarTimestamp") or "")
+    )
+    proposed_new_scenario_id = ""
+    reclaim_event: dict | None = None
+    if reclaim_after_terminal:
+        raw = f"{scenario_id}|RECLAIM|{closed_time}|{structure_version}"
+        proposed_new_scenario_id = f"RECLAIM-{hashlib.sha256(raw.encode()).hexdigest()[:16]}"
+        reclaim_event = {
+            "eventType": "NEW_RECLAIM_EVENT",
+            "previousScenarioId": scenario_id,
+            "newScenarioId": proposed_new_scenario_id,
+            "historicalDefenseLevel": level,
+            "closedBarTimestamp": closed_time,
+            "confirmedClose": closed_price,
+            "state": "WAIT_NEW_STRUCTURE",
+            "requiresFullTradePlanRecalculation": True,
+            # Explicitly empty: old executable prices are never copied.
+            "entry": None, "stopLoss": None, "targets": [], "riskReward": None,
+        }
     return {
         "defenseState": state, "defenseLevel": level,
         "confirmationBuffer": round(buffer, 6),
@@ -246,6 +438,17 @@ def evaluate_defense_state(
         "searchNextScenario": scenario_broken,
         "nextScenarioCandidates": (["DEEP_PULLBACK", "BREAKDOWN_RETEST"]
                                    if scenario_broken else []),
+        "scenarioId": scenario_id, "scenarioVersion": scenario_version,
+        "structureVersion": structure_version,
+        "scenarioState": "INVALIDATED" if scenario_broken else "ACTIVE",
+        "scenarioTerminal": scenario_broken,
+        "canReopen": not scenario_broken,
+        "confirmedStrategyEvents": confirmed_events,
+        "confirmedStrategyEvent": confirmed_event,
+        "historicalDefenseLevel": level if scenario_broken else None,
+        "activeDefenseRole": "REFERENCE" if scenario_broken else "ACTIVE_DEFENSE",
+        "reclaimEvent": reclaim_event,
+        "pendingNewScenarioId": proposed_new_scenario_id,
         # A defense failure cancels that scenario. It never grants the opposite entry.
         "shortNow": False, "side": direction,
         "defenseBasisCandleTime": closed_time,
@@ -255,7 +458,27 @@ def evaluate_defense_state(
 
 def evaluate_decision_health(data: dict, *, previous: dict | None = None,
                              now: datetime | str | None = None) -> dict:
+    previous = previous or {}
     closed = get_latest_valid_closed_15m(data, previous=previous, now=now)
-    return {**closed, "marketBias": resolve_market_bias(data),
-            "evaluatedAt": iso_utc(now or data.get("timestamp_utc") or
-                                   datetime.now(timezone.utc))}
+    evaluated_at = iso_utc(now or data.get("timestamp_utc") or
+                           datetime.now(timezone.utc))
+    market_bias = resolve_market_bias(data)
+    market_context = resolve_market_context(
+        data, htf_bias=market_bias,
+        active_scenario_direction=str(previous.get("side") or "NONE"))
+    health_timeline = list(previous.get("dataHealthTimeline") or [])
+    if (not health_timeline or
+            str(health_timeline[-1].get("state") or "") != closed["dataHealth"]):
+        health_timeline.append({
+            "state": closed["dataHealth"], "at": evaluated_at,
+            "reason": closed.get("reason"),
+        })
+    return {
+        **closed, "marketBias": market_bias, "marketContext": market_context,
+        "dataHealthTimeline": health_timeline[-50:],
+        # The strategy event timeline is copied forward independently and may
+        # only be appended by a closed-candle strategy confirmation.
+        "confirmedStrategyEvents": list(
+            previous.get("confirmedStrategyEvents") or []),
+        "evaluatedAt": evaluated_at,
+    }

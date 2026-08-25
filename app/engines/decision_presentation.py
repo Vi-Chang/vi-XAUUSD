@@ -257,6 +257,16 @@ def format_decision_message(event: dict) -> str:
                             canonical.get("defenseState") or "TESTING")
         data_health = str(event.get("dataHealth") or
                           canonical.get("dataHealth") or "UNKNOWN")
+        market_context = (event.get("marketContext") or
+                          canonical.get("marketContext") or {})
+        structure_1h = str(market_context.get("structure1h") or "UNKNOWN")
+        structure_15m = str(market_context.get("structure15m") or "UNKNOWN")
+        structure_labels = {
+            "BULLISH": "🟢 偏多", "BEARISH": "🔴 偏空",
+            "BEARISH_CORRECTION": "🟠 空方修正",
+            "BULLISH_CORRECTION": "🟠 多方修正",
+            "RANGE": "⚪ 盤整", "UNKNOWN": "🟠 最新資料待確認",
+        }
         health_text = {
             "HEALTHY": "🟢 正常", "RECOVERING": "🟡 資料恢復中",
             "DEGRADED_15M": "🟠 15M 資料延遲",
@@ -318,12 +328,17 @@ def format_decision_message(event: dict) -> str:
             ])
         if canonical_type == "DEFENSE_BROKEN_CONFIRMED":
             return "\n".join([
-                "⚪【XAUUSD｜當前交易劇本已失效】", f"現價：{price:.2f}",
+                "⚪【XAUUSD 原多方劇本已失效】" if side == "LONG"
+                else "⚪【XAUUSD 原空方劇本已失效】", f"現價：{price:.2f}",
+                f"高週期方向：{'🟢 偏多' if bias == 'BULLISH' else '🔴 偏空' if bias == 'BEARISH' else '⚪ 中性'}",
+                f"1H 結構：{structure_labels.get(structure_1h, '🟠 最新資料待確認')}",
+                f"15M 結構：{structure_labels.get(structure_15m, '🟠 最新資料待確認')}",
                 f"資料狀態：{health_text}",
                 f"防守位置：{float(defense):.2f}" if isinstance(defense, (int, float)) else "防守位置：—",
                 "15M 已收盤確認跌破／站上防守緩衝。",
-                f"高週期方向仍保留為：{'偏多' if bias == 'BULLISH' else '偏空' if bias == 'BEARISH' else '中性'}。",
-                "系統會重算短線結構並尋找下一個有效劇本；不會因此直接反手。",
+                "原交易劇本已永久失效，不再等待原防守恢復。",
+                "現在：等待新的止跌／reclaim，或跌破後反抽失敗且 RR 合格。",
+                "目前不抄底，也不在急跌後追空；系統不會因此直接反手。",
             ])
         return "\n".join([
             "【XAUUSD 現在怎麼做】", "🟠 先不要進場", f"現價：{price:.2f}",
@@ -355,6 +370,14 @@ def format_decision_message(event: dict) -> str:
             f"大方向：{'偏多' if bias == 'BULLISH' else '偏空' if bias == 'BEARISH' else '中立'}（價格行為不會自動改寫大方向）",
             f"信心分數：{event.get('behaviorConfidence') or 0}/100",
             f"現在：{action}",
+        ])
+    if canonical_type == "NEW_RECLAIM_EVENT":
+        return "\n".join([
+            "🔄【XAUUSD｜出現新的 reclaim 結構】",
+            "舊交易劇本：維持失效，不會重新啟用。",
+            f"新候選劇本：{event.get('newScenarioId') or event.get('scenarioId') or '正在建立'}",
+            "系統將依最新結構重新計算進場、防守、止盈與 RR。",
+            "目前：等待新劇本完成確認，尚不可進場。",
         ])
     if canonical:
         entry = canonical.get("newEntryDecision") or {}
@@ -389,13 +412,20 @@ def format_decision_message(event: dict) -> str:
                                 "PENDING_CONFIRMATION")
         if entry_confirmation in {"WAIT_15M_CLOSE", "BLOCKED_BY_DATA"}:
             bias = str(canonical.get("marketBias") or "NEUTRAL")
-            return "\n".join([
+            lines = [
                 "【XAUUSD 資料確認中】", "🟠 暫停新進場",
                 f"市場方向：{'🟢 偏多' if bias == 'BULLISH' else '🔴 偏空' if bias == 'BEARISH' else '⚪ 中性'}",
                 "資料狀態：最新 15M 收盤暫缺",
                 "系統仍保留原市場方向，但取得最新已收盤 K 棒以前，不產生新的 ENTRY_READY。",
                 "原進場、停損與止盈：暫不具執行效力。",
-            ])
+            ]
+            if (scenario_validity in {"INVALIDATED", "STALE"}
+                    or str(canonical.get("scenarioState") or "") == "INVALIDATED"):
+                lines.extend([
+                    "原交易劇本：仍維持已確認失效。",
+                    "資料延遲不會讓策略狀態退回等待原防守。",
+                ])
+            return "\n".join(lines)
         if scenario_validity in {"INVALIDATED", "STALE"}:
             bias = str(canonical.get("marketBias") or "NEUTRAL")
             return "\n".join([
@@ -443,8 +473,26 @@ def format_decision_message(event: dict) -> str:
                 f"目前動作 {position.get('action')}")
         lines.append(f"收盤確認來源：最新已收15M {_closed_candle_text(candle) if candle else canonical.get('lastClosedCandleTime') or '—'}")
         return "\n".join(lines)
+    if canonical_type == "NEW_RECLAIM_EVENT":
+        return "\n".join([
+            "🔄【XAUUSD｜出現新的 reclaim 結構】",
+            "舊交易劇本：維持失效，不會重新啟用。",
+            f"新候選劇本：{event.get('newScenarioId') or event.get('scenarioId') or '正在建立'}",
+            "系統將依最新結構重新計算進場、防守、止盈與 RR。",
+            "目前：等待新劇本完成確認，尚不可進場。",
+        ])
     if canonical_type == "DATA_STALE":
-        return "🔴【XAUUSD 行情資料延遲】\n資料恢復前暫停新進場；持倉防守提醒不會因此關閉。"
+        scenario_invalid = str(canonical.get("scenarioState") or "") == "INVALIDATED"
+        lines = [
+            "🔴【XAUUSD 行情資料延遲】",
+            "資料恢復前暫停新的進場確認；持倉防守提醒不會因此關閉。",
+        ]
+        if scenario_invalid:
+            lines.extend([
+                "原交易劇本：仍維持已確認失效。",
+                "資料延遲不會讓策略狀態退回等待原防守。",
+            ])
+        return "\n".join(lines)
     if canonical_type in {"ENTRY_READY", "ENTRY_NOW"}:
         zone = event.get("entryZone") or {}
         return "\n".join([

@@ -61,10 +61,40 @@ def _profile(event: dict) -> dict:
         "scenarioValidity": str(event.get("scenarioValidity") or
                                  (event.get("canonicalDecision") or {}).get(
                                      "scenarioValidity") or ""),
+        "scenarioState": str(event.get("scenarioState") or
+                              (event.get("canonicalDecision") or {}).get(
+                                  "scenarioState") or ""),
         "primaryTriggerId": str(event.get("primaryTriggerId") or
                                 (event.get("canonicalDecision") or {}).get(
                                     "activeSetupId") or ""),
     }
+
+
+def notification_state_regression(previous: dict | None,
+                                  current: dict) -> tuple[bool, str]:
+    """Block an earlier lifecycle snapshot for the same scenario.
+
+    A new scenario id starts a new lifecycle.  Within one scenario, an already
+    notified confirmed break / invalidation can never be followed by a pending
+    defense, reclaim or held notification.
+    """
+    if not previous:
+        return False, "NO_PREVIOUS_NOTIFICATION"
+    old, new = _profile(previous), _profile(current)
+    if not old["setupId"] or not new["setupId"] or old["setupId"] != new["setupId"]:
+        return False, "DIFFERENT_SCENARIO"
+
+    def terminal(profile: dict) -> bool:
+        return (profile["scenarioState"] in {"INVALIDATED", "SCENARIO_INVALIDATED"}
+                or profile["scenarioValidity"] == "INVALIDATED"
+                or profile["status"] in {"INVALIDATED", "SCENARIO_INVALIDATED"})
+
+    old_defense, new_defense = old["defenseState"], new["defenseState"]
+    if terminal(old) and not terminal(new):
+        return True, "STATE_REGRESSION_BLOCKED"
+    if old_defense == "BROKEN_CONFIRMED" and new_defense != "BROKEN_CONFIRMED":
+        return True, "STATE_REGRESSION_BLOCKED"
+    return False, "MONOTONIC_OR_NEW_EVENT"
 
 
 def is_meaningful_change(previous: dict | None, current: dict) -> tuple[bool, str]:
