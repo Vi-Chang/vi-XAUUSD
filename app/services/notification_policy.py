@@ -33,6 +33,8 @@ IMPORTANT = {
     "DEFENSE_BROKEN_CONFIRMED",
     "EARLY_ENTRY_PREPARE", "EARLY_ENTRY_MISSED",
     "EARLY_ENTRY_WATCH", "EARLY_ENTRY_REPLACED",
+    "STATE_CHANGED", "PULLBACK_ZONE_UPDATED", "MARKET_BEHAVIOR_CHANGED",
+    "NEW_RECLAIM_EVENT", "TRAILING_EXIT",
 }
 INFO = {"REGIME_MAJOR_CHANGE", "MARKET_CLOSED", "SETUP_CREATED", "SETUP_ARMED"}
 WAIT_STATES = {"WAIT", "NO_TRADE", "WAIT_CONFIRMATION"}
@@ -98,9 +100,17 @@ def is_user_actionable_notification(payload: dict) -> tuple[bool, str, str]:
     if event_type in {"MISSED_ENTRY", "EARLY_ENTRY_MISSED", "PRICE_RAN_AWAY"}:
         return True, "MISSED_ACTION", "P5"
     if event_type in {"BIAS_CHANGE", "REGIME_MAJOR_CHANGE", "BULLISH_RECOVERY",
-                      "BEARISH_RECOVERY", "FALSE_BREAKOUT"} or bool(
+                      "BEARISH_RECOVERY", "FALSE_BREAKOUT",
+                      "MARKET_BEHAVIOR_CHANGED"} or bool(
             payload.get("marketBiasChanged")):
         return True, "MATERIAL_BIAS_CHANGE", "P6"
+    if event_type in {"STATE_CHANGED", "PULLBACK_ZONE_UPDATED",
+                      "NEW_RECLAIM_EVENT"}:
+        # The semantic transition detector decides whether this lifecycle fact
+        # changes the trader's next action; unchanged WAIT remains suppressed.
+        return True, "SEMANTIC_STATE_CANDIDATE", "P4"
+    if event_type == "TRAILING_EXIT":
+        return True, "POSITION_ACTION", "P0"
     wrapper = payload.get("breakoutSetupEvent") or payload.get("trendContinuationEvent") or {}
     setup = wrapper.get("setup") or {}
     has_actionable_watch = bool(

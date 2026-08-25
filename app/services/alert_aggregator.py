@@ -408,7 +408,12 @@ def aggregate_signal_facts(symbol: str, events: list[dict]) -> list[dict]:
             "triggerReason": "；".join(reasons),
             "topic": f"decision-alert:{key}",
         })
-        if any(f.get("event_type") == "STATE_CHANGED" for f in facts):
+        # STATE_CHANGED is an audit fact, not a priority override.  Previously
+        # it could rename ENTRY_READY / EXIT / defense notifications and make
+        # the formatter and eligibility layer treat them as a generic update.
+        if (any(f.get("event_type") == "STATE_CHANGED" for f in facts)
+                and alert_category(representative) in {
+                    "WAIT", "MEANINGFUL_SCENARIO_UPDATE"}):
             representative["event_type"] = "STATE_CHANGED"
         aggregated.append(representative)
     return aggregated

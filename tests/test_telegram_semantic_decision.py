@@ -3,6 +3,8 @@ from app.engines.pullback_zone_semantics import (
     normalize_pullback_zones,
     validate_pullback_zone_order,
 )
+from app.services.alert_aggregator import aggregate_signal_facts
+from app.services.notification_policy import eligibility
 from app.services.semantic_decision import (
     build_decision_signature,
     detect_meaningful_transition,
@@ -90,3 +92,27 @@ def test_direction_first_telegram_has_no_internal_nulls():
     assert message.index("淺回踩") < message.index("深度備案")
     for forbidden in ("None", "null", "undefined", "UNKNOWN_INTERNAL"):
         assert forbidden not in message
+
+
+def test_state_changed_does_not_overwrite_entry_ready_priority():
+    wait_fact = {
+        **_wait(4640), "eventId": "state-fact", "event_type": "STATE_CHANGED",
+        "evaluationCycleId": "cycle-1",
+    }
+    ready_fact = {
+        **_wait(4642, trigger_status="CONFIRMED"), "eventId": "ready-fact",
+        "event_type": "ENTRY_READY", "currentState": "ENTRY_READY",
+        "finalAction": "ENTER_LONG", "canEnter": True,
+        "evaluationCycleId": "cycle-1",
+    }
+    result = aggregate_signal_facts("XAUUSD", [wait_fact, ready_fact])
+    assert len(result) == 1
+    assert result[0]["event_type"] == "ENTRY_READY"
+    assert eligibility(result[0])["eligible"] is True
+
+
+def test_semantic_lifecycle_events_reach_transition_gate():
+    for event_type in ("STATE_CHANGED", "PULLBACK_ZONE_UPDATED",
+                       "NEW_RECLAIM_EVENT", "MARKET_BEHAVIOR_CHANGED"):
+        event = {**_wait(4640), "event_type": event_type}
+        assert eligibility(event)["eligible"] is True
