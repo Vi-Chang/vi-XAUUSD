@@ -8,6 +8,7 @@ from app.engines.candle_confirmation_registry import build_confirmation_registry
 from app.engines.confidence import get_confidence_grade
 from app.engines.data_health_gate import evaluate_data_health
 from app.engines.decision_health import evaluate_decision_health
+from app.engines.scenario_execution import resolve_scenario_validity
 
 TERMINAL_SETUP_STATES = {"INVALIDATED", "ARCHIVED", "EXPIRED", "SETUP_EXPIRED",
                          "PULLBACK_INVALIDATED", "MISSED_ENTRY"}
@@ -30,7 +31,10 @@ def _route(candidate: dict) -> str:
     return "PULLBACK" if any(word in kind for word in ("PULLBACK", "RETEST")) else "BREAKOUT"
 
 
-def _candidate_view(candidate: dict, current: float | None, minimum_rr: float) -> dict:
+def _candidate_view(candidate: dict, current: float | None, minimum_rr: float,
+                    *, data_health: str = "HEALTHY",
+                    entry_confirmation: str = "READY",
+                    evaluated_at: str = "") -> dict:
     zone = candidate.get("entry_zone")
     low, high = ((float(zone[0]), float(zone[1]))
                  if isinstance(zone, (list, tuple)) and len(zone) == 2 else (None, None))
@@ -82,6 +86,13 @@ def _candidate_view(candidate: dict, current: float | None, minimum_rr: float) -
     }).get(raw_state, raw_state if raw_state in {
         "WATCHING", "SETUP_VALID", "ARMED", "CONFIRMED", "ENTRY_READY",
         "MISSED", "INVALIDATED", "ARCHIVED"} else "WATCHING")
+    validity = resolve_scenario_validity(
+        direction=direction, current_price=current,
+        invalidation_price=stop, lifecycle_state=raw_state,
+        data_health=data_health, entry_confirmation=entry_confirmation,
+        expires_at=str(candidate.get("expires_at") or "") or None,
+        evaluated_at=evaluated_at or None,
+    )
     return {
         "setupId": str(candidate.get("scenario_id") or ""),
         "setupVersion": int(candidate.get("scenario_version") or 1),
@@ -100,7 +111,10 @@ def _candidate_view(candidate: dict, current: float | None, minimum_rr: float) -
             quality == "IDEAL" and lifecycle == "ENTRY_READY" and rr is not None),
         "blockedReasons": list(candidate.get("reason_codes") or []),
         "setupState": setup_state,
-        "active": raw_state not in TERMINAL_SETUP_STATES,
+        **validity,
+        "executionAllowed": False,
+        "active": (raw_state not in TERMINAL_SETUP_STATES and
+                   validity["scenarioValidity"] not in {"INVALIDATED", "STALE"}),
     }
 
 
@@ -118,8 +132,9 @@ def _setup_score(item: dict, bias: str) -> int:
 
 
 def _timeframe_bias(normalized: dict, timeframe: str) -> str:
-    item = next((row for row in normalized.get("timeframeAssessments") or []
-                 if str(row.get("timeframe")) == timeframe), {})
+    item: dict[str, Any] = next(
+        (row for row in normalized.get("timeframeAssessments") or []
+         if str(row.get("timeframe")) == timeframe), {})
     trend = str(item.get("trend") or "neutral").upper()
     return "BULLISH" if "BULL" in trend else "BEARISH" if "BEAR" in trend else "NEUTRAL"
 
@@ -144,7 +159,13 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
     break_lifecycle = data.get("break_lifecycle_engine") or {}
     fake_recovery = data.get("fake_breakout_recovery") or {}
     current = _number(health.get("currentPrice"))
-    all_candidates = [_candidate_view(item, current, minimum_rr)
+    entry_confirmation = str(decision_health.get("entryConfirmation") or
+                             "BLOCKED_BY_DATA")
+    all_candidates = [_candidate_view(
+        item, current, minimum_rr,
+        data_health=str(decision_health.get("dataHealth") or health.get("status") or "STALE"),
+        entry_confirmation=entry_confirmation,
+        evaluated_at=str(data.get("timestamp_utc") or ""))
                       for item in final.get("signalCandidates") or []]
     archived_candidates = [item for item in all_candidates if not item["active"]]
     candidates = [item for item in all_candidates if item["active"]]
@@ -181,7 +202,7 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
                     f"{'ABOVE' if direction == 'LONG' else 'BELOW'}"
                     if trigger_level is not None else "")
     confirmation = registry.get(registry_key) if registry_key else None
-    canonical_trigger = ({
+    canonical_trigger: dict[str, Any] | None = ({
         "setupId": selected.get("setupId"), "direction": direction,
         "level": trigger_level, "timeframe": "15M", "condition": (
             "closeAbove" if direction == "LONG" else "closeBelow"),
@@ -196,18 +217,33 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
     early = _number(normalized.get("triggerLevel"))
     if early == trigger_level:
         early = None
-    entry_confirmation = str(decision_health.get("entryConfirmation") or
-                             "BLOCKED_BY_DATA")
     data_confirmation_blocked = entry_confirmation in {
         "WAIT_15M_CLOSE", "BLOCKED_BY_DATA"}
     stale = not bool(health.get("healthy")) or data_confirmation_blocked
+    scenario_validity = str(final.get("scenarioValidity") or "")
+    if stale:
+        scenario_validity = "BLOCKED_BY_DATA"
+    elif entry_confirmation == "WAIT_NEW_STRUCTURE":
+        scenario_validity = "INVALIDATED"
+    elif selected:
+        scenario_validity = str(selected.get("scenarioValidity") or
+                                "PENDING_CONFIRMATION")
+    elif archived_candidates and any(
+            item.get("scenarioValidity") == "INVALIDATED"
+            for item in archived_candidates):
+        scenario_validity = "INVALIDATED"
+    elif scenario_validity not in {
+            "ACTIVE", "PENDING_CONFIRMATION", "STALE", "INVALIDATED",
+            "BLOCKED_BY_DATA"}:
+        scenario_validity = "PENDING_CONFIRMATION"
     behavior = str(behavior_state.get("market_behavior") or "RANGE")
     rr_ok = bool(selected.get("rrPassed")) if selected else False
     confirmation_closed = (trigger_level is None or
                            (confirmation or {}).get("status") == "CLOSED_CONFIRMED")
     can_enter = (bool(final.get("canEnter")) and rr_ok and not stale
                   and entry_confirmation == "READY"
-                  and closed_available and confirmation_closed)
+                  and closed_available and confirmation_closed
+                  and scenario_validity == "ACTIVE")
     if str(decision_health.get("defenseState") or "") == "BROKEN_CONFIRMED":
         can_enter = False
     conflict = str(rejection.get("momentum_price_conflict") or "NONE")
@@ -229,6 +265,7 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
     for candidate in candidates:
         candidate["canEnter"] = bool(
             can_enter and str(candidate.get("setupId") or "") == selected_id)
+        candidate["executionAllowed"] = candidate["canEnter"]
     entry_action = ("BUY" if can_enter and direction == "LONG" else
               "SELL" if can_enter and direction == "SHORT" else "WAIT")
     if can_enter:
@@ -282,6 +319,10 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
         primary_reason = "行情資料不足，等待最新15M收盤後再判斷。"
     elif entry_confirmation == "WAIT_NEW_STRUCTURE":
         primary_reason = "高週期方向保留；當前交易劇本已失效，等待新的短線結構。"
+    elif scenario_validity == "INVALIDATED":
+        primary_reason = "當前交易劇本已失效；高週期方向保留，等待重新計算新的進場條件。"
+    elif scenario_validity in {"BLOCKED_BY_DATA", "STALE"}:
+        primary_reason = "行情資料不足，原進場、停損與止盈暫不具執行效力。"
     elif stale:
         primary_reason = "行情資料延遲，等待最新資料確認。"
     elif direction == "LONG" and behavior == "SLOW_BEARISH_DRIFT":
@@ -474,6 +515,13 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
         "marketBias": market_bias,
         "dataHealth": decision_health.get("dataHealth"),
         "entryConfirmation": entry_confirmation,
+        "scenarioValidity": scenario_validity,
+        "executionAllowed": can_enter,
+        "candidateInvalidated": bool(
+            final.get("candidateInvalidated") or
+            any(item.get("candidateInvalidated") for item in archived_candidates)),
+        "scenarioInvalidated": scenario_validity in {"INVALIDATED", "STALE"},
+        "marketBiasChanged": bool(final.get("marketBiasChanged", False)),
         "defenseState": decision_health.get("defenseState"),
         "defenseLevel": decision_health.get("defenseLevel"),
         "falseBreakDetected": bool(decision_health.get("falseBreakDetected")),
@@ -526,7 +574,9 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
         "dataStale": stale,
         "newEntryDecision": {
             "action": entry_action, "canEnter": can_enter, "direction": direction,
-            "tradeStatus": ("WAIT_DATA_CONFIRMATION" if stale or not closed_available else
+            "tradeStatus": ("SCENARIO_INVALIDATED" if scenario_validity in {
+                                "INVALIDATED", "STALE"} else
+                            "WAIT_DATA_CONFIRMATION" if stale or not closed_available else
                             "WAIT_BEHAVIOR_CONFIRMATION" if direction == "LONG" and
                             behavior in {"SLOW_BEARISH_DRIFT", "STRONG_DECLINE",
                                          "REVERSAL_WARNING", "REVERSAL_CONFIRMED"} else

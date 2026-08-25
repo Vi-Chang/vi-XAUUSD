@@ -44,3 +44,10 @@ def test_critical_health_overrides_actionable_entry_display():
     assert "canonical.closedCandleAvailable === false" in JS
     assert 'if (critical) displayState = "INVALID"' in JS
     assert "暫停進場，等待資料恢復" in JS
+
+
+def test_invalid_or_data_blocked_scenario_hides_executable_prices():
+    assert 'canonical.scenarioValidity === "BLOCKED_BY_DATA"' in JS
+    assert '["INVALIDATED", "STALE"].includes(canonical.scenarioValidity)' in JS
+    assert '"暫不具執行效力"' in JS
+    assert "原交易劇本已失效" in JS

@@ -58,6 +58,9 @@ def _profile(event: dict) -> dict:
                             (event.get("canonicalDecision") or {}).get("defenseState") or ""),
         "dataHealth": str(event.get("dataHealth") or
                           (event.get("canonicalDecision") or {}).get("dataHealth") or ""),
+        "scenarioValidity": str(event.get("scenarioValidity") or
+                                 (event.get("canonicalDecision") or {}).get(
+                                     "scenarioValidity") or ""),
         "primaryTriggerId": str(event.get("primaryTriggerId") or
                                 (event.get("canonicalDecision") or {}).get(
                                     "activeSetupId") or ""),
@@ -77,6 +80,7 @@ def is_meaningful_change(previous: dict | None, current: dict) -> tuple[bool, st
         return True, "NEW_SCENARIO"
     for field in (
             "marketBias", "entryConfirmation", "defenseState", "dataHealth",
+            "scenarioValidity",
             "primaryTriggerId"):
         if old[field] != new[field]:
             return True, f"{field.upper()}_CHANGED"
@@ -189,6 +193,11 @@ def notification_fingerprint_parts(event: dict) -> dict[str, str]:
         # Freshness alerts are transitions, not candle-scoped market setups.
         parts["scenarioId"] = "DATA_HEALTH"
         parts["sourceCandleTime"] = ""
+    scenario_validity = str(event.get("scenarioValidity") or
+                            (event.get("canonicalDecision") or {}).get(
+                                "scenarioValidity") or "")
+    if scenario_validity:
+        parts["scenarioValidity"] = scenario_validity
     if pullback_zone:
         parts["pullbackZone"] = pullback_zone
     return parts
