@@ -122,6 +122,7 @@ def is_user_actionable_notification(payload: dict) -> tuple[bool, str, str]:
 def user_visible_state_fingerprint(payload: dict) -> str:
     """Identity made only from fields that can alter the user's next action."""
     canonical = _canonical(payload)
+    scalp = payload.get("scalpDecision") or canonical.get("scalpDecision") or {}
     multi = payload.get("multiTimeframeBias") or canonical.get("multiTimeframeBias")
     if not multi:
         multi = derive_multi_timeframe_bias(
@@ -138,8 +139,12 @@ def user_visible_state_fingerprint(payload: dict) -> str:
         "TAKE_PROFIT_1", "TAKE_PROFIT_2", "TAKE_PROFIT_3",
         "TRAILING_STOP_UPDATE"} else None)
     visible = {
-        "shortTermBias": multi.get("shortTermBias"),
+        "tradingHorizon": payload.get("tradingHorizon") or
+                          canonical.get("tradingHorizon") or "SCALP_INTRADAY",
+        "shortTermBias": scalp.get("scalpBias") or multi.get("shortTermBias"),
         "macroBias": multi.get("macroBias"),
+        "preferredScalpSide": scalp.get("preferredSide") or
+                              payload.get("preferredScalpSide"),
         "opportunityState": payload.get("currentState") or canonical.get("setupState"),
         "entryPermission": payload.get("canEnter", entry.get("canEnter")),
         "entryZone": payload.get("entryZone") or selected.get("entryZone"),

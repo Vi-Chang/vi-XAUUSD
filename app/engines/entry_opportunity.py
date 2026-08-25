@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Literal, cast
 
 from app.config import get_settings
+from app.engines.scalp_decision import scalp_setup_ttl_bars
 from app.engines.scenario_safety import calculate_risk_reward
 
 TYPES = ("SHALLOW_PULLBACK", "DEEP_PULLBACK", "BREAKOUT_RETEST")
@@ -86,14 +87,15 @@ def _confirmed(side: str, zone: tuple[float, float], candle: dict) -> tuple[bool
 
 
 def _htf_aligned(normalized: dict, side: str) -> bool:
-    """4H/1H are the continuation background; 15M remains the trigger."""
+    """15M/1H own scalp direction; 4H and 1D are risk context only."""
     wanted = "bull" if side == "LONG" else "bear"
     assessments = {
         str(item.get("timeframe")): str(item.get("trend") or "").lower()
         for item in normalized.get("timeframeAssessments") or []
     }
-    if assessments.get("1H") and assessments.get("4H"):
-        return wanted in assessments["1H"] and wanted in assessments["4H"]
+    if assessments.get("1H"):
+        return (wanted in assessments["1H"] and
+                (not assessments.get("15M") or wanted in assessments["15M"]))
     # Backward-compatible fallback for persisted snapshots created before the
     # per-timeframe assessment field existed.
     return str(normalized.get("trendBias") or "") == (
@@ -217,9 +219,12 @@ def evaluate_entry_opportunities(data: dict, previous: dict | None = None) -> tu
     candle_time = str(normalized.get("lastClosedCandleTimestamp") or "")
     now_text = str(data.get("timestamp_utc") or datetime.now(timezone.utc).isoformat())
     now = datetime.fromisoformat(now_text.replace("Z", "+00:00"))
+    ttl_bars = scalp_setup_ttl_bars(
+        atr15=max(_num(setup.get("atr15") or normalized.get("atr15"), .01), .01),
+        price=max(price, .01))
     expires = min(
         datetime.fromisoformat(str(setup.get("expiresAt") or (now + timedelta(hours=2)).isoformat()).replace("Z", "+00:00")),
-        now + timedelta(hours=2),
+        now + timedelta(minutes=15 * ttl_bars),
     )
     previous_map = {str(x.get("opportunity_id")): x for x in previous.get("opportunities") or []}
     previous_kind_map = {
@@ -253,17 +258,30 @@ def evaluate_entry_opportunities(data: dict, previous: dict | None = None) -> tu
         if not built or target is None:
             continue
         low, high, stop, reasons = built
+        calculated_zone = (low, high, stop)
         locked = previous_kind_map.get(kind)
         zone_transition_reason = "INITIAL_ZONE_CREATED"
+        old_zone = None
         if locked:
             locked_zone = locked.get("entry_zone") or {}
             locked_low, locked_high = (_num(locked_zone.get("lower")),
                                        _num(locked_zone.get("upper")))
             locked_stop = _num(locked.get("tactical_stop"))
             if locked_low is not None and locked_high is not None and locked_stop is not None:
-                low, high, stop = locked_low, locked_high, locked_stop
-                reasons = list(locked.get("zone_reasons") or reasons)
-                zone_transition_reason = "ACTIVE_ZONE_LOCKED"
+                old_zone = {"lower": locked_low, "upper": locked_high}
+                structure_advanced = bool(
+                    candle_time and locked.get("structure_timestamp") and
+                    candle_time != str(locked.get("structure_timestamp")))
+                material_reanchor = bool(
+                    kind == "SHALLOW_PULLBACK" and structure_advanced and
+                    max(abs(calculated_zone[0] - locked_low),
+                        abs(calculated_zone[1] - locked_high)) >= atr * .10)
+                if material_reanchor:
+                    zone_transition_reason = "CONFIRMED_TACTICAL_STRUCTURE_REANCHOR"
+                else:
+                    low, high, stop = locked_low, locked_high, locked_stop
+                    reasons = list(locked.get("zone_reasons") or reasons)
+                    zone_transition_reason = "ACTIVE_ZONE_LOCKED"
         opportunity_setup_id = (f"{setup_id}:CONT:{continuation_level:.2f}"
                                 if continuation else setup_id)
         oid = (str(locked.get("opportunity_id")) if locked
@@ -372,7 +390,8 @@ def evaluate_entry_opportunities(data: dict, previous: dict | None = None) -> tu
             "confirmed_at": now_text if confirmation else None,
             "confirmed_candle_time": candle_time if confirmation else None,
             "executable_rr_calculated_at": executable_at,
-            "expires_at": expires.isoformat(), "max_valid_bars": 8,
+            "expires_at": expires.isoformat(), "max_valid_bars": ttl_bars,
+            "setup_ttl_bars": ttl_bars,
             "strong_trend_shallow_retrace_mode": strong_shallow,
             "reclaim_confirmation_required": reclaim_requires_hold,
             "breakout_continuation": continuation,
@@ -383,6 +402,9 @@ def evaluate_entry_opportunities(data: dict, previous: dict | None = None) -> tu
             "setup_armed": setup_armed,
             "entry_was_actionable": entry_was_actionable,
             "zone_transition_reason": zone_transition_reason,
+            "old_zone": old_zone,
+            "new_zone": {"lower": low, "upper": high},
+            "structure_timestamp": candle_time,
         }
         opportunities.append(item)
         if old and old.get("state") != state:

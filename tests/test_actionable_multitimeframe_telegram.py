@@ -43,7 +43,7 @@ def test_1_short_term_bearish_macro_bullish():
 def test_2_canonical_bullish_does_not_hide_bearish_short_timeframes():
     message = format_decision_message(_prepare(marketBias="BULLISH"))
     assert "15M：🔴 偏空" in message and "1H：🔴 偏空" in message
-    assert "短線：🔴 偏空" in message and "大方向：🟢 偏多" in message
+    assert "短線：🔴 偏空" in message and "日線仍偏多" in message
     assert "市場方向：🟢 偏多" not in message
 
 
@@ -126,6 +126,7 @@ def test_13_same_snapshot_without_action_delta_is_not_user_facing():
 
 def test_14_four_timeframes_and_composites_are_shown():
     message = format_decision_message(_prepare())
-    assert all(label in message for label in ("15M：", "1H：", "4H：", "1D："))
+    assert all(label in message for label in ("15M：", "1H：", "4H："))
+    assert "1D：" not in message
     assert "4H：🟠 多頭修正／短線偏空" in message
-    assert "短線：🔴 偏空" in message and "大方向：🟢 偏多" in message
+    assert "短線：🔴 偏空" in message and "日線仍偏多" in message

@@ -10,6 +10,11 @@ from app.engines.multi_timeframe_bias import (
     derive_multi_timeframe_bias,
     timeframe_bias_lines,
 )
+from app.engines.scalp_decision import (
+    derive_scalp_bias,
+    preferred_scalp_side,
+    scalp_bias_lines,
+)
 
 NULLISH = {"", "none", "null", "undefined", "nan", "n/a", "—"}
 _NULLISH_TEXT = re.compile(r"(?i)(?:^|[：:\s])(none|null|undefined|nan|n/a)(?:$|[\s，,。])")
@@ -79,7 +84,19 @@ class UserFacingTradeMessageBuilder:
             snapshot = derive_multi_timeframe_bias(
                 source, canonical_bias=str(payload.get("marketBias") or
                                            canonical.get("marketBias") or "NEUTRAL"))
-        bias_lines = timeframe_bias_lines(snapshot)
+        scalp = payload.get("scalpDecision") or canonical.get("scalpDecision")
+        if not scalp and snapshot and snapshot.get("hasKnownTimeframes"):
+            scalp_bias = derive_scalp_bias(snapshot)
+            scalp = {
+                "scalpBias": scalp_bias,
+                "preferredSide": preferred_scalp_side(scalp_bias),
+                "bias15m": snapshot.get("bias15m"),
+                "bias1h": snapshot.get("bias1h"),
+                "tactical4h": snapshot.get("bias4h"),
+                "macro1d": snapshot.get("bias1d"),
+                "counterHigherTimeframe": snapshot.get("alignment") == "COUNTERTREND",
+            }
+        bias_lines = scalp_bias_lines(scalp) if scalp else timeframe_bias_lines(snapshot)
         # A multi-timeframe block supersedes every ambiguous single market
         # direction row. Unknown timeframes are simply omitted.
         if bias_lines:

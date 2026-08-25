@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.config import get_settings
+from app.engines.multi_timeframe_bias import derive_multi_timeframe_bias
+from app.engines.scalp_decision import derive_scalp_bias, preferred_scalp_side
 
 ACTIVE = {"WATCH_LONG", "WATCH_SHORT", "PREPARE_LONG", "PREPARE_SHORT"}
 TERMINAL = {"LONG_READY", "SHORT_READY", "MISSED_LONG", "MISSED_SHORT",
@@ -25,8 +27,12 @@ def _zone(item: dict) -> tuple[float, float] | None:
 
 def _bias(data: dict) -> str:
     health, normalized = data.get("decision_health_state") or {}, data.get("normalized_analysis") or {}
-    value = str(health.get("marketBias") or normalized.get("trendBias") or "NEUTRAL").upper()
-    return {"LONG": "BULLISH", "SHORT": "BEARISH"}.get(value, value)
+    canonical = str(health.get("marketBias") or normalized.get("trendBias") or "NEUTRAL").upper()
+    multi = derive_multi_timeframe_bias(normalized, canonical_bias=canonical)
+    if not multi.get("hasKnownTimeframes"):
+        return {"LONG": "BULLISH", "SHORT": "BEARISH"}.get(canonical, canonical)
+    preferred = preferred_scalp_side(derive_scalp_bias(multi))
+    return {"LONG": "BULLISH", "SHORT": "BEARISH"}.get(preferred, "NEUTRAL")
 
 
 def opportunity_capabilities(data: dict) -> dict:
@@ -145,6 +151,10 @@ def _event(state: dict, stage: str, previous_state: str) -> dict:
             "candidateDefenseLevel": state.get("defenseLevel"),
             "candidateTargets": state.get("targets") or [], "candidateRR": state.get("rr"),
             "marketBias": state.get("canonicalBias"), "dataHealth": state.get("dataHealth"),
+            "tradingHorizon": "SCALP_INTRADAY", "scalpBias": state.get("scalpBias"),
+            "preferredScalpSide": state.get("preferredScalpSide"),
+            "multiTimeframeBias": state.get("multiTimeframeBias") or {},
+            "counterHigherTimeframe": bool(state.get("counterHigherTimeframe")),
             "candidateScore": state.get("candidateScore"),
             "candidateReasons": state.get("candidateReasons") or [],
             "rejectionReasons": state.get("rejectionReasons") or [],
@@ -291,9 +301,18 @@ def _evaluate_side(data: dict, side: str, previous: dict, *, symbol: str, now: s
                 "evaluationLog": [*(previous.get("evaluationLog") or []), log][-100:]}, []
     countertrend = ((bias == "BULLISH" and side == "SHORT") or
                     (bias == "BEARISH" and side == "LONG"))
+    normalized = data.get("normalized_analysis") or {}
+    multi = derive_multi_timeframe_bias(normalized, canonical_bias=bias)
+    scalp_bias = derive_scalp_bias(multi)
+    preferred_side = preferred_scalp_side(scalp_bias)
+    side_word = "BULLISH" if side == "LONG" else "BEARISH"
+    higher_conflict = any(
+        value not in {"UNKNOWN", "NEUTRAL", "TRANSITION"} and side_word not in value
+        for value in (str(multi.get("bias4h")), str(multi.get("bias1d"))))
     can_prepare = prepare_nearby and not rejected and capabilities["prepareAllowed"]
     state_name = (("PREPARE_" if can_prepare else "WATCH_") + side)
-    score = min(100, (55 if can_prepare else 40) + 15 * len(reasons) - (15 if countertrend else 0))
+    score = min(100, (55 if can_prepare else 40) + 15 * len(reasons)
+                - (15 if countertrend else 0) - (10 if higher_conflict else 0))
     state = {"schemaVersion": "opportunity-liveness-v2", "state": state_name,
              "side": side, "setup_id": setup_id, "candidateSetupId": setup_id,
              "sourceOpportunityId": opportunity.get("opportunity_id"),
@@ -302,7 +321,10 @@ def _evaluate_side(data: dict, side: str, previous: dict, *, symbol: str, now: s
              "candidateReason": (reasons[0] if reasons else "PRICE_APPROACHING_VALID_ZONE"),
              "candidateReasons": reasons, "rejectionReasons": rejected,
              "candidateScore": score, "canonicalBias": bias,
-             "countertrend": countertrend, "dataHealth": capabilities["status"],
+             "countertrend": countertrend, "counterHigherTimeframe": higher_conflict,
+             "scalpBias": scalp_bias, "preferredScalpSide": preferred_side,
+             "multiTimeframeBias": multi,
+             "tradingHorizon": "SCALP_INTRADAY", "dataHealth": capabilities["status"],
              "zoneRole": opportunity.get("support_role") or opportunity.get("anchor_role"),
              "zoneTransitionReason": (opportunity.get("zone_transition_reason")
                                       or "INITIAL_RUNTIME_CANDIDATE"),
