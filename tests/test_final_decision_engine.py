@@ -104,6 +104,24 @@ def test_data_recovery_emits_a_distinct_canonical_event_once():
     assert "DATA_RECOVERED" not in {event["event_type"] for event in repeated}
 
 
+def test_broken_scenario_waits_for_new_structure_without_stale_data_label():
+    data = market(can_enter=False)
+    data["decision_health_state"] = {
+        "marketBias": "BULLISH", "dataHealth": "HEALTHY",
+        "entryConfirmation": "WAIT_NEW_STRUCTURE",
+        "defenseState": "BROKEN_CONFIRMED", "defenseLevel": 99.0,
+        "activeLongScenario": "INVALIDATED", "activeShortScenario": "ACTIVE",
+        "shortTermStructure": "CORRECTIVE", "searchNextScenario": True,
+        "nextScenarioCandidates": ["DEEP_PULLBACK", "BREAKDOWN_RETEST"],
+    }
+    decision, events = evaluate_final_decision(data)
+    assert decision["primaryReason"] == "WAIT_NEW_STRUCTURE"
+    assert decision["state"] == "WAIT_NEW_STRUCTURE"
+    assert decision["entrySignal"] == "WAIT"
+    assert decision["marketBias"] == "BULLISH"
+    assert "DATA_STALE" not in {event["event_type"] for event in events}
+
+
 def test_event_blackout_blocks_entry():
     data = market(); data["event_risk"]["event_lockout"] = True
     decision, _ = evaluate_final_decision(data)
