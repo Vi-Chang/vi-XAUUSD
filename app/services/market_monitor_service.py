@@ -99,6 +99,8 @@ def evaluate_market_monitors(
         entry_confirmation=str(decision_health.get("entryConfirmation") or
                                "BLOCKED_BY_DATA"),
         previous=previous_decision_health,
+        reclaim_level=((previous_final_decision.get("canonicalDecision") or {}).get(
+            "canonicalNextTrigger") or {}).get("level") or normalized.get("triggerLevel"),
     ))
     _save(symbol, "decision_health", decision_health)
     data = {**data, "decision_health_state": decision_health}
@@ -306,7 +308,8 @@ def evaluate_market_monitors(
     current_defense = str(decision_health.get("defenseState") or "")
     defense_event_types = {
         "TESTING": "DEFENSE_TEST", "BROKEN_PENDING_CLOSE": "DEFENSE_TEST",
-        "HELD": "DEFENSE_HELD", "BROKEN_CONFIRMED": "DEFENSE_BROKEN_CONFIRMED",
+        "RECLAIMED": "DEFENSE_RECLAIMED", "HELD": "DEFENSE_HELD",
+        "BROKEN_CONFIRMED": "DEFENSE_BROKEN_CONFIRMED",
     }
     if previous_defense != current_defense and current_defense in defense_event_types:
         signal_facts.append({
@@ -314,6 +317,7 @@ def evaluate_market_monitors(
             "currentState": current_defense,
             "marketBias": decision_health.get("marketBias"),
             "entryConfirmation": decision_health.get("entryConfirmation"),
+            "dataHealth": decision_health.get("dataHealth"),
             "defenseState": current_defense,
             "defenseLevel": decision_health.get("defenseLevel"),
             "falseBreakDetected": decision_health.get("falseBreakDetected"),
@@ -400,6 +404,8 @@ def evaluate_live_quote_state(
         entry_confirmation=str(decision_health.get("entryConfirmation") or
                                "BLOCKED_BY_DATA"),
         previous=previous_decision_health,
+        reclaim_level=((previous_final.get("canonicalDecision") or {}).get(
+            "canonicalNextTrigger") or {}).get("level") or normalized.get("triggerLevel"),
     ))
     candidate["decision_health_state"] = decision_health
     _save(symbol, "decision_health", decision_health)
@@ -421,13 +427,15 @@ def evaluate_live_quote_state(
     new_defense = str(decision_health.get("defenseState") or "")
     defense_events = {
         "TESTING": "DEFENSE_TEST", "BROKEN_PENDING_CLOSE": "DEFENSE_TEST",
-        "HELD": "DEFENSE_HELD", "BROKEN_CONFIRMED": "DEFENSE_BROKEN_CONFIRMED",
+        "RECLAIMED": "DEFENSE_RECLAIMED", "HELD": "DEFENSE_HELD",
+        "BROKEN_CONFIRMED": "DEFENSE_BROKEN_CONFIRMED",
     }
     if old_defense != new_defense and new_defense in defense_events:
         live_facts.append({
             "event_type": defense_events[new_defense], "currentState": new_defense,
             "marketBias": decision_health.get("marketBias"),
             "entryConfirmation": decision_health.get("entryConfirmation"),
+            "dataHealth": decision_health.get("dataHealth"),
             "defenseState": new_defense, "defenseLevel": decision_health.get("defenseLevel"),
             "closedBarTimestamp": ((decision_health.get("latestClosed15m") or
                                     decision_health.get("contextClosed15m") or {}).get(

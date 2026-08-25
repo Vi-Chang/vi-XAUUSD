@@ -276,9 +276,10 @@ def _summary(reason: str, action: str) -> str:
         "BEHAVIOR_WAIT_PULLBACK": "大方向仍偏多，但15M正在緩步下降，暫停追多並等待止跌確認。",
         "BEHAVIOR_LONG_BLOCK": "15M出現急跌或反轉風險，暫停新的多單進場。",
         "WAIT_15M_CLOSE": "大方向保留，但最新15M收盤待確認，暫停新進場。",
+        "WAIT_NEW_STRUCTURE": "高週期方向保留；當前劇本失效，等待新的短線結構與交易機會。",
         "BLOCKED_BY_DATA": "行情資料不足，等待最新已收盤15M後再評估。",
-        "SCENARIO_DEFENSE_INVALIDATED": "原方向防守已由15M收盤確認失效，重新評估市場結構。",
-        "DEFENSE_BREAK_WAIT_OPPOSITE_CONFIRMATION": "原方向防守失效，但反方向仍須完成回測、確認與風控。",
+        "SCENARIO_DEFENSE_INVALIDATED": "當前交易劇本的防守已失效；高週期方向保留，重新尋找短線結構。",
+        "DEFENSE_BREAK_WAIT_OPPOSITE_CONFIRMATION": "當前劇本失效，但高週期方向不變；反方向仍須獨立完成回測、確認與風控。",
     }
     return messages.get(reason, "現在沒有足夠優勢，先等待新的市場條件。")
 
@@ -343,8 +344,10 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
     if entry_confirmation != "READY":
         action: FinalAction = "NO_TRADE"
         primary = ("WAIT_15M_CLOSE" if entry_confirmation == "WAIT_15M_CLOSE"
+                   else "WAIT_NEW_STRUCTURE" if entry_confirmation == "WAIT_NEW_STRUCTURE"
                    else "BLOCKED_BY_DATA")
-        risk_gate = "DATA_INVALID"
+        risk_gate = ("WAIT" if entry_confirmation == "WAIT_NEW_STRUCTURE"
+                     else "DATA_INVALID")
     elif not health["healthy"]:
         action: FinalAction = "NO_TRADE"
         primary, risk_gate = "DATA_STALE", "DATA_INVALID"
@@ -422,7 +425,9 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
         f"{data.get('symbol', 'XAUUSD')}|{version}|{signature}".encode()).hexdigest()[:24]
     state_map = {"ENTER_LONG": "LONG_READY", "ENTER_SHORT": "SHORT_READY",
                  "NO_TRADE": (str(base.get("state") or "NO_TRADE")
-                              if primary in {"WAIT_15M_CLOSE", "BLOCKED_BY_DATA"}
+                              if primary in {
+                                  "WAIT_15M_CLOSE", "WAIT_NEW_STRUCTURE",
+                                  "BLOCKED_BY_DATA"}
                               else "NO_TRADE"),
                  "MANAGE_POSITION": "MANAGE_POSITION",
                  "WAIT": str(base.get("state") or "WAIT")}
@@ -495,6 +500,12 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
         "defenseState": defense_state,
         "defenseLevel": decision_health.get("defenseLevel"),
         "falseBreakDetected": bool(decision_health.get("falseBreakDetected")),
+        "activeLongScenario": decision_health.get("activeLongScenario", "ACTIVE"),
+        "activeShortScenario": decision_health.get("activeShortScenario", "ACTIVE"),
+        "shortTermStructure": decision_health.get("shortTermStructure", "UNCHANGED"),
+        "searchNextScenario": bool(decision_health.get("searchNextScenario")),
+        "nextScenarioCandidates": list(
+            decision_health.get("nextScenarioCandidates") or []),
         "notificationSeverity": severity,
     })
     from app.engines.market_direction import resolve_market_direction
@@ -581,7 +592,8 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
         "PROFIT_STATE_CHANGED",
         "FAKE_BREAKOUT_CONFIRMED", "OPPOSITE_SETUP_CONFIRMED",
         "RECOVERY_SETUP_INVALIDATED",
-        "DEFENSE_TEST", "DEFENSE_HELD", "DEFENSE_BROKEN_CONFIRMED",
+        "DEFENSE_TEST", "DEFENSE_RECLAIMED", "DEFENSE_HELD",
+        "DEFENSE_BROKEN_CONFIRMED",
         "DATA_STALE", "DATA_RECOVERED",
     }
     # Lifecycle facts are state transitions in their own right. They must not

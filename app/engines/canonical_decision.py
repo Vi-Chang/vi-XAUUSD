@@ -198,12 +198,15 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
         early = None
     entry_confirmation = str(decision_health.get("entryConfirmation") or
                              "BLOCKED_BY_DATA")
-    stale = not bool(health.get("healthy")) or entry_confirmation != "READY"
+    data_confirmation_blocked = entry_confirmation in {
+        "WAIT_15M_CLOSE", "BLOCKED_BY_DATA"}
+    stale = not bool(health.get("healthy")) or data_confirmation_blocked
     behavior = str(behavior_state.get("market_behavior") or "RANGE")
     rr_ok = bool(selected.get("rrPassed")) if selected else False
     confirmation_closed = (trigger_level is None or
                            (confirmation or {}).get("status") == "CLOSED_CONFIRMED")
     can_enter = (bool(final.get("canEnter")) and rr_ok and not stale
+                  and entry_confirmation == "READY"
                   and closed_available and confirmation_closed)
     if str(decision_health.get("defenseState") or "") == "BROKEN_CONFIRMED":
         can_enter = False
@@ -257,7 +260,7 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
                 "label": (f"15M 收盤{'站穩' if recovery_direction == 'LONG' else '跌破'} "
                           f"{recovery_trigger:.2f}；確認後仍須通過位置、停損與 RR 閘門"),
             }
-    if entry_confirmation != "READY":
+    if entry_confirmation in {"WAIT_15M_CLOSE", "BLOCKED_BY_DATA"}:
         canonical_trigger = {
             "setupId": selected.get("setupId") if selected else None,
             "direction": direction, "timeframe": "15M",
@@ -265,11 +268,20 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
             "source": "CLOSED_CANDLE", "sourceCandleTime": candle_time,
             "label": "等待最新一根 15M K 棒正式收盤；取得後重新計算進場條件",
         }
+    elif entry_confirmation == "WAIT_NEW_STRUCTURE":
+        canonical_trigger = {
+            "setupId": None, "direction": direction, "timeframe": "15M",
+            "condition": "waitForNewStructure", "status": "PENDING",
+            "source": "CLOSED_CANDLE", "sourceCandleTime": candle_time,
+            "label": "當前劇本已失效；等待新的15M回踩或跌破回測結構形成",
+        }
     primary_reason = str(final.get("humanSummary") or "等待條件一致")
     if entry_confirmation == "WAIT_15M_CLOSE":
         primary_reason = "市場方向保留，但最新15M收盤暫缺，暫停新進場。"
     elif entry_confirmation == "BLOCKED_BY_DATA":
         primary_reason = "行情資料不足，等待最新15M收盤後再判斷。"
+    elif entry_confirmation == "WAIT_NEW_STRUCTURE":
+        primary_reason = "高週期方向保留；當前交易劇本已失效，等待新的短線結構。"
     elif stale:
         primary_reason = "行情資料延遲，等待最新資料確認。"
     elif direction == "LONG" and behavior == "SLOW_BEARISH_DRIFT":
@@ -465,6 +477,12 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
         "defenseState": decision_health.get("defenseState"),
         "defenseLevel": decision_health.get("defenseLevel"),
         "falseBreakDetected": bool(decision_health.get("falseBreakDetected")),
+        "activeLongScenario": decision_health.get("activeLongScenario", "ACTIVE"),
+        "activeShortScenario": decision_health.get("activeShortScenario", "ACTIVE"),
+        "shortTermStructure": decision_health.get("shortTermStructure", "UNCHANGED"),
+        "searchNextScenario": bool(decision_health.get("searchNextScenario")),
+        "nextScenarioCandidates": list(
+            decision_health.get("nextScenarioCandidates") or []),
         "contextClosed15m": decision_health.get("contextClosed15m"),
         "signalScore": signal_score,
         "confidenceGrade": (get_confidence_grade(signal_score)

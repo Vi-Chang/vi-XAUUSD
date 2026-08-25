@@ -247,7 +247,9 @@ def format_decision_message(event: dict) -> str:
              else "最新15M收盤已恢復。"),
             "策略已使用最新收盤重新計算；沒有新決策時不會重複通知。",
         ])
-    if canonical_type in {"DEFENSE_TEST", "DEFENSE_HELD", "DEFENSE_BROKEN_CONFIRMED"}:
+    if canonical_type in {
+            "DEFENSE_TEST", "DEFENSE_RECLAIMED", "DEFENSE_HELD",
+            "DEFENSE_BROKEN_CONFIRMED"}:
         defense = event.get("defenseLevel") or canonical.get("defenseLevel")
         price = float(event.get("currentPrice") or 0)
         bias = str(event.get("marketBias") or canonical.get("marketBias") or "NEUTRAL")
@@ -256,15 +258,25 @@ def format_decision_message(event: dict) -> str:
                 "✅【XAUUSD｜15M 防守確認守住】",
                 f"現價：{price:.2f}", f"市場方向：{'🟢 偏多' if bias == 'BULLISH' else '🔴 偏空'}",
                 f"防守位置：{float(defense):.2f}" if isinstance(defense, (int, float)) else "防守位置：—",
-                "盤中短暫越過後，15M 收盤已重新守住。",
+                "防守被救回後，後續15M收盤仍持續守住。",
                 "下一步：重新計算原方向的合理進場區；未通過 RR 前仍不進場。",
+            ])
+        if canonical_type == "DEFENSE_RECLAIMED":
+            return "\n".join([
+                "🟠【XAUUSD｜防守剛收回，尚未確認守穩】",
+                f"現價：{price:.2f}",
+                f"市場方向：{'🟢 偏多' if bias == 'BULLISH' else '🔴 偏空'}",
+                f"防守位置：{float(defense):.2f}" if isinstance(defense, (int, float)) else "防守位置：—",
+                "盤中曾失守，但最新15M收盤已重新收回防守位置。",
+                "現在：先不進場；等待下一根15M持續守住，或重新站回局部結構。",
             ])
         if canonical_type == "DEFENSE_BROKEN_CONFIRMED":
             return "\n".join([
-                "⚪【XAUUSD｜原方向防守已失效】", f"現價：{price:.2f}",
+                "⚪【XAUUSD｜當前交易劇本已失效】", f"現價：{price:.2f}",
                 f"防守位置：{float(defense):.2f}" if isinstance(defense, (int, float)) else "防守位置：—",
                 "15M 已收盤確認跌破／站上防守緩衝。",
-                "目前不直接反手；等待反向結構、回測、RR 與風控完成。",
+                f"高週期方向仍保留為：{'偏多' if bias == 'BULLISH' else '偏空' if bias == 'BEARISH' else '中性'}。",
+                "系統會重算短線結構並尋找下一個有效劇本；不會因此直接反手。",
             ])
         return "\n".join([
             "【XAUUSD 現在怎麼做】", "🟠 先不要進場", f"現價：{price:.2f}",
@@ -273,7 +285,7 @@ def format_decision_message(event: dict) -> str:
             f"防守位置：{float(defense):.2f}" if isinstance(defense, (int, float)) else "防守位置：—",
             "現在等：這根 15M K 棒正式收盤。",
             "收盤守住 → 重新檢查原方向入口",
-            "收盤確認失守 → 原方向取消並重新評估；目前不提前反手。",
+            "收盤確認失守 → 只取消這個交易劇本，高週期方向保留；目前不提前反手。",
         ])
     if canonical_type == "MARKET_BEHAVIOR_CHANGED" and str(
             canonical.get("notificationRoute") or "NEW_ENTRY") != "POSITION_MANAGEMENT":

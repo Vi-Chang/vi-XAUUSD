@@ -47,6 +47,15 @@ def test_case_a_intrabar_defense_touch_preserves_bias_and_waits_for_close():
 
 
 def test_case_b_false_break_closes_back_above_defense_and_recovers():
+    still_pending = evaluate_defense_state(
+        defense_level=4667.16, side="LONG", current_price=4668.0,
+        atr15=2.0, closed_context={
+            "close": 4670.0, "closeTime": "2026-08-25T01:00:00+00:00"},
+        entry_confirmation="READY",
+        previous={"defenseState": "BROKEN_PENDING_CLOSE",
+                  "defenseBasisCandleTime": "2026-08-25T01:00:00+00:00"})
+    assert still_pending["defenseState"] == "BROKEN_PENDING_CLOSE"
+
     health = evaluate_decision_health(_data(close=4671.0), now=NOW)
     defense = evaluate_defense_state(
         defense_level=4667.16, side="LONG", current_price=4671.0,
@@ -54,9 +63,21 @@ def test_case_b_false_break_closes_back_above_defense_and_recovers():
         entry_confirmation=health["entryConfirmation"],
         previous={"defenseState": "BROKEN_PENDING_CLOSE",
                   "defenseBasisCandleTime": "2026-08-25T01:00:00+00:00"})
-    assert defense["defenseState"] == "HELD"
+    assert defense["defenseState"] == "RECLAIMED"
     assert defense["falseBreakDetected"] is True
     assert defense["longScenarioInvalidated"] is False
+    assert defense["entryConfirmation"] == "WAIT_NEW_STRUCTURE"
+
+    later = datetime(2026, 8, 25, 1, 35, tzinfo=timezone.utc)
+    later_health = evaluate_decision_health(
+        _data(close=4672.0, close_time="2026-08-25T01:30:00+00:00"), now=later)
+    held = evaluate_defense_state(
+        defense_level=4667.16, side="LONG", current_price=4672.0,
+        atr15=2.0, closed_context=later_health["latestClosed15m"],
+        entry_confirmation=later_health["entryConfirmation"], previous=defense)
+    assert held["defenseState"] == "HELD"
+    assert held["falseBreakDetected"] is True
+    assert held["entryConfirmation"] == "READY"
 
 
 def test_case_c_confirmed_defense_break_invalidates_long_but_never_short_now():
@@ -69,6 +90,7 @@ def test_case_c_confirmed_defense_break_invalidates_long_but_never_short_now():
     assert defense["defenseState"] == "BROKEN_CONFIRMED"
     assert defense["longScenarioInvalidated"] is True
     assert defense["shortNow"] is False
+    assert defense["entryConfirmation"] == "WAIT_NEW_STRUCTURE"
 
 
 def test_case_d_missing_latest_15m_uses_recent_context_without_erasing_htf_bias():
@@ -82,14 +104,15 @@ def test_case_d_missing_latest_15m_uses_recent_context_without_erasing_htf_bias(
     assert health["entryConfirmation"] == "WAIT_15M_CLOSE"
 
 
-def _event(*, price: float, defense_state="TESTING"):
+def _event(*, price: float, defense_state="TESTING",
+           candle_time="2026-08-25T01:15:00+00:00", event_type="DEFENSE_TEST"):
     return {
-        "symbol": "XAUUSD", "event_type": "DEFENSE_TEST",
+        "symbol": "XAUUSD", "event_type": event_type,
         "currentState": "WAIT", "canonicalState": "WAIT",
         "marketBias": "BULLISH", "entryConfirmation": "WAIT_15M_CLOSE",
         "defenseState": defense_state, "defenseLevel": 4667.16,
         "primaryTriggerId": "LONG-DEFENSE-4667",
-        "decisionBasisCandleCloseTime": "2026-08-25T01:15:00+00:00",
+        "decisionBasisCandleCloseTime": candle_time,
         "currentPrice": price,
     }
 
@@ -106,3 +129,40 @@ def test_case_f_defense_testing_to_held_is_meaningful_transition():
     held = _event(price=4671.0, defense_state="HELD")
     assert notification_fingerprint(testing) != notification_fingerprint(held)
     assert is_meaningful_change(testing, held) == (True, "DEFENSESTATE_CHANGED")
+
+
+def test_wait_fingerprint_ignores_new_context_candle_but_confirmed_event_does_not():
+    wait_0115 = _event(price=4667.08)
+    wait_0130 = _event(price=4667.08, candle_time="2026-08-25T01:30:00+00:00")
+    assert notification_fingerprint(wait_0115) == notification_fingerprint(wait_0130)
+
+    confirmed_0115 = _event(
+        price=4666.0, defense_state="BROKEN_CONFIRMED",
+        event_type="DEFENSE_BROKEN_CONFIRMED")
+    confirmed_0130 = _event(
+        price=4666.0, defense_state="BROKEN_CONFIRMED",
+        candle_time="2026-08-25T01:30:00+00:00",
+        event_type="DEFENSE_BROKEN_CONFIRMED")
+    assert notification_fingerprint(confirmed_0115) != notification_fingerprint(
+        confirmed_0130)
+
+
+def test_case_g_defense_break_invalidates_scenario_but_preserves_htf_bias():
+    data = _data(close=4663.0)
+    data["normalized_analysis"]["timeframeAssessments"].insert(
+        0, {"timeframe": "1D", "trend": "bullish"})
+    health = evaluate_decision_health(data, now=NOW)
+    defense = evaluate_defense_state(
+        defense_level=4667.16, side="LONG", current_price=4663.0,
+        atr15=2.0, closed_context=health["latestClosed15m"],
+        entry_confirmation=health["entryConfirmation"], previous={})
+    result = {**health, **defense}
+
+    assert result["defenseState"] == "BROKEN_CONFIRMED"
+    assert result["activeLongScenario"] == "INVALIDATED"
+    assert result["marketBias"] == "BULLISH"
+    assert result["shortTermStructure"] == "CORRECTIVE"
+    assert result["entryConfirmation"] == "WAIT_NEW_STRUCTURE"
+    assert result["searchNextScenario"] is True
+    assert result["nextScenarioCandidates"] == ["DEEP_PULLBACK", "BREAKDOWN_RETEST"]
+    assert result["shortNow"] is False

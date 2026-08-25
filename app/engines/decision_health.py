@@ -14,9 +14,11 @@ from app.config import get_settings
 from app.utils.timeutils import iso_utc, parse_utc
 
 DATA_HEALTH_STATES = {"HEALTHY", "DEGRADED_15M", "STALE", "RECOVERING"}
-ENTRY_CONFIRMATION_STATES = {"READY", "WAIT_15M_CLOSE", "BLOCKED_BY_DATA"}
+ENTRY_CONFIRMATION_STATES = {
+    "READY", "WAIT_15M_CLOSE", "WAIT_NEW_STRUCTURE", "BLOCKED_BY_DATA",
+}
 DEFENSE_STATES = {
-    "APPROACHING", "TESTING", "HELD", "BROKEN_PENDING_CLOSE",
+    "APPROACHING", "TESTING", "BROKEN_PENDING_CLOSE", "RECLAIMED", "HELD",
     "BROKEN_CONFIRMED", "INACTIVE",
 }
 
@@ -146,6 +148,7 @@ def evaluate_defense_state(
     *, defense_level: float | None, side: str, current_price: float | None,
     atr15: float = 0.0, closed_context: dict | None = None,
     entry_confirmation: str = "READY", previous: dict | None = None,
+    reclaim_level: float | None = None,
 ) -> dict:
     """Classify a live defense test while requiring close confirmation to fail."""
     previous = previous or {}
@@ -156,6 +159,9 @@ def evaluate_defense_state(
         return {"defenseState": "INACTIVE", "defenseLevel": level,
                 "falseBreakDetected": False, "longScenarioInvalidated": False,
                 "shortScenarioInvalidated": False, "shortNow": False,
+                "activeLongScenario": "ACTIVE", "activeShortScenario": "ACTIVE",
+                "shortTermStructure": "STABLE", "searchNextScenario": False,
+                "nextScenarioCandidates": [],
                 "entryConfirmation": entry_confirmation}
     settings = get_settings()
     atr = max(_number(atr15) or 0.0, 0.01)
@@ -168,34 +174,82 @@ def evaluate_defense_state(
     closed_price = _number((closed_context or {}).get("close"))
     closed_time = str((closed_context or {}).get("closeTime") or "")
     previous_basis_time = str(previous.get("defenseBasisCandleTime") or "")
-    recovered = bool(
-        old_state in {"TESTING", "BROKEN_PENDING_CLOSE"}
-        and entry_confirmation == "READY" and closed_price is not None
-        and closed_time and closed_time != previous_basis_time
+    holds_defense = bool(
+        closed_price is not None
         and ((direction == "LONG" and closed_price > level)
              or (direction == "SHORT" and closed_price < level))
     )
+    first_reclaim = bool(
+        old_state in {"TESTING", "BROKEN_PENDING_CLOSE"}
+        and entry_confirmation == "READY" and closed_price is not None
+        and closed_time and closed_time != previous_basis_time
+        and holds_defense
+    )
+    continued_hold = bool(
+        old_state == "RECLAIMED" and entry_confirmation == "READY"
+        and closed_time and closed_time != previous_basis_time and holds_defense
+    )
+    same_reclaim_candle = bool(
+        old_state == "RECLAIMED" and closed_time
+        and closed_time == previous_basis_time and holds_defense
+    )
+    reclaim = _number(reclaim_level)
+    reclaimed_structure = bool(
+        first_reclaim and reclaim is not None and closed_price is not None
+        and ((direction == "LONG" and closed_price > reclaim)
+             or (direction == "SHORT" and closed_price < reclaim))
+    )
     if confirmed:
         state = "BROKEN_CONFIRMED"
-    elif recovered:
+    elif continued_hold or reclaimed_structure:
         state = "HELD"
+    elif first_reclaim or same_reclaim_candle:
+        state = "RECLAIMED"
+    elif (old_state == "BROKEN_PENDING_CLOSE" and closed_time
+          and closed_time == previous_basis_time):
+        # Live price moving back above/below the line is not a closed-candle
+        # reclaim. Keep the pending state until a newer 15M candle is final.
+        state = "BROKEN_PENDING_CLOSE"
     elif broken_live:
         state = "BROKEN_PENDING_CLOSE"
     else:
         distance = abs(current - level)
         state = ("TESTING" if distance <= approach else
                  "APPROACHING" if distance <= approach * 2 else "INACTIVE")
+    scenario_broken = state == "BROKEN_CONFIRMED"
+    false_break = bool(
+        first_reclaim or continued_hold or same_reclaim_candle
+        or (previous.get("falseBreakDetected") and state in {"RECLAIMED", "HELD"})
+    )
+    if state in {"TESTING", "BROKEN_PENDING_CLOSE"}:
+        resolved_confirmation = "WAIT_15M_CLOSE"
+    elif state in {"RECLAIMED", "BROKEN_CONFIRMED"}:
+        resolved_confirmation = "WAIT_NEW_STRUCTURE"
+    else:
+        resolved_confirmation = entry_confirmation
     return {
         "defenseState": state, "defenseLevel": level,
         "confirmationBuffer": round(buffer, 6),
-        "falseBreakDetected": recovered,
-        "longScenarioInvalidated": state == "BROKEN_CONFIRMED" and direction == "LONG",
-        "shortScenarioInvalidated": state == "BROKEN_CONFIRMED" and direction == "SHORT",
+        "falseBreakDetected": false_break,
+        "longScenarioInvalidated": scenario_broken and direction == "LONG",
+        "shortScenarioInvalidated": scenario_broken and direction == "SHORT",
+        "activeLongScenario": ("INVALIDATED" if scenario_broken and direction == "LONG"
+                               else "ACTIVE"),
+        "activeShortScenario": ("INVALIDATED" if scenario_broken and direction == "SHORT"
+                                else "ACTIVE"),
+        "shortTermStructure": ("CORRECTIVE" if scenario_broken else
+                               "RECLAIMING" if state == "RECLAIMED" else
+                               "STABLE" if state == "HELD" else
+                               "TESTING" if state in {
+                                   "APPROACHING", "TESTING", "BROKEN_PENDING_CLOSE"}
+                               else "UNCHANGED"),
+        "searchNextScenario": scenario_broken,
+        "nextScenarioCandidates": (["DEEP_PULLBACK", "BREAKDOWN_RETEST"]
+                                   if scenario_broken else []),
         # A defense failure cancels that scenario. It never grants the opposite entry.
         "shortNow": False, "side": direction,
         "defenseBasisCandleTime": closed_time,
-        "entryConfirmation": ("WAIT_15M_CLOSE" if state in {
-            "TESTING", "BROKEN_PENDING_CLOSE"} else entry_confirmation),
+        "entryConfirmation": resolved_confirmation,
     }
 
 
