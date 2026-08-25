@@ -692,7 +692,8 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
         "DEFENSE_TEST", "DEFENSE_RECLAIMED", "DEFENSE_HELD",
         "DEFENSE_BROKEN_CONFIRMED",
         "DATA_DELAYED", "DATA_STALE", "DATA_RECOVERED",
-        "EARLY_ENTRY_PREPARE", "EARLY_ENTRY_MISSED", "EARLY_ENTRY_INVALIDATED",
+        "EARLY_ENTRY_WATCH", "EARLY_ENTRY_PREPARE", "EARLY_ENTRY_MISSED",
+        "EARLY_ENTRY_INVALIDATED",
     }
     # Lifecycle facts are state transitions in their own right. They must not
     # disappear merely because the high-level ENTER/WAIT/MANAGE action stayed

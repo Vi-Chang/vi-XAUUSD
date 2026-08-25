@@ -1,4 +1,4 @@
-"""Independent pre-entry lifecycle; formal entry stays canonical."""
+"""Independent opportunity lifecycle; formal entry remains canonical."""
 from __future__ import annotations
 
 import hashlib
@@ -7,8 +7,9 @@ from typing import Any
 
 from app.config import get_settings
 
-ACTIVE = {"PREPARE_LONG", "PREPARE_SHORT"}
-TERMINAL = {"LONG_READY", "SHORT_READY", "MISSED_LONG", "MISSED_SHORT", "INVALIDATED"}
+ACTIVE = {"WATCH_LONG", "WATCH_SHORT", "PREPARE_LONG", "PREPARE_SHORT"}
+TERMINAL = {"LONG_READY", "SHORT_READY", "MISSED_LONG", "MISSED_SHORT",
+            "INVALIDATED_LONG", "INVALIDATED_SHORT", "INVALIDATED"}
 
 
 def _num(value: Any, default: float | None = None) -> float | None:
@@ -19,7 +20,7 @@ def _zone(item: dict) -> tuple[float, float] | None:
     raw = item.get("entry_zone") or item.get("entryZone") or {}
     low = _num(raw.get("lower") if raw.get("lower") is not None else raw.get("low"))
     high = _num(raw.get("upper") if raw.get("upper") is not None else raw.get("high"))
-    return tuple(sorted((low, high))) if low is not None and high is not None else None
+    return (min(low, high), max(low, high)) if low is not None and high is not None else None
 
 
 def _bias(data: dict) -> str:
@@ -28,24 +29,41 @@ def _bias(data: dict) -> str:
     return {"LONG": "BULLISH", "SHORT": "BEARISH"}.get(value, value)
 
 
-def _data_health(data: dict) -> str:
-    health, normalized = data.get("decision_health_state") or {}, data.get("normalized_analysis") or {}
-    return str(health.get("dataHealth") or normalized.get("marketDataStatus") or "STALE").upper()
+def opportunity_capabilities(data: dict) -> dict:
+    """Separate live-price observation from closed-candle execution capability."""
+    health = data.get("decision_health_state") or {}
+    normalized = data.get("normalized_analysis") or {}
+    status = str(health.get("dataHealth") or normalized.get("marketDataStatus") or "STALE").upper()
+    current = _num(normalized.get("currentPrice"))
+    price_available = current is not None and current > 0
+    critical = status in {"FAILED", "UNSAFE", "INSUFFICIENT", "INVALID_PRICE",
+                          "MISSING_CANDLE", "SOURCE_DIVERGENCE", "CRITICAL_DATA_UNSAFE"}
+    degraded = status in {"DEGRADED", "DEGRADED_15M", "STALE"}
+    return {
+        "status": "CRITICAL_DATA_UNSAFE" if critical or not price_available
+        else "DEGRADED_15M" if degraded else "HEALTHY",
+        "watchAllowed": bool(price_available and not critical),
+        "prepareAllowed": bool(price_available and not critical),
+        "entryAllowed": bool(price_available and not critical and not degraded),
+        "reasons": (["LIVE_PRICE_UNAVAILABLE"] if not price_available else
+                    ["CRITICAL_MARKET_DATA"] if critical else
+                    ["CLOSED_15M_DEGRADED"] if degraded else []),
+    }
 
 
 def _candidate(data: dict, side: str) -> dict | None:
     engine = data.get("entry_opportunity_engine") or {}
-    opportunities = [item for item in engine.get("opportunities") or []
-                     if str(item.get("side") or "").upper() == side
-                     and str(item.get("state") or "") not in {"EXPIRED", "INVALIDATED", "REJECTED"}
-                     and _zone(item)]
     primary_id = str(engine.get("primaryOpportunityId") or "")
-    opportunities.sort(key=lambda item: (
+    items = [item for item in engine.get("opportunities") or []
+             if str(item.get("side") or "").upper() == side
+             and str(item.get("state") or "") not in {"EXPIRED", "INVALIDATED", "REJECTED"}
+             and _zone(item)]
+    items.sort(key=lambda item: (
         str(item.get("opportunity_id") or "") != primary_id,
         not bool(item.get("primary_eligible", True)),
         float(item.get("distance_from_current") or item.get("anchor_distance") or 0),
         -int(item.get("opportunity_score") or 0)))
-    return opportunities[0] if opportunities else None
+    return items[0] if items else None
 
 
 def _evidence(data: dict, side: str, price: float, atr: float,
@@ -112,8 +130,8 @@ def _setup_id(symbol: str, side: str, opportunity: dict, zone: tuple[float, floa
 
 def _event(state: dict, stage: str, previous_state: str) -> dict:
     setup_id = str(state["setup_id"])
-    event_type = {"PREPARE": "EARLY_ENTRY_PREPARE", "MISSED": "EARLY_ENTRY_MISSED",
-                  "INVALIDATED": "EARLY_ENTRY_INVALIDATED"}[stage]
+    event_type = {"WATCH": "EARLY_ENTRY_WATCH", "PREPARE": "EARLY_ENTRY_PREPARE",
+                  "MISSED": "EARLY_ENTRY_MISSED", "INVALIDATED": "EARLY_ENTRY_INVALIDATED"}[stage]
     key = f"{setup_id}:{stage}"
     return {"eventId": hashlib.sha256(key.encode()).hexdigest()[:32], "eventKey": key,
             "event_type": event_type, "setupId": setup_id, "opportunityId": setup_id,
@@ -127,120 +145,186 @@ def _event(state: dict, stage: str, previous_state: str) -> dict:
             "marketBias": state.get("canonicalBias"), "dataHealth": state.get("dataHealth"),
             "candidateScore": state.get("candidateScore"),
             "candidateReasons": state.get("candidateReasons") or [],
+            "rejectionReasons": state.get("rejectionReasons") or [],
+            "nextAction": state.get("nextAction"),
             "candidateCreatedAt": state.get("candidateCreatedAt"),
             "transitionReason": state.get("transitionReason"),
             "calculatedAt": state.get("evaluatedAt"), "notificationEligible": True}
 
 
+def _previous_candidates(previous: dict) -> dict[str, dict]:
+    if previous.get("candidates"):
+        return {str(k): dict(v) for k, v in previous["candidates"].items()}
+    side = str(previous.get("side") or "")
+    return {side: dict(previous)} if side in {"LONG", "SHORT"} else {}
+
+
+def _evaluate_side(data: dict, side: str, previous: dict, *, symbol: str, now: str,
+                   price: float, atr: float, bias: str, capabilities: dict) -> tuple[dict, list[dict]]:
+    old_state = str(previous.get("state") or "IDLE")
+    log = {"timestamp": now, "symbol": symbol, "side": side, "canonical_bias": bias,
+           "price": price, "data_health": capabilities["status"], "state_before": old_state,
+           "candidate_reasons": [], "rejection_reasons": []}
+    if old_state in ACTIVE:
+        state = dict(previous)
+        active_zone = (float(state["candidateZone"]["low"]),
+                       float(state["candidateZone"]["high"]))
+        stop = _num(state.get("defenseLevel"))
+        target = _num((state.get("targets") or [None])[0])
+        break_context = data.get("break_lifecycle_engine") or {}
+        structure_broken = (str(break_context.get("state") or "") in {"BREAK_CONFIRMED", "RECLAIM_FAILED"}
+                            and ((side == "LONG" and str(break_context.get("direction") or "") == "DOWN")
+                                 or (side == "SHORT" and str(break_context.get("direction") or "") == "UP")))
+        stop_crossed = stop is not None and ((side == "LONG" and price < stop)
+                                             or (side == "SHORT" and price > stop))
+        if not capabilities["watchAllowed"] or structure_broken or stop_crossed:
+            reason = "DATA_UNSAFE" if not capabilities["watchAllowed"] else "STRUCTURE_INVALIDATED"
+            terminal = "INVALIDATED_LONG" if side == "LONG" else "INVALIDATED_SHORT"
+            state.update({"state": terminal, "transitionReason": reason, "evaluatedAt": now,
+                          "dataHealth": capabilities["status"], "nextAction": "等待新結構"})
+            log.update({"state_after": terminal, "rejection_reasons": [reason]})
+            state["evaluationLog"] = [*(state.get("evaluationLog") or []), log][-100:]
+            return state, [_event(state, "INVALIDATED", old_state)]
+        chasing, chase_reason, rr = is_chasing_entry(
+            side=side, current_price=price, zone=active_zone, stop=stop, target=target,
+            atr=atr, minimum_rr=float(get_settings().decision_assistant_min_rr))
+        if chasing:
+            terminal = "MISSED_LONG" if side == "LONG" else "MISSED_SHORT"
+            state.update({"state": terminal, "transitionReason": chase_reason,
+                          "evaluatedAt": now, "dataHealth": capabilities["status"], "rr": rr,
+                          "nextAction": "等待價格回到合理區域或建立新劇本"})
+            log.update({"state_after": terminal, "rejection_reasons": [chase_reason], "rr": rr})
+            state["evaluationLog"] = [*(state.get("evaluationLog") or []), log][-100:]
+            return state, [_event(state, "MISSED", old_state)]
+        opportunity = _candidate(data, side)
+        reasons, rejected = _evidence(data, side, price, atr, opportunity or {})
+        if old_state.startswith("WATCH") and capabilities["prepareAllowed"] and not rejected:
+            prepared = "PREPARE_LONG" if side == "LONG" else "PREPARE_SHORT"
+            state.update({"state": prepared, "candidateReasons": reasons,
+                          "candidateScore": min(100, 55 + 15 * len(reasons)),
+                          "transitionReason": reasons[0] if reasons else "REACTION_AND_STRUCTURE_CONFIRMED",
+                          "evaluatedAt": now, "nextAction": "等待正式收盤與風控閘門確認"})
+            log["state_after"] = prepared
+            state["evaluationLog"] = [*(state.get("evaluationLog") or []), log][-100:]
+            return state, [_event(state, "PREPARE", old_state)]
+        state.update({"evaluatedAt": now, "dataHealth": capabilities["status"]})
+        log["state_after"] = old_state
+        state["evaluationLog"] = [*(state.get("evaluationLog") or []), log][-100:]
+        return state, []
+    opportunity = _candidate(data, side)
+    if opportunity is None:
+        log.update({"state_after": old_state, "rejection_reasons": ["NO_RUNTIME_ENTRY_ZONE"]})
+        return {"state": old_state, "side": side, "evaluatedAt": now,
+                "canonicalBias": bias, "dataHealth": capabilities["status"],
+                "rejectionReasons": ["NO_RUNTIME_ENTRY_ZONE"],
+                "nextAction": "等待形成有效進場區", "evaluationLog": [log]}, []
+    zone = _zone(opportunity)
+    assert zone is not None
+    watch_padding = atr * get_settings().early_entry_watch_proximity_atr_mult
+    prepare_padding = atr * get_settings().early_entry_neighborhood_atr_mult
+    watch_nearby = zone[0] - watch_padding <= price <= zone[1] + watch_padding
+    prepare_nearby = zone[0] - prepare_padding <= price <= zone[1] + prepare_padding
+    rr = _num(opportunity.get("estimated_rr"), 0.0) or 0.0
+    reasons, rejected = _evidence(data, side, price, atr, opportunity)
+    hard_rejections = []
+    break_context = data.get("break_lifecycle_engine") or {}
+    if (str(break_context.get("state") or "") in {"BREAK_CONFIRMED", "RECLAIM_FAILED"}
+            and ((side == "LONG" and str(break_context.get("direction") or "") == "DOWN")
+                 or (side == "SHORT" and str(break_context.get("direction") or "") == "UP"))):
+        hard_rejections.append("STRUCTURE_INVALIDATED")
+    if not capabilities["watchAllowed"]:
+        hard_rejections.append("DATA_CAPABILITY_BLOCKS_WATCH")
+    if not watch_nearby:
+        hard_rejections.append("PRICE_OUTSIDE_WATCH_DISTANCE")
+        hard_rejections.append("PRICE_OUTSIDE_CANDIDATE_NEIGHBORHOOD")
+    if rr < get_settings().early_entry_watch_min_rr:
+        hard_rejections.append("ESTIMATED_RR_TOO_LOW")
+    setup_id = _setup_id(symbol, side, opportunity, zone)
+    log.update({"entry_zone": {"low": zone[0], "high": zone[1]}, "rr": rr,
+                "candidate_reasons": reasons,
+                "rejection_reasons": list(dict.fromkeys(hard_rejections + rejected))})
+    if hard_rejections or (old_state in TERMINAL and previous.get("setup_id") == setup_id):
+        log["state_after"] = old_state
+        return {**previous, "state": old_state, "side": side, "evaluatedAt": now,
+                "canonicalBias": bias, "dataHealth": capabilities["status"],
+                "rejectionReasons": log["rejection_reasons"],
+                "nextAction": previous.get("nextAction") or "等待價格接近有效區域",
+                "evaluationLog": [*(previous.get("evaluationLog") or []), log][-100:]}, []
+    countertrend = ((bias == "BULLISH" and side == "SHORT") or
+                    (bias == "BEARISH" and side == "LONG"))
+    can_prepare = prepare_nearby and not rejected and capabilities["prepareAllowed"]
+    state_name = (("PREPARE_" if can_prepare else "WATCH_") + side)
+    score = min(100, (55 if can_prepare else 40) + 15 * len(reasons) - (15 if countertrend else 0))
+    state = {"schemaVersion": "opportunity-liveness-v2", "state": state_name,
+             "side": side, "setup_id": setup_id, "candidateSetupId": setup_id,
+             "sourceOpportunityId": opportunity.get("opportunity_id"),
+             "candidateCreatedAt": now, "candidatePrice": round(price, 2),
+             "candidateZone": {"low": zone[0], "high": zone[1]},
+             "candidateReason": (reasons[0] if reasons else "PRICE_APPROACHING_VALID_ZONE"),
+             "candidateReasons": reasons, "rejectionReasons": rejected,
+             "candidateScore": score, "canonicalBias": bias,
+             "countertrend": countertrend, "dataHealth": capabilities["status"],
+             "defenseLevel": _num(opportunity.get("tactical_stop")),
+             "targets": [v for v in [opportunity.get("target1")] if isinstance(v, (int, float))],
+             "rr": rr, "evaluatedAt": now,
+             "transitionReason": (reasons[0] if can_prepare and reasons else "PRICE_APPROACHING_VALID_ZONE"),
+             "nextAction": ("等待正式收盤與風控閘門確認" if can_prepare
+                            else "等待價格反應與短線結構確認")}
+    log["state_after"] = state_name
+    state["evaluationLog"] = [log]
+    return state, [_event(state, "PREPARE" if can_prepare else "WATCH", old_state)]
+
+
+def _primary(candidates: dict[str, dict], bias: str) -> dict:
+    preferred = "LONG" if bias == "BULLISH" else "SHORT" if bias == "BEARISH" else ""
+    rank = {"LONG_READY": 6, "SHORT_READY": 6, "PREPARE_LONG": 5, "PREPARE_SHORT": 5,
+            "WATCH_LONG": 4, "WATCH_SHORT": 4, "MISSED_LONG": 3, "MISSED_SHORT": 3,
+            "INVALIDATED_LONG": 2, "INVALIDATED_SHORT": 2, "IDLE": 1}
+    return max(candidates.values(), key=lambda item: (
+        rank.get(str(item.get("state") or "IDLE"), 0),
+        str(item.get("side") or "") == preferred,
+        int(item.get("candidateScore") or 0)))
+
+
 def evaluate_early_entry_candidate(data: dict, previous: dict | None = None) -> tuple[dict, list[dict]]:
-    """Evaluate PREPARE/MISSED/INVALIDATED; never grant formal entry."""
+    """Evaluate both sides continuously; never grant formal entry."""
     previous = previous or {"state": "IDLE"}
     normalized = data.get("normalized_analysis") or {}
     symbol = str(data.get("symbol") or "XAUUSD")
     now = str(data.get("timestamp_utc") or datetime.now(timezone.utc).isoformat())
     price = _num(normalized.get("currentPrice"), 0.0) or 0.0
     atr = max(_num(normalized.get("atr15"), 0.01) or 0.01, 0.01)
-    bias, health = _bias(data), _data_health(data)
-    side = "LONG" if bias == "BULLISH" else "SHORT" if bias == "BEARISH" else "NONE"
-    old_state = str(previous.get("state") or "IDLE")
-    log = {"timestamp": now, "symbol": symbol, "canonical_bias": bias, "price": price,
-           "data_health": health, "state_before": old_state,
-           "candidate_reasons": [], "rejection_reasons": []}
-    if old_state in ACTIVE:
-        state = dict(previous)
-        candidate_side = str(state.get("side") or "LONG")
-        zone = (float(state["candidateZone"]["low"]), float(state["candidateZone"]["high"]))
-        stop = _num(state.get("defenseLevel"))
-        target = _num((state.get("targets") or [None])[0])
-        break_context = data.get("break_lifecycle_engine") or {}
-        break_state = str(break_context.get("state") or "")
-        break_direction = str(break_context.get("direction") or "")
-        structure_broken = (break_state in {"BREAK_CONFIRMED", "RECLAIM_FAILED"}
-                            and ((candidate_side == "LONG" and break_direction == "DOWN")
-                                 or (candidate_side == "SHORT" and break_direction == "UP")))
-        bias_conflict = side not in {candidate_side, "NONE"}
-        unsafe = health in {"STALE", "FAILED", "UNSAFE", "INSUFFICIENT"}
-        stop_crossed = stop is not None and ((candidate_side == "LONG" and price < stop)
-                                             or (candidate_side == "SHORT" and price > stop))
-        chasing, chase_reason, rr = is_chasing_entry(
-            side=candidate_side, current_price=price, zone=zone, stop=stop, target=target,
-            atr=atr, minimum_rr=float(get_settings().decision_assistant_min_rr))
-        if unsafe or bias_conflict or structure_broken or stop_crossed:
-            reason = "DATA_UNSAFE" if unsafe else "BIAS_CONFLICT" if bias_conflict else "STRUCTURE_INVALIDATED"
-            state.update({"state": "INVALIDATED", "transitionReason": reason,
-                          "evaluatedAt": now, "dataHealth": health})
-            log.update({"state_after": "INVALIDATED", "rejection_reasons": [reason]})
-            state["evaluationLog"] = [*(state.get("evaluationLog") or []), log][-100:]
-            return state, [_event(state, "INVALIDATED", old_state)]
-        if chasing:
-            missed = "MISSED_LONG" if candidate_side == "LONG" else "MISSED_SHORT"
-            state.update({"state": missed, "transitionReason": chase_reason,
-                          "evaluatedAt": now, "dataHealth": health, "rr": rr})
-            log.update({"state_after": missed, "rejection_reasons": [chase_reason], "rr": rr})
-            state["evaluationLog"] = [*(state.get("evaluationLog") or []), log][-100:]
-            return state, [_event(state, "MISSED", old_state)]
-        state.update({"evaluatedAt": now, "dataHealth": health})
-        log["state_after"] = old_state
-        state["evaluationLog"] = [*(state.get("evaluationLog") or []), log][-100:]
-        return state, []
-    opportunity = _candidate(data, side) if side != "NONE" else None
-    if opportunity is None:
-        log.update({"state_after": old_state, "rejection_reasons": [
-            "BIAS_CONFLICT" if side == "NONE" else "NO_RUNTIME_ENTRY_ZONE"]})
-        return {**previous, "state": old_state, "evaluatedAt": now, "canonicalBias": bias,
-                "dataHealth": health,
-                "evaluationLog": [*(previous.get("evaluationLog") or []), log][-100:]}, []
-    zone = _zone(opportunity)
-    assert zone is not None
-    padding = atr * get_settings().early_entry_neighborhood_atr_mult
-    nearby = zone[0] - padding <= price <= zone[1] + padding
-    reasons, rejected = _evidence(data, side, price, atr, opportunity)
-    if not nearby:
-        rejected.append("PRICE_OUTSIDE_CANDIDATE_NEIGHBORHOOD")
-    score = min(100, 35 + 20 * len(set(reasons)) + (10 if nearby else 0))
-    if score < get_settings().early_entry_min_score:
-        rejected.append("CANDIDATE_SCORE_TOO_LOW")
-    log.update({"entry_zone": {"low": zone[0], "high": zone[1]},
-                "candidate_score": score, "candidate_reasons": reasons,
-                "rejection_reasons": list(dict.fromkeys(rejected)),
-                "rr": opportunity.get("estimated_rr")})
-    if rejected:
-        log["state_after"] = old_state
-        return {**previous, "state": old_state, "evaluatedAt": now, "canonicalBias": bias,
-                "dataHealth": health,
-                "evaluationLog": [*(previous.get("evaluationLog") or []), log][-100:]}, []
-    setup_id = _setup_id(symbol, side, opportunity, zone)
-    if old_state in TERMINAL and str(previous.get("setup_id") or "") == setup_id:
-        log["state_after"] = old_state
-        return {**previous, "evaluatedAt": now,
-                "evaluationLog": [*(previous.get("evaluationLog") or []), log][-100:]}, []
-    state_name = "PREPARE_LONG" if side == "LONG" else "PREPARE_SHORT"
-    state = {"schemaVersion": "early-entry-candidate-v1", "state": state_name,
-             "side": side, "setup_id": setup_id, "candidateSetupId": setup_id,
-             "sourceOpportunityId": opportunity.get("opportunity_id"),
-             "candidateCreatedAt": now, "candidatePrice": round(price, 2),
-             "candidateZone": {"low": zone[0], "high": zone[1]},
-             "candidateReason": reasons[0], "candidateReasons": reasons,
-             "candidateScore": score, "canonicalBias": bias, "dataHealth": health,
-             "defenseLevel": _num(opportunity.get("tactical_stop")),
-             "targets": [v for v in [opportunity.get("target1")] if isinstance(v, (int, float))],
-             "rr": opportunity.get("estimated_rr"), "evaluatedAt": now,
-             "transitionReason": reasons[0]}
-    log["state_after"] = state_name
-    state["evaluationLog"] = [log]
-    return state, [_event(state, "PREPARE", old_state)]
+    bias, capabilities = _bias(data), opportunity_capabilities(data)
+    prior = _previous_candidates(previous)
+    candidates, events = {}, []
+    for side in ("LONG", "SHORT"):
+        state, side_events = _evaluate_side(
+            data, side, prior.get(side, {"state": "IDLE", "side": side}),
+            symbol=symbol, now=now, price=price, atr=atr, bias=bias,
+            capabilities=capabilities)
+        candidates[side] = state
+        events.extend(side_events)
+    primary = dict(_primary(candidates, bias))
+    return {**primary, "schemaVersion": "opportunity-liveness-v2",
+            "candidates": candidates, "capabilities": capabilities,
+            "evaluatedAt": now}, events
 
 
 def apply_canonical_entry_result(state: dict, canonical: dict, *, evaluated_at: str) -> dict:
     """Promote only after the existing canonical engine grants formal entry."""
-    if str(state.get("state") or "") not in ACTIVE:
-        return state
-    side = str(state.get("side") or "")
+    candidates = _previous_candidates(state)
     action = str(canonical.get("primaryAction") or canonical.get("finalAction") or "")
-    expected = {"LONG": {"BUY", "ENTER_LONG"}, "SHORT": {"SELL", "ENTER_SHORT"}}[side]
     health = str(canonical.get("dataHealth") or state.get("dataHealth") or "STALE").upper()
-    if bool(canonical.get("canEnter")) and action in expected and health == "HEALTHY":
-        return {**state, "state": "LONG_READY" if side == "LONG" else "SHORT_READY",
-                "formalEntryConfirmedAt": evaluated_at,
-                "transitionReason": "CANONICAL_ENTRY_GATE_PASSED"}
-    return state
+    target_side = "LONG" if action in {"BUY", "ENTER_LONG"} else "SHORT" if action in {"SELL", "ENTER_SHORT"} else ""
+    if bool(canonical.get("canEnter")) and target_side and health == "HEALTHY":
+        candidate = candidates.get(target_side) or {}
+        if str(candidate.get("state") or "") in ACTIVE:
+            candidates[target_side] = {**candidate, "state": f"{target_side}_READY",
+                                       "formalEntryConfirmedAt": evaluated_at,
+                                       "transitionReason": "CANONICAL_ENTRY_GATE_PASSED"}
+    if not candidates:
+        return state
+    primary = _primary(candidates, str(state.get("canonicalBias") or "NEUTRAL"))
+    return {**primary, "schemaVersion": "opportunity-liveness-v2",
+            "candidates": candidates, "capabilities": state.get("capabilities") or {},
+            "evaluatedAt": evaluated_at}

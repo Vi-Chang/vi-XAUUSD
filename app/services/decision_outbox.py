@@ -28,6 +28,7 @@ from app.services.alert_aggregator import (
     is_meaningful_change,
     notification_state_regression,
 )
+from app.services.notification_coordinator import coordinate_notification_intents
 from app.services.notification_policy import (
     canonical_dedupe_key,
     eligibility,
@@ -133,13 +134,14 @@ def persist_decision_events(symbol: str, events: list[dict]) -> list[dict]:
     """Persist facts but enqueue only one semantic notification per group."""
     created: list[dict] = []
     now = datetime.now(timezone.utc)
-    canonical = [dict(event) for event in events if event.get("eventVersion")]
-    legacy = [event for event in events if not event.get("eventVersion")]
-    events = canonical + aggregate_signal_facts(symbol, legacy)
+    events = coordinate_notification_intents(symbol, events)
     valid_events = []
     for payload in events:
         payload["symbol"] = symbol
-        decision = (eligibility(payload) if payload.get("eventVersion") else {
+        decision = ({"eligible": False, "reasonCode": "LOG_ONLY_INTENT",
+                     "priority": "DEBUG"}
+                    if payload.get("notificationRoute") == "LOG_ONLY" else
+                    eligibility(payload) if payload.get("eventVersion") else {
             "eligible": True, "reasonCode": "SEND_LEGACY_MEANINGFUL_EVENT",
             "priority": "IMPORTANT"})
         payload["notificationDecision"] = decision
