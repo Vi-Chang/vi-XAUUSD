@@ -139,6 +139,33 @@ def test_latest_final_health_overrides_stale_embedded_observation_in_snapshot():
     assert snapshot["dataHealth"]["healthy"] is True
 
 
+def test_healthy_wait_for_15m_close_is_wait_not_data_invalid():
+    data = payload()
+    data["decision_health_state"] = {
+        "dataHealth": "HEALTHY",
+        "canonicalDataHealth": "HEALTHY",
+        "entryConfirmation": "WAIT_15M_CLOSE",
+        "marketBias": "BULLISH",
+    }
+    data["final_decision_state"].update({
+        "dataHealth": "HEALTHY",
+        "canonicalDataHealth": "HEALTHY",
+        "entryConfirmation": "WAIT_15M_CLOSE",
+        "marketBias": "BULLISH",
+        "scenarioValidity": "PENDING_CONFIRMATION",
+        "canEnter": False,
+        "finalAction": "WAIT",
+    })
+
+    canonical = build_decision_snapshot(data)["canonicalDecision"]
+
+    assert canonical["dataHealth"] == "HEALTHY"
+    assert canonical["dataStale"] is False
+    assert canonical["scenarioValidity"] == "PENDING_CONFIRMATION"
+    assert canonical["primaryAction"] == "WAIT"
+    assert canonical["newEntryDecision"]["canEnter"] is False
+
+
 def test_unknown_position_is_explicit_not_hypothetical():
     data = payload()
     data["position_management"] = {
