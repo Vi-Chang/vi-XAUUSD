@@ -59,9 +59,23 @@ def _zone(item: dict) -> tuple[float, float] | None:
 
 
 def _lifecycle(status: str) -> str:
+    status = str(status or "").upper()
     if status == "ALTERNATIVE_READY":
         return "CONFIRMED"
-    if "READY" in status:
+    if "INVALID" in status:
+        return "INVALIDATED"
+    if "MISSED" in status or status == "MISS_ENTRY":
+        return "MISSED"
+    if "EXPIRED" in status or status == "ARCHIVED":
+        return "EXPIRED"
+    explicit_ready = status in {
+        "READY", "ENTRY_READY", "LONG_READY", "SHORT_READY",
+        "BREAKOUT_ENTRY_READY", "PULLBACK_ENTRY_READY", "TRIGGERED",
+        "ENTRY_TRIGGERED",
+    }
+    suffixed_ready = status.endswith("_READY") and not status.startswith(
+        ("NOT_", "NO_", "WAIT_", "BLOCKED_", "INVALID_", "UN"))
+    if explicit_ready or suffixed_ready or status.startswith("ENTRY_READY_"):
         return "ENTRY_READY"
     if "CONFIRMED" in status:
         return "CONFIRMED"
@@ -69,12 +83,6 @@ def _lifecycle(status: str) -> str:
         return "TRIGGERED"
     if "WATCH" in status or "APPROACH" in status or "ARMED" in status:
         return "ARMED"
-    if "MISSED" in status:
-        return "MISSED"
-    if "EXPIRED" in status:
-        return "EXPIRED"
-    if "INVALID" in status:
-        return "INVALIDATED"
     return "SETUP"
 
 
@@ -170,15 +178,29 @@ def collect_signal_candidates(data: dict) -> list[SignalCandidate]:
             "stopPrice": entry.get("stop_loss"), "tp1": entry.get("take_profit_1"),
             "expiresAt": entry.get("expires_at"), "type": "ENTRY_ENGINE",
         })
+    # The same setup is often mirrored by more than one compatibility engine.
+    # It is still one market opportunity, not one candidate per status string.
+    # Keeping a status in the identity could make one setup simultaneously
+    # WAIT and READY and later leak contradictory actions to the UI/outbox.
+    lifecycle_priority = {
+        "INVALIDATED": 100, "EXPIRED": 90, "MISSED": 80,
+        "ENTRY_READY": 70, "CONFIRMED": 60, "TRIGGERED": 50,
+        "ARMED": 40, "SETUP": 10,
+    }
+    setup_ledgers.sort(
+        key=lambda row: lifecycle_priority.get(
+            _lifecycle(str(row.get("status") or "SETUP")), 0),
+        reverse=True,
+    )
     seen: set[tuple[str, str]] = set()
     for item in setup_ledgers:
         scenario = str(item.get("setupId") or item.get("setup_id") or "")
         status = str(item.get("status") or "SETUP")
-        key = (scenario, status)
+        raw_direction = str(item.get("direction") or "NEUTRAL").upper()
+        key = (scenario, raw_direction)
         if not scenario or key in seen:
             continue
         seen.add(key)
-        raw_direction = str(item.get("direction") or "NEUTRAL").upper()
         # A confirmed fast reclaim cancels the old break direction for this
         # recovery window.  It does not grant the opposite trade; it only
         # removes stale candidates and boosts fresh opposite-side candidates.
@@ -317,9 +339,13 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
     def _selection_rank(item: SignalCandidate) -> tuple[bool, bool, int]:
         zone = item.entry_zone
         in_zone = bool(zone and zone[0] <= current_price <= zone[1])
-        executable = (item.lifecycle_state == "ENTRY_READY" and in_zone
-                      and stop_is_valid(item.direction, current_price,
-                                        item.invalidation_price))
+        executable = (
+            item.lifecycle_state == "ENTRY_READY" and in_zone
+            and stop_is_valid(item.direction, current_price, item.invalidation_price)
+            and item.risk_reward is not None
+            and item.risk_reward >= settings.decision_assistant_min_rr
+            and health["healthy"]
+        )
         return executable, item.lifecycle_state == "ENTRY_READY", item.strength
 
     selected = max(candidates, key=_selection_rank, default=None)
@@ -580,12 +606,10 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
             decision_health.get("nextScenarioCandidates") or []),
         "notificationSeverity": severity,
     })
-    from app.engines.market_direction import resolve_market_direction
-    direction_view = resolve_market_direction(data, previous)
-    base["marketDirection"] = (market_bias if direction_view["direction"] in {
-        "UNKNOWN", "NEUTRAL", ""} and market_bias != "NEUTRAL"
-        else direction_view["direction"])
-    base["marketDirectionSource"] = direction_view["source"]
+    # Compatibility name, same canonical value.  A second resolver here used
+    # to let marketDirection disagree with marketBias in the same payload.
+    base["marketDirection"] = market_bias
+    base["marketDirectionSource"] = "decision_health_state.marketBias"
     base["entrySignal"] = ("READY" if base.get("canEnter") else
                            "PAUSED" if (not health["healthy"] or
                                         execution_gate["scenarioValidity"] in {
@@ -602,6 +626,9 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
         and candidate.entry_zone[0] <= current_price <= candidate.entry_zone[1]
         and stop_is_valid(candidate.direction, current_price,
                           candidate.invalidation_price)
+        and candidate.risk_reward is not None
+        and candidate.risk_reward >= settings.decision_assistant_min_rr
+        and health["healthy"]
     }
     if len(ready_directions) > 1:
         base.update({"finalAction": "NO_TRADE", "state": "NO_TRADE",

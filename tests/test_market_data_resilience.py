@@ -233,7 +233,7 @@ class Notifier:
         return True
 
 
-async def test_degraded_and_recovered_telegram_are_each_emitted_once():
+async def test_legacy_market_data_notifier_cannot_bypass_canonical_outbox():
     notifier = Notifier()
     payload = {
         "normalized_analysis": {
@@ -256,9 +256,8 @@ async def test_degraded_and_recovered_telegram_are_each_emitted_once():
         notifier=notifier, previous=current, health=healthy, payload=payload)
     await notify_market_data_transition(
         notifier=notifier, previous=current, health=healthy, payload=payload)
-    assert len(notifier.calls) == 2
-    assert "行情資料暫時延遲" in notifier.calls[0][0][2]
-    assert "行情同步已恢復" in notifier.calls[1][0][2]
+    assert current == "GOOD"
+    assert notifier.calls == []
 
 
 def test_all_secret_output_is_redacted():

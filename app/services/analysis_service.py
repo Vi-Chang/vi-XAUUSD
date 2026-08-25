@@ -631,6 +631,32 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
     # previous ordering captured a half-built decision before breakout/retest.
     from app.engines.decision_snapshot import build_decision_snapshot
     result.decision_snapshot = build_decision_snapshot(result.model_dump())
+    # Keep the legacy/public decision projection as a compatibility mirror of
+    # the same canonical entry permission used by the dashboard and outbox.
+    # This assignment intentionally happens after the snapshot validator: raw
+    # FinalDecision READY can no longer leak through the API when canonical
+    # RR, freshness, position separation, or consistency gates block entry.
+    canonical = result.decision_snapshot.get("canonicalDecision") or {}
+    canonical_entry = canonical.get("newEntryDecision") or {}
+    canonical_entry_action = str(canonical_entry.get("action") or "WAIT")
+    result.decision.can_enter = bool(canonical_entry.get("canEnter"))
+    result.decision.trade_status = str(
+        canonical_entry.get("tradeStatus") or "WAIT_CONFIRMATION")
+    result.decision.blocked_reason = str(
+        canonical.get("primaryReason") or result.decision.blocked_reason or "")
+    result.decision.reason = result.decision.blocked_reason
+    entry_legacy_action = (
+        "NO_TRADE" if not elig.eligible else
+        "LONG" if canonical_entry_action == "BUY" else
+        "SHORT" if canonical_entry_action == "SELL" else "WATCH"
+    )
+    # market_decision is entry-only; position management remains a separate
+    # output.  The private compatibility decision may still say MANAGE for
+    # older clients, without contaminating the public new-entry decision.
+    result.decision.action = (
+        "MANAGE" if result.position_management.has_position else entry_legacy_action)
+    result.market_decision = result.decision.model_copy(
+        update={"action": entry_legacy_action})
 
     # ── 9d. V2 AI 分析層(4 Agent;任何失敗不影響上面的確定性輸出)──
     try:
