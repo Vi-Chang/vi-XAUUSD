@@ -27,6 +27,10 @@ from app.engines.decision_health import (
     evaluate_defense_state,
 )
 from app.engines.dynamic_profit_protection import evaluate_dynamic_profit
+from app.engines.early_entry_candidate import (
+    apply_canonical_entry_result,
+    evaluate_early_entry_candidate,
+)
 from app.engines.entry_opportunity import evaluate_entry_opportunities
 from app.engines.fake_breakout_recovery import evaluate_fake_breakout_recovery
 from app.engines.final_decision_engine import evaluate_final_decision
@@ -288,6 +292,9 @@ def evaluate_market_monitors(
         previous=_load(symbol, "market_behavior"))
     _save(symbol, "market_behavior", behavior_state)
     monitor_result["market_behavior_engine"] = behavior_state
+    early_state, early_events = evaluate_early_entry_candidate(
+        {**data, **monitor_result}, _load(symbol, "early_entry_candidate"))
+    monitor_result["early_entry_candidate"] = early_state
     profit_state, profit_events = evaluate_dynamic_profit(
         data={**data, **monitor_result, "indicator_snapshot": indicators}, frame=m15_closed,
         trade_plans=trade_plan_state, break_state=break_state,
@@ -306,14 +313,19 @@ def evaluate_market_monitors(
     signal_facts = (exit_events + ([breakout_event] if breakout_event else []) + wick_events
                     + virtual_events + trade_plan_events + breakout_setup_events
                     + continuation_events + regime_events + behavior_events
-                    + assistant_events + opportunity_events)
+                    + assistant_events + opportunity_events + early_events)
     signal_facts += (double_sweep_events + break_events + recovery_events
                      + profit_events)
     health_event = decision_health.get("dataHealthEvent")
     if health_event:
+        published_bias = str(previous_final_decision.get("marketBias") or
+                             previous_final_decision.get("direction") or
+                             decision_health.get("marketBias") or "NEUTRAL").upper()
+        published_bias = {"LONG": "BULLISH", "SHORT": "BEARISH"}.get(
+            published_bias, published_bias)
         signal_facts.append({
             **dict(health_event),
-            "marketBias": decision_health.get("marketBias"),
+            "marketBias": published_bias,
             "entryConfirmation": decision_health.get("entryConfirmation"),
             "dataHealth": decision_health.get("dataHealth"),
             "transitionReason": decision_health.get("reason"),
@@ -366,6 +378,11 @@ def evaluate_market_monitors(
     )
     from app.engines.canonical_decision import build_canonical_decision
     canonical = build_canonical_decision(final_input, final_state)
+    early_state = apply_canonical_entry_result(
+        early_state, {**canonical, **final_state},
+        evaluated_at=str(data.get("timestamp_utc") or datetime.now(timezone.utc).isoformat()))
+    _save(symbol, "early_entry_candidate", early_state)
+    monitor_result["early_entry_candidate"] = early_state
     final_state["canonicalDecision"] = canonical
     for event in final_events:
         event["canonicalDecision"] = canonical
@@ -422,7 +439,7 @@ def evaluate_live_quote_state(
         key: price for key in (normalized.get("sourcePrices") or {"market": price})
     }
     candidate = {**data, "normalized_analysis": normalized,
-                 "snapshot_ts": quote_time,
+                 "snapshot_ts": quote_time, "timestamp_utc": quote_time,
                  "current_price": {**(data.get("current_price") or {}),
                                    "mid": price, "last_update": quote_time}}
     previous_decision_health = _load(symbol, "decision_health")
@@ -461,11 +478,18 @@ def evaluate_live_quote_state(
     )
     _save(symbol, "regime_state", regime_state)
     live_facts: list[dict] = []
+    canonical_bias = str(previous_final.get("marketBias") or
+                         previous_final.get("direction") or
+                         decision_health.get("marketBias") or "NEUTRAL")
+    canonical_bias = {"LONG": "BULLISH", "SHORT": "BEARISH"}.get(
+        canonical_bias.upper(), canonical_bias.upper())
     health_event = decision_health.get("dataHealthEvent")
     if health_event:
         live_facts.append({
             **dict(health_event),
-            "marketBias": decision_health.get("marketBias"),
+            # Data health consumes the last published canonical direction; it
+            # never derives or restores a separate cached market bias.
+            "marketBias": canonical_bias,
             "entryConfirmation": decision_health.get("entryConfirmation"),
             "dataHealth": decision_health.get("dataHealth"),
             "transitionReason": decision_health.get("reason"),
@@ -505,6 +529,16 @@ def evaluate_live_quote_state(
             "marketContext": decision_health.get("marketContext"),
             "transitionReason": "舊劇本維持失效；reclaim 只建立全新候選劇本",
         })
+    early_state, early_events = evaluate_early_entry_candidate(
+        {**candidate, "normalized_analysis": normalized,
+         "decision_health_state": decision_health,
+         "entry_opportunity_engine": _load(symbol, "entry_opportunities"),
+         "break_lifecycle_engine": _load(symbol, "break_lifecycle"),
+         "wick_rejection_engine": _load(symbol, "wick_rejection"),
+         "market_behavior_engine": _load(symbol, "market_behavior")},
+        _load(symbol, "early_entry_candidate"))
+    _save(symbol, "early_entry_candidate", early_state)
+    live_facts.extend(early_events)
     current, events = evaluate_final_decision(
         {**candidate, "normalized_analysis": normalized,
          "regime_state_machine": regime_state, "signal_facts": live_facts}, previous_final
@@ -514,6 +548,7 @@ def evaluate_live_quote_state(
         candidate, price=price, quote_time=quote_time, now=parse_utc(quote_time))
     current["realtimePresentation"] = presentation
     current["freshnessState"] = candidate["freshness_state"]
+    current["earlyEntryCandidate"] = early_state
     if presentation["opportunityState"] == "WAIT_RETEST":
         current["canEnter"] = False
         current["finalAction"] = "WAIT"

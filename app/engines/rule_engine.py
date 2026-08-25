@@ -130,10 +130,11 @@ def detect_chase(direction: str, *, price: float, atr15: float,
 
     if m15:
         ref = m15.last_swing_low if up else m15.last_swing_high
-        if ref is not None and abs(price - ref) > s.chase_atr_mult * atr15:
+        directional_distance = ((price - ref) if up else (ref - price)) if ref is not None else 0
+        if ref is not None and directional_distance > s.chase_atr_mult * atr15:
             flags.append(f"CHASE_{'LONG' if up else 'SHORT'}_RISK:離最近的"
                          f"{'支撐' if up else '壓力'}已經 "
-                         f"{abs(price - ref) / max(atr15, 1e-9):.1f} 倍波動幅度,"
+                         f"{directional_distance / max(atr15, 1e-9):.1f} 倍波動幅度,"
                          f"追{'高' if up else '低'}容易被套")
 
     # 距強壓力太近禁止追多;距強支撐太近禁止追空
@@ -495,9 +496,12 @@ def decide(*, quality: DataQualityReport, structures: dict[str, StructureReport]
                       f"賺的比賠的還少、不划算,等更好的位置再說。")
             blocked_reason = reason
         elif chase_this:
-            action, trade_status = "WATCH", "MISSED_ENTRY"
+            # A chase condition means the current quote is unattractive.  It
+            # does not prove that this setup was once executable and notified;
+            # persistent setup_lifecycle owns that MISSED_ENTRY transition.
+            action, trade_status = "WATCH", "WAIT_CONFIRMATION"
             desc = chase_this[0].split(":", 1)[1] if ":" in chase_this[0] else chase_this[0]
-            reason = f"看得出想{d_zh},但現在追進去風險大:{desc}。"
+            reason = f"方向仍偏{d_zh},但現在追進去風險大:{desc}；等待回到合理區域。"
             blocked_reason = reason
         else:
             action = "WATCH"

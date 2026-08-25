@@ -111,7 +111,7 @@ def test_chase_penalty_lowers_quality_and_marks_missed():
     near, _ = evaluate_decision_assistant(data(price=101), latest_candle=candle())
     far, _ = evaluate_decision_assistant(data(price=110), latest_candle=candle(close=110, high=111))
     assert far["entryQualityScore"] < near["entryQualityScore"]
-    assert far["tradeState"] in {"MISSED_ENTRY", "NO_TRADE"}
+    assert far["tradeState"] == "CONFIRMED_WAIT_RETEST"
 
 
 def test_entry_approaching_is_event_not_wait_spam():

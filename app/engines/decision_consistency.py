@@ -68,3 +68,87 @@ def fail_closed(decision: dict, errors: list[str]) -> dict:
         "notificationSeverity": "CRITICAL", "consistencyErrors": errors,
     })
     return safe
+
+
+def validate_canonical_contract(decision: dict) -> list[str]:
+    """Cross-field invariants for API, dashboard and Telegram's shared view."""
+    errors: list[str] = []
+    entry = decision.get("newEntryDecision") or {}
+    selected = entry.get("selectedSetup") or {}
+    action = str(decision.get("primaryAction") or "WAIT")
+    can_enter = bool(entry.get("canEnter"))
+    active_id = str(decision.get("activeSetupId") or "")
+    engine_selected_id = str(decision.get("engineSelectedSetupId") or "")
+    selected_id = str(selected.get("setupId") or "")
+    trigger = decision.get("canonicalNextTrigger") or {}
+    position = decision.get("positionManagement") or {}
+
+    if action in {"BUY", "SELL"} and not can_enter:
+        errors.append("ACTION_WITHOUT_ENTRY_PERMISSION")
+    if can_enter:
+        if not bool(decision.get("executionAllowed")):
+            errors.append("ENTRY_WITH_EXECUTION_BLOCKED")
+        if not bool(decision.get("rrValid")):
+            errors.append("ENTRY_WITH_RR_BLOCKED")
+        if bool(decision.get("dataStale")) or not bool(
+                decision.get("closedCandleAvailable")):
+            errors.append("ENTRY_WITH_STALE_OR_OPEN_CANDLE")
+        if str(decision.get("scenarioValidity")) != "ACTIVE":
+            errors.append("ENTRY_WITH_INACTIVE_SCENARIO")
+        if str(entry.get("tradeStatus")) != "ENTRY_READY":
+            errors.append("ENTRY_PERMISSION_STATUS_CONFLICT")
+    if active_id != selected_id:
+        errors.append("ACTIVE_SETUP_SELECTION_CONFLICT")
+    if engine_selected_id and engine_selected_id != active_id:
+        errors.append("ENGINE_CANONICAL_SETUP_CONFLICT")
+    trigger_setup = str(trigger.get("setupId") or "")
+    if trigger_setup and active_id and trigger_setup != active_id:
+        errors.append("NEXT_TRIGGER_SETUP_CONFLICT")
+    if str(trigger.get("status") or "") in {"SATISFIED", "CLOSED_CONFIRMED"}:
+        errors.append("COMPLETED_TRIGGER_EXPOSED_AS_NEXT")
+    candidate_permissions = [item for item in [selected] + list(
+        decision.get("alternativeSetups") or []) if item.get("canEnter")]
+    if len(candidate_permissions) > 1:
+        errors.append("MULTIPLE_EXECUTABLE_SETUPS")
+    if not bool(position.get("positionKnown")):
+        if any(position.get(key) is not None for key in (
+                "actualSide", "actualEntryPrice", "actualSize", "action",
+                "tacticalDefense", "structuralInvalidation")):
+            errors.append("UNKNOWN_POSITION_HAS_MANAGEMENT_VALUES")
+        if position.get("targets"):
+            errors.append("UNKNOWN_POSITION_HAS_TARGETS")
+    return sorted(set(errors))
+
+
+def fail_closed_canonical(decision: dict, errors: list[str]) -> dict:
+    safe = dict(decision)
+    entry = dict(safe.get("newEntryDecision") or {})
+    entry.update({
+        "action": "WAIT", "canEnter": False,
+        "tradeStatus": "SYSTEM_CONFLICT",
+    })
+    safe.update({
+        "primaryAction": ((safe.get("positionManagement") or {}).get("action")
+                          if (safe.get("positionManagement") or {}).get("positionKnown")
+                          else "WAIT"),
+        "primaryReason": "系統發現決策資料互相矛盾，已暫停新的進場建議並重新計算。",
+        "executionAllowed": False,
+        "canonicalNextTrigger": {
+            "setupId": None, "timeframe": "15M",
+            "condition": "recalculateCanonicalDecision", "status": "PENDING",
+            "source": "CLOSED_CANDLE", "label": "等待系統完成一致性重新計算",
+        },
+        "primaryNextTrigger": {
+            "setupId": None, "timeframe": "15M",
+            "condition": "recalculateCanonicalDecision", "status": "PENDING",
+            "source": "CLOSED_CANDLE", "label": "等待系統完成一致性重新計算",
+        },
+        "consistencyErrors": errors,
+        "newEntryDecision": entry,
+    })
+    completeness = dict(safe.get("decisionCompleteness") or {})
+    completeness["valid"] = False
+    completeness["errors"] = list(dict.fromkeys(
+        list(completeness.get("errors") or []) + errors))
+    safe["decisionCompleteness"] = completeness
+    return safe

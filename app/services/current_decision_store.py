@@ -40,6 +40,22 @@ def get_current_final_decision(symbol: str = "XAUUSD") -> dict:
         return dict(row.payload or {}) if row else {}
 
 
+def get_canonical_market_bias(symbol: str = "XAUUSD") -> str:
+    """Return the one durable market bias used by UI and notifications.
+
+    Data-health code must gate execution, never derive or overwrite direction.
+    """
+    decision = get_current_final_decision(symbol)
+    value = str(decision.get("marketBias") or decision.get("direction") or
+                "NEUTRAL").upper()
+    return {"LONG": "BULLISH", "SHORT": "BEARISH"}.get(
+        value, value if value in {"BULLISH", "BEARISH", "NEUTRAL"} else "NEUTRAL")
+
+
+def get_canonical_state_version(symbol: str = "XAUUSD") -> int:
+    return int(get_current_final_decision(symbol).get("decisionVersion") or 0)
+
+
 def publish_current_final_decision(symbol: str, decision: dict) -> tuple[dict, bool]:
     """CAS-like publish; older candle/data/worker results can never roll state back."""
     now = datetime.now(timezone.utc)
@@ -91,7 +107,8 @@ def publish_current_final_decision(symbol: str, decision: dict) -> tuple[dict, b
         row.scenario_version = int(incoming.get("selectedScenarioVersion") or 1)
         row.lineage_id = str(incoming.get("selectedLineageId") or "")
         row.action = str(incoming.get("finalAction") or "WAIT")
-        row.direction = str(incoming.get("direction") or "NEUTRAL")
+        row.direction = str(incoming.get("marketBias") or incoming.get("direction") or
+                            "NEUTRAL")
         row.source_candle_close_time = incoming_candle
         row.source_data_version = incoming_data
         row.evaluated_at = incoming_eval
@@ -119,13 +136,13 @@ def publish_current_final_decision(symbol: str, decision: dict) -> tuple[dict, b
                 event = db.execute(select(DecisionEvent).where(
                     DecisionEvent.event_id == notification.event_id)).scalar_one_or_none()
                 event_type = str((event.payload or {}).get("event_type") if event else "")
-                # A newer dashboard decision invalidates old entry advice only.
-                # DATA/position/setup lifecycle events are historical facts and
-                # must still be delivered exactly once.
+                # Every queued user-facing message is a snapshot of one canonical
+                # version.  Historical facts remain in DecisionEvent, but a stale
+                # snapshot must never be delivered as current advice.
                 legacy_event = bool(event and not (event.payload or {}).get("eventVersion"))
-                if legacy_event or event_type in {"ENTRY_READY", "ENTRY_NOW"}:
+                if legacy_event or event_type != "TEST_NOTIFICATION":
                     notification.status = "CANCELLED"
-                    notification.cancellation_reason = "CANCELLED_SUPERSEDED"
+                    notification.cancellation_reason = "STALE_STATE_VERSION"
                     notification.updated_at = now
         return incoming, True
 

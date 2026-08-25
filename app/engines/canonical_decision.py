@@ -93,7 +93,7 @@ def _candidate_view(candidate: dict, current: float | None, minimum_rr: float,
         expires_at=str(candidate.get("expires_at") or "") or None,
         evaluated_at=evaluated_at or None,
     )
-    return {
+    result = {
         "setupId": str(candidate.get("scenario_id") or ""),
         "setupVersion": int(candidate.get("scenario_version") or 1),
         "opportunityType": str(candidate.get("setup_type") or ""),
@@ -116,6 +116,7 @@ def _candidate_view(candidate: dict, current: float | None, minimum_rr: float,
         "active": (raw_state not in TERMINAL_SETUP_STATES and
                    validity["scenarioValidity"] not in {"INVALIDATED", "STALE"}),
     }
+    return result
 
 
 def _setup_score(item: dict, bias: str) -> int:
@@ -178,11 +179,14 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
                    "BEARISH" if "BEAR" in market_bias else "NEUTRAL")
     for item in candidates:
         item["setupScore"] = _setup_score(item, market_bias)
-    selected_id = str(final.get("selectedScenarioId") or "")
-    engine_selected = next((item for item in candidates if item["setupId"] == selected_id), None)
+    engine_selected_id = str(final.get("selectedScenarioId") or "")
+    engine_selected = next(
+        (item for item in candidates if item["setupId"] == engine_selected_id), None)
     ranked = sorted(candidates, key=lambda item: item["setupScore"], reverse=True)
-    selected = (engine_selected if bool(final.get("canEnter")) and engine_selected
-                else ranked[0] if ranked else {})
+    # The state-machine selection remains authoritative in WAIT as well as
+    # READY. Re-ranking to another setup only for presentation used to produce
+    # a next trigger that did not belong to the engine's active setup.
+    selected = engine_selected or (ranked[0] if ranked else {})
     pullbacks = [item for item in candidates if item["route"] == "PULLBACK"]
     breakouts = [item for item in candidates if item["route"] == "BREAKOUT"]
     best_pullback = max(pullbacks, key=lambda item: item.get("riskReward") or -1,
@@ -243,7 +247,8 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
     can_enter = (bool(final.get("canEnter")) and rr_ok and not stale
                   and entry_confirmation == "READY"
                   and closed_available and confirmation_closed
-                  and scenario_validity == "ACTIVE")
+                  and scenario_validity == "ACTIVE"
+                  and signal_score is not None)
     if str(decision_health.get("defenseState") or "") == "BROKEN_CONFIRMED":
         can_enter = False
     conflict = str(rejection.get("momentum_price_conflict") or "NONE")
@@ -368,14 +373,6 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
             management_mode = "TAKE_PROFIT_WATCH"
     action = normalized_position_action if known else entry_action
     actual_entry = _number(position.get("entry_price"))
-    position_rr = None
-    if (known and actual_entry is not None and selected
-            and selected.get("tacticalStop") is not None and selected.get("targets")):
-        stop = float(selected["tacticalStop"])
-        target = float(selected["targets"][0])
-        risk = actual_entry - stop if position_side == "LONG" else stop - actual_entry
-        reward = target - actual_entry if position_side == "LONG" else actual_entry - target
-        position_rr = round(reward / risk, 3) if risk > 0 else None
     tp_facts = [fact for fact in data.get("signal_facts") or []
                 if str(fact.get("event_type") or "").startswith("TAKE_PROFIT_")]
     reason_codes = []
@@ -439,6 +436,20 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
         })
     notification_route = "POSITION_MANAGEMENT" if known else "NEW_ENTRY"
     primary_position = per_position[0] if per_position else {}
+    # Position metrics may only use the actual position's own persisted plan.
+    # A new-entry candidate can belong to a different setup/direction and must
+    # never silently become the stop or target of an existing holding.
+    position_rr = None
+    position_stop = _number(primary_position.get("tacticalDefenseLevel"))
+    position_targets = [float(value) for value in primary_position.get("targets") or []
+                        if isinstance(value, (int, float))]
+    if known and actual_entry is not None and position_stop is not None and position_targets:
+        target = position_targets[0]
+        risk = (actual_entry - position_stop if position_side == "LONG"
+                else position_stop - actual_entry)
+        reward = (target - actual_entry if position_side == "LONG"
+                  else actual_entry - target)
+        position_rr = round(reward / risk, 3) if risk > 0 else None
     completeness_errors = []
     market_bias_value = market_bias
     if not market_bias_value:
@@ -455,7 +466,7 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
                 completeness_errors.append("ACTUAL_ENTRY_MISSING")
             if item.get("tacticalDefenseLevel") is None:
                 completeness_errors.append("TACTICAL_DEFENSE_MISSING")
-    return {
+    result = {
         "schemaVersion": "canonical-trading-decision-v2",
         "timestamp": decision_timestamp,
         "bias4h": _timeframe_bias(normalized, "4H"),
@@ -474,6 +485,7 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
         "primaryReason": primary_reason,
         "canonicalNextTrigger": canonical_trigger,
         "primaryNextTrigger": canonical_trigger,
+        "engineSelectedSetupId": engine_selected_id or None,
         "activeSetupId": selected.get("setupId") or None,
         "activeSetupType": selected.get("route") or None,
         "setupState": setup_state,
@@ -609,20 +621,20 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
             "positionKnown": known,
             "collapsedByDefault": not known,
             "message": ("未取得實際持倉資料" if not known else None),
-            "actualSide": position_side,
-            "actualEntryPrice": actual_entry,
-            "actualSize": _number(position.get("position_size")),
+            "actualSide": position_side if known else None,
+            "actualEntryPrice": actual_entry if known else None,
+            "actualSize": (_number(position.get("position_size")) if known else None),
             "currentPrice": current,
             "unrealizedPnl": _number(position.get("unrealized_pnl")),
-            "action": normalized_position_action,
+            "action": normalized_position_action if known else None,
             "managementMode": management_mode,
             "riskRewardFromActualEntry": position_rr,
             "tacticalDefense": (primary_position.get("tacticalDefenseLevel")
-                                  if known else selected.get("tacticalStop") if selected else None),
+                                  if known else None),
             "structuralInvalidation": (primary_position.get("structuralInvalidationLevel")
-                                        if known else normalized.get("structuralInvalidationLevel")),
+                                        if known else None),
             "structuralInvalidationNote": normalized.get("structuralInvalidationNote") or "",
-            "targets": selected.get("targets") if selected else [],
+            "targets": position_targets if known else [],
             "perPositionDecisions": per_position,
             "hardRiskStop": ((dynamic_profit.get("positions") or [{}])[0]).get(
                 "hard_risk_stop") if dynamic_profit.get("positions") else None,
@@ -640,3 +652,10 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
             "requiresIndependentOppositeConfirmation": True,
         },
     }
+    from app.engines.decision_consistency import (
+        fail_closed_canonical,
+        validate_canonical_contract,
+    )
+    consistency_errors = validate_canonical_contract(result)
+    return (fail_closed_canonical(result, consistency_errors)
+            if consistency_errors else result)

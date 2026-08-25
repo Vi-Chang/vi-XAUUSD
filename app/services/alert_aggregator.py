@@ -275,6 +275,12 @@ def notification_fingerprint(event: dict) -> str:
 
 def alert_category(event: dict) -> str:
     event_type = str(event.get("event_type") or "")
+    if event_type == "EARLY_ENTRY_PREPARE":
+        return "WATCHING"
+    if event_type == "EARLY_ENTRY_MISSED":
+        return "MISSED_ENTRY"
+    if event_type == "EARLY_ENTRY_INVALIDATED":
+        return "SCENARIO_INVALIDATED"
     if event_type in {
         "FAKE_BREAKOUT_CONFIRMED", "OPPOSITE_SETUP_CONFIRMED",
         "RECOVERY_SETUP_INVALIDATED",

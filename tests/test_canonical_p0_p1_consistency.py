@@ -74,6 +74,8 @@ def test_four_setups_are_ranked_to_one_primary():
     canonical = build_canonical_decision(data, data["final_decision_state"])
     assert canonical["primarySetup"]["setupId"] == "S4"
     assert len(canonical["alternativeSetups"]) == 3
+    assert sum(bool(item["canEnter"]) for item in [
+        canonical["primarySetup"], *canonical["alternativeSetups"]]) <= 1
 
 
 def test_long_take_profit_without_bearish_confirmation_never_sells():

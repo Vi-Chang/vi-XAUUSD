@@ -137,6 +137,45 @@ def _closed_candle_text(candle: dict) -> str:
 
 def format_decision_message(event: dict) -> str:
     canonical_type = str(event.get("event_type") or "")
+    if canonical_type in {
+            "EARLY_ENTRY_PREPARE", "EARLY_ENTRY_MISSED", "EARLY_ENTRY_INVALIDATED"}:
+        side = str(event.get("candidateSide") or event.get("direction") or "LONG")
+        word = "做多" if side == "LONG" else "做空"
+        zone = event.get("candidateZone") or event.get("entryZone") or {}
+        low = zone.get("low") if zone.get("low") is not None else zone.get("lower")
+        high = zone.get("high") if zone.get("high") is not None else zone.get("upper")
+        zone_text = (f"{float(low):.2f}–{float(high):.2f}"
+                     if isinstance(low, (int, float)) and isinstance(high, (int, float))
+                     else "依最新結構計算")
+        defense = event.get("candidateDefenseLevel") or event.get("stopLoss")
+        reasons = list(event.get("candidateReasons") or [])
+        plain_reason = {
+            "SWEEP_RECLAIM": "價格掃過關鍵位後快速收回",
+            "FAILED_BREAKDOWN": "下方跌破沒有延續，價格重新收回",
+            "FAILED_BREAKOUT": "上方突破沒有延續，價格重新跌回",
+            "SUPPORT_REJECTION": "支撐區出現明顯承接",
+            "RESISTANCE_REJECTION": "壓力區出現明顯賣壓",
+            "MICRO_HIGHER_LOW": "短線低點開始墊高",
+            "MICRO_LOWER_HIGH": "短線高點開始下移",
+            "BREAKOUT_COMPRESSION": "價格靠近突破位並收斂",
+        }.get(reasons[0] if reasons else "", "價格與結構正在形成候選機會")
+        price = float(event.get("currentPrice") or 0)
+        if canonical_type == "EARLY_ENTRY_PREPARE":
+            lines = [f"🟡【準備{word}】", f"現價：{price:.2f}",
+                     f"候選區：{zone_text}", f"發生什麼事：{plain_reason}",
+                     "現在：先準備，不是正式進場訊號。",
+                     "下一步：等待已收盤 15 分鐘 K 棒通過正式進場確認。"]
+            if isinstance(defense, (int, float)):
+                verb = "跌破" if side == "LONG" else "站上"
+                lines.append(f"失效：15M 收盤{verb} {float(defense):.2f}")
+            return "\n".join(lines)
+        if canonical_type == "EARLY_ENTRY_MISSED":
+            return "\n".join([f"⚪【{word}機會已錯過】", f"現價：{price:.2f}",
+                                f"原候選區：{zone_text}", "價格已離開安全進場區，目前不要追價。",
+                                "下一步：等待新的回踩或突破回測機會。"])
+        return "\n".join([f"🔴【{word}準備取消】", f"現價：{price:.2f}",
+                            "剛才形成中的結構已失效，目前不要進場。",
+                            "下一步：等待新的結構形成。"])
     recovery = event.get("fakeBreakoutRecovery") or {}
     if canonical_type in {
         "FAKE_BREAKOUT_CONFIRMED", "OPPOSITE_SETUP_CONFIRMED",

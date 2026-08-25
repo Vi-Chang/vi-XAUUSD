@@ -95,6 +95,7 @@ class Settings(BaseSettings):
     alert_aggregation_window_seconds: int = 4
     notify_cooldown_seconds: int = 900
     telegram_wait_cooldown_seconds: int = 1800
+    telegram_payload_dedup_cooldown_seconds: int = 1800
     telegram_trigger_change_atr_ratio: float = 0.10
     telegram_trigger_change_min_delta: float = 0.50
     telegram_entry_zone_change_atr_ratio: float = 0.10
@@ -247,6 +248,11 @@ class Settings(BaseSettings):
     decision_assistant_missed_entry_atr: float = 0.70
     decision_assistant_trigger_hysteresis_atr: float = 0.10
     decision_assistant_min_price_delta: float = 0.50
+    # Pre-entry warning thresholds. These never relax the canonical entry gate.
+    early_entry_neighborhood_atr_mult: float = 0.30
+    early_entry_breakout_near_atr_mult: float = 0.35
+    early_entry_max_extension_atr_mult: float = 0.70
+    early_entry_min_score: int = 65
     entry_anchor_max_distance_atr_mult: float = 1.20
     entry_anchor_max_distance_price_pct: float = 0.0035
     closed_15m_context_max_staleness_seconds: int = 20 * 60

@@ -211,7 +211,10 @@ def evaluate_decision_assistant(data: dict, *, latest_candle: dict | None = None
     elif location_state in {"CHASE_LONG", "CHASE_SHORT"}:
         can_enter = False
         action = "不要追價"
-        trade_state = "MISSED_ENTRY" if status in READY else "NO_TRADE"
+        # This compatibility summary has no persistent proof that an
+        # ENTRY_READY notification was delivered.  Only setup_lifecycle may
+        # promote a previously notified opportunity to MISSED_ENTRY.
+        trade_state = "CONFIRMED_WAIT_RETEST" if confirmation_valid else "WAIT_CONFIRMATION"
     elif confirmation_valid and location_state in {
             "ABOVE_LONG_ZONE", "BELOW_SHORT_ZONE", "WAIT_BEARISH_RECONFIRMATION",
             "WAIT_HIGHER_PRICE"}:
@@ -241,7 +244,7 @@ def evaluate_decision_assistant(data: dict, *, latest_candle: dict | None = None
     scenario_version = int(selected.get("scenarioVersion") or selected.get("setupVersionNumber") or 1)
     event_type = {
         "ENTRY_READY": "entry_ready", "ENTRY_APPROACHING": "approach_entry",
-        "MISSED_ENTRY": "missed_entry", "WEAK_BREAKOUT": "breakout_confirmed",
+        "WEAK_BREAKOUT": "breakout_confirmed",
         "SCENARIO_INVALIDATED": "scenario_invalidated", "NO_TRADE": "no_trade",
         "MANAGE": "hold",
     }.get(trade_state, "")

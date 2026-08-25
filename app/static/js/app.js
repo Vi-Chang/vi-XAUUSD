@@ -573,7 +573,8 @@ function renderDecisionHome(canonical, finalState) {
   if (critical) displayState = "INVALID";
   else if (entry.canEnter && entry.action === "BUY") displayState = "BUY";
   else if (entry.canEnter && entry.action === "SELL") displayState = "SELL";
-  else if (entry.tradeStatus === "ENTRY_READY") displayState = "READY";
+  // ENTRY_READY is presentation-safe only when the canonical permission gate
+  // also grants entry. A nested/legacy status can never promote the main card.
   const icons = {WAIT: "🟡", READY: "🟠", BUY: "🟢", SELL: "🔴", INVALID: "⚫"};
   $("home-live-price").textContent = livePrice == null ? "–" : fmt(livePrice);
   $("home-display-state").textContent = `${icons[displayState]} ${displayState}`;
@@ -712,7 +713,8 @@ function renderDecisionAssistant(v3, finalDecision = {}) {
     ["INVALIDATED", "STALE", "BLOCKED_BY_DATA"].includes(canonical.scenarioValidity);
   const canonicalZone = selected.entryZone || zone;
   $("v3-direction").textContent = `${side}｜15M ${canonical.behavior15m || "等待資料"}`;
-  $("v3-can-enter").textContent = finalDecision.canEnter ? "可以評估進場" : (finalDecision.humanSummary || v3.actionSummary);
+  $("v3-can-enter").textContent = canonical.newEntryDecision?.canEnter === true
+    ? "可以評估進場" : (canonical.primaryReason || finalDecision.humanSummary || v3.actionSummary);
   $("v3-entry-zone-label").textContent = executionLocked ? "原進場參數" : (selected.entryZoneLabel || "候選進場區");
   $("v3-entry-zone").textContent = executionLocked ? "暫不具執行效力" :
     (canonicalZone.low != null && canonicalZone.high != null ? `${fmt(canonicalZone.low)}–${fmt(canonicalZone.high)}` : "尚未形成");
@@ -950,7 +952,7 @@ function renderEntryPlan(plan) {
   const canonicalDecision = ((S.analysis || {}).decision_snapshot || {}).canonicalDecision || {};
   const entryPermitted = canonicalDecision.newEntryDecision?.canEnter === true;
   const contradictoryTriggered = plan.status === "ENTRY_TRIGGERED" && !entryPermitted;
-  const displayStatus = contradictoryTriggered ? "ENTRY_READY" : plan.status;
+  const displayStatus = contradictoryTriggered ? "WAIT_CONFIRMATION" : plan.status;
   const status = {
     SETUP_WATCH: "機會準備中", ENTRY_READY: "已到觀察區，等待 K 線確認",
     ENTRY_TRIGGERED: entryPermitted ? "條件完成，可依計畫執行" : "劇本已確認，等待可執行價格", INVALIDATED: "計畫已取消",

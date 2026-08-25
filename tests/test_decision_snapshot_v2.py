@@ -9,7 +9,11 @@ def _base(score=75):
         "timestamp_utc": "2026-08-21T10:00:01+00:00",
         "current_price": {"mid": 4600.0, "last_update": "2026-08-21T10:00:01+00:00", "provider": "test"},
         "data_quality": {"status": "GOOD"},
-        "normalized_analysis": {"marketDataStatus": "GOOD", "marketDataTimestamp": "2026-08-21T10:00:00+00:00"},
+        "normalized_analysis": {
+            "marketDataStatus": "GOOD", "marketDataTimestamp": "2026-08-21T10:00:00+00:00",
+            "lastClosedCandleTimestamp": "2026-08-21T09:45:00+00:00",
+            "lastClosedCandlePrice": 4599.0,
+        },
         "decision": {"signal_score": score, "can_enter": False, "trade_status": "WAIT_CONFIRMATION", "blocked_reason": "等待收盤"},
         "final_decision_state": {"state": "LONG_WATCH", "direction": "LONG", "confirmation": "15M 收盤站上 4601"},
         "trend_continuation_engine": {"marketType": "TREND_CONTINUATION_LONG", "selected": None},
@@ -22,7 +26,8 @@ def test_snapshot_separates_confidence_from_permission():
     assert snap["confidenceGrade"] == "B"
     assert snap["signalScore"] == 75
     assert snap["canEnter"] is False
-    assert snap["action"] == "WAIT_CONFIRMATION"
+    assert snap["action"] == "WAIT"
+    assert snap["tradeStatus"] == "WAIT_CONFIRMATION"
     assert snap["marketSession"]["name"] == "LONDON"
     assert snap["executionCost"]["estimatedRoundTripCost"] == 0.15
 
@@ -32,9 +37,9 @@ def test_data_health_fail_closed():
     data["current_price"]["mid"] = None
     snap = build_decision_snapshot(data)
     assert snap["dataHealth"]["status"] == "INVALID_PRICE"
-    assert snap["state"] == "DATA_STALE"
+    assert snap["state"] == "WAIT_DATA_CONFIRMATION"
+    assert snap["action"] == "WAIT"
     assert snap["canEnter"] is False
-    assert snap["action"] == "DATA_UNAVAILABLE"
 
 
 def test_source_divergence_is_not_tradable():
@@ -55,7 +60,8 @@ def test_quote_and_closed_candle_large_gap_waits_for_sync():
     assert health["healthy"] is False
     assert "等待下一根K棒更新" in health["reasons"][0]
     snapshot = build_decision_snapshot(data)
-    assert snapshot["state"] == "DATA_STALE"
+    assert snapshot["state"] == "WAIT_DATA_CONFIRMATION"
+    assert snapshot["action"] == "WAIT"
     assert snapshot["canEnter"] is False
 
 

@@ -116,6 +116,63 @@ def test_stale_data_forces_wait_even_when_engine_says_enter():
 
 def test_unknown_position_is_explicit_not_hypothetical():
     data = payload()
+    data["position_management"] = {
+        "has_position": False, "entry_price": 4611.0, "position_size": 9,
+        "recommended_action": "EXIT", "stop_loss": 4600.0,
+    }
     position = build_canonical_decision(data, data["final_decision_state"])["positionManagement"]
     assert not position["positionKnown"]
     assert position["message"] == "未取得實際持倉資料"
+    assert position["actualEntryPrice"] is None
+    assert position["actualSize"] is None
+    assert position["actualSide"] is None
+    assert position["action"] is None
+    assert position["tacticalDefense"] is None
+    assert position["targets"] == []
+
+
+def test_engine_selected_setup_does_not_change_between_wait_cards():
+    data = payload()
+    final = data["final_decision_state"]
+    final.update({"state": "WAIT", "finalAction": "WAIT", "canEnter": False})
+    alternative = deepcopy(final["signalCandidates"][0])
+    alternative.update({
+        "scenario_id": "OTHER-2", "strength": 99,
+        "entry_zone": (4630.0, 4632.0), "trigger_price": 4633.0,
+    })
+    final["signalCandidates"].append(alternative)
+    canonical = build_canonical_decision(data, final)
+    assert canonical["activeSetupId"] == "LONG-1"
+    assert canonical["newEntryDecision"]["selectedSetup"]["setupId"] == "LONG-1"
+    assert canonical["canonicalNextTrigger"]["setupId"] == "LONG-1"
+
+
+def test_snapshot_cannot_republish_raw_ready_when_canonical_rr_blocks():
+    data = payload(rr=.87)
+    snapshot = build_decision_snapshot(data)
+    assert snapshot["canEnter"] is False
+    assert snapshot["action"] == "WAIT"
+    assert snapshot["tradeStatus"] == "NO_ENTRY_RR"
+    assert snapshot["finalDecision"]["action"] == "WAIT"
+
+
+def test_actual_position_management_does_not_borrow_candidate_targets():
+    data = payload()
+    data["position_management"] = {
+        "has_position": True, "position_side": "LONG", "entry_price": 4642.87,
+        "position_size": .2, "recommended_action": "HOLD", "stop_loss": 4630.0,
+    }
+    position = build_canonical_decision(data, data["final_decision_state"])["positionManagement"]
+    assert position["tacticalDefense"] == 4630.0
+    assert position["targets"] == []
+    assert position["riskRewardFromActualEntry"] is None
+
+
+def test_final_canonical_validator_fails_closed_on_setup_mismatch():
+    data = payload()
+    data["final_decision_state"]["selectedScenarioId"] = "MISSING"
+    canonical = build_canonical_decision(data, data["final_decision_state"])
+    assert canonical["primaryAction"] == "WAIT"
+    assert canonical["newEntryDecision"]["canEnter"] is False
+    assert canonical["newEntryDecision"]["tradeStatus"] == "SYSTEM_CONFLICT"
+    assert "ENGINE_CANONICAL_SETUP_CONFLICT" in canonical["consistencyErrors"]
