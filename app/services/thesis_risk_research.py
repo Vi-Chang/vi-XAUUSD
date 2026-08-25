@@ -71,7 +71,7 @@ def compare_case(case: dict) -> list[dict]:
 def aggregate_comparison(cases: list[dict], *, minimum_sample: int = 30) -> dict:
     rows = [row for case in cases for row in compare_case(case)]
     strategies = sorted({str(row["strategyType"]) for row in rows})
-    output = {}
+    output: dict[str, dict[str, dict[str, object]]] = {}
     for strategy in strategies:
         output[strategy] = {}
         for policy in POLICIES:

@@ -64,9 +64,13 @@ def _planned_distances(row: AnalysisRun) -> tuple[float | None, float | None]:
         plan = result.get("entry_engine") or {}
         entry, stop, target = (plan.get("suggested_entry"), plan.get("stop_loss"),
                                plan.get("take_profit_1"))
-        if not all(isinstance(value, (int, float)) for value in (entry, stop, target)) or entry <= 0:
+        if not (isinstance(entry, (int, float))
+                and isinstance(stop, (int, float))
+                and isinstance(target, (int, float))) or entry <= 0:
             return None, None
-        return abs(entry - stop) / entry * 100, abs(target - entry) / entry * 100
+        entry_value, stop_value, target_value = float(entry), float(stop), float(target)
+        return (abs(entry_value - stop_value) / entry_value * 100,
+                abs(target_value - entry_value) / entry_value * 100)
     if signal_mode(row) == "SHADOW":
         shadow = result.get("tactical_shadow") or {}
         entry, stop = shadow.get("referencePrice"), shadow.get("invalidationLevel")
@@ -142,11 +146,14 @@ def _walk_forward_validation(values_by_horizon: dict[str, list[float]]) -> dict[
 
 def performance_report(db, *, limit: int = 5000) -> dict:
     rows = db.execute(select(AnalysisRun).order_by(AnalysisRun.run_time.desc()).limit(limit)).scalars().all()
-    buckets = {name: defaultdict(list) for name in
+    buckets: dict[str, defaultdict[str, list[float]]] = {
+        name: defaultdict(list) for name in
                ("overall", "direction", "score_band", "market_state", "session",
                 "setup_state", "signal_mode", "stop_source")}
-    excursions = {name: defaultdict(lambda: {"mfe": [], "mae": []}) for name in buckets}
-    planned = {name: defaultdict(lambda: {"risk": [], "target": []}) for name in buckets}
+    excursions: dict[str, defaultdict[str, dict[str, list[float]]]] = {
+        name: defaultdict(lambda: {"mfe": [], "mae": []}) for name in buckets}
+    planned: dict[str, defaultdict[str, dict[str, list[float]]]] = {
+        name: defaultdict(lambda: {"risk": [], "target": []}) for name in buckets}
     outcomes_by_horizon: dict[str, list[float]] = defaultdict(list)
     eligible = 0
     for row in rows:

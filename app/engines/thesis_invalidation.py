@@ -151,7 +151,8 @@ def evaluate_invalidation(
             direction, float(closed_price), hard):
         new, reason = "HARD_INVALIDATED", "EXIT_HARD_INVALIDATION"
     elif old == "SOFT_INVALIDATION_PENDING" and new_candle:
-        if _reclaimed(direction, float(closed_price), warning):
+        if isinstance(closed_price, (int, float)) and _reclaimed(
+                direction, float(closed_price), warning):
             new, reason = "RECOVERED", "HOLD_RECOVERED"
             distance = abs(float(closed_price) - warning)
             state["recoveryQuality"] = max(1, min(100, round(

@@ -16,6 +16,7 @@ from __future__ import annotations
 import gc
 import logging
 from datetime import datetime, timedelta, timezone
+from typing import Any, cast
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -30,10 +31,10 @@ class AppState:
     """行程內共享狀態(main.py 建立;heartbeat 讀取做死亡偵測)。"""
 
     def __init__(self) -> None:
-        self.provider = None
-        self.secondary = None
-        self.fast_provider = None  # 第 1 層快速報價源(可為 None → 降級)
-        self.notifier = None
+        self.provider: Any = None
+        self.secondary: Any = None
+        self.fast_provider: Any = None  # 第 1 層快速報價源(可為 None → 降級)
+        self.notifier: Any = None
         self.latest_result: dict | None = None
         self.last_job_run: dict[str, datetime] = {}
         self.last_decision_action: str | None = None
@@ -55,7 +56,7 @@ class AppState:
         self.last_quote_ok_at: datetime | None = None  # 最後一次成功取得報價
         self.scheduler_started = False  # 排程是否已啟動
         self.scheduler_follower = False
-        self.scheduler_ownership = None
+        self.scheduler_ownership: Any = None
         self.last_market_freshness: str | None = None
         self.last_trigger_cross_key: str | None = None
         self.last_market_data_health: str | None = None
@@ -492,6 +493,7 @@ async def run_full_analysis(*, trigger: str, reason_zh: str | None) -> None:
                     {"type": "analysis_degraded", "data": degraded_result}
                 )
             return
+        result = cast(Any, result)
         state.latest_result = result.model_dump()
         state.last_full_analysis = datetime.now(timezone.utc)
         # Data-health Telegram events are emitted by the canonical decision

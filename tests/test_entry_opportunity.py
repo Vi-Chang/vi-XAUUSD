@@ -42,6 +42,33 @@ def test_case_a_and_f_shallow_ready_is_not_blocked_by_higher_rr_deep_zone():
     assert deep["estimated_rr"] > shallow["estimated_rr"]
     assert state["primaryOpportunityId"] == shallow["opportunity_id"]
     assert state["strongTrendShallowRetraceMode"] is True
+    assert shallow["support_role"] == "PRIMARY_TACTICAL_SUPPORT"
+    assert deep["support_role"] == "SECONDARY_DEEP_SUPPORT"
+    assert deep["primary_eligible"] is False
+
+
+def test_candidate_zone_stays_locked_while_same_setup_is_active():
+    first, _ = evaluate_entry_opportunities(payload())
+    initial = by_type(first, "SHALLOW_PULLBACK")
+    changed = payload(price=98.0)
+    changed["normalized_analysis"]["confirmationLevels"][0]["price"] = 93.0
+    second, _ = evaluate_entry_opportunities(changed, first)
+    current = by_type(second, "SHALLOW_PULLBACK")
+    assert current["opportunity_id"] == initial["opportunity_id"]
+    assert current["entry_zone"] == initial["entry_zone"]
+    assert current["zone_transition_reason"] == "ACTIVE_ZONE_LOCKED"
+
+
+def test_deep_support_promotes_only_after_tactical_support_is_lost():
+    first, _ = evaluate_entry_opportunities(payload())
+    broken_data = payload(
+        price=91.0,
+        candle={"open": 94.0, "high": 95.0, "low": 90.0, "close": 91.0})
+    second, _ = evaluate_entry_opportunities(broken_data, first)
+    shallow, deep = by_type(second, "SHALLOW_PULLBACK"), by_type(second, "DEEP_PULLBACK")
+    assert shallow["support_role"] == "PRIMARY_TACTICAL_INVALIDATED"
+    assert deep["support_role"] == "PRIMARY_AFTER_TACTICAL_BREAK"
+    assert second["supportSelectionReason"] == "TACTICAL_SUPPORT_CONFIRMED_LOST"
 
 
 def test_case_c_and_g_zone_touch_only_shows_estimated_rr_until_closed_confirmation():

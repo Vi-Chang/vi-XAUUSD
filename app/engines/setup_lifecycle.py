@@ -40,6 +40,9 @@ def evaluate_setup_lifecycle(
     invalidated_at = previous.get("invalidatedAt") if same_setup else None
     archived_at = previous.get("archivedAt") if same_setup else None
     entry_window_opened_at = previous.get("entryWindowOpenedAt") if same_setup else None
+    zone_touched = bool(previous.get("zoneTouched")) if same_setup else False
+    setup_armed = bool(previous.get("setupArmed")) if same_setup else False
+    entry_was_actionable = bool(previous.get("entryWasActionable")) if same_setup else False
 
     if invalidated:
         if old == "INVALIDATED":
@@ -58,19 +61,24 @@ def evaluate_setup_lifecycle(
             entry_zone_low is not None and entry_zone_high is not None
             and entry_zone_low <= current_price <= entry_zone_high
         )
+        zone_touched = zone_touched or in_zone
         if not confirmed:
             desired, reason = "WAIT_CONFIRMATION", "最新已收盤 15M 尚未完成方向確認"
         else:
             confirmed_at = confirmed_at or _now(calculated_at)
             confirmed_candle = confirmed_candle or closed_candle_time
+            setup_armed = True
             # MISSED_ENTRY is terminal for this setup and is evaluated only after
-            # an executable opportunity was both reached and actually notified.
-            if was_ready and notified_at and not in_zone:
+            # an executable opportunity was reached, armed, actionable and
+            # actually notified.  A never-touched candidate cannot be missed.
+            if (zone_touched and setup_armed and entry_was_actionable
+                    and was_ready and notified_at and not in_zone):
                 desired, reason = "MISSED_ENTRY", "已通知的進場機會其後離開允許進場區"
                 missed_at = missed_at or _now(calculated_at)
             elif in_zone and risk_controls_passed:
                 desired, reason = "ENTRY_READY", "收盤確認、進場區與風控條件均已通過"
                 was_ready = True
+                entry_was_actionable = True
                 ready_at = ready_at or _now(calculated_at)
                 entry_window_opened_at = entry_window_opened_at or _now(calculated_at)
             else:
@@ -98,6 +106,9 @@ def evaluate_setup_lifecycle(
         "entryWindowOpenedAt": entry_window_opened_at,
         "entryNotificationSentAt": notified_at,
         "wasEntryReady": was_ready,
+        "zoneTouched": zone_touched,
+        "setupArmed": setup_armed,
+        "entryWasActionable": entry_was_actionable,
         "missedAt": missed_at,
         "invalidatedAt": invalidated_at,
         "archivedAt": archived_at,
@@ -108,4 +119,5 @@ def evaluate_setup_lifecycle(
 def mark_entry_notification_sent(lifecycle: dict, *, sent_at: str) -> dict:
     if lifecycle.get("state") != "ENTRY_READY":
         return lifecycle
-    return {**lifecycle, "entryNotificationSentAt": sent_at, "wasEntryReady": True}
+    return {**lifecycle, "entryNotificationSentAt": sent_at, "wasEntryReady": True,
+            "zoneTouched": True, "setupArmed": True, "entryWasActionable": True}

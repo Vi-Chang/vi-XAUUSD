@@ -68,6 +68,7 @@ def detect_fvg(df: pd.DataFrame, timeframe: str, *, atr: float | None = None,
             filled = bool((later_highs >= hi).any()) if len(later_highs) else False
         if filled:
             continue
+        assert lo is not None and hi is not None
         zones.append(FvgZone("", direction, timeframe, round(lo, 4), round(hi, 4),
                              times[i].isoformat()))
 

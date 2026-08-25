@@ -91,13 +91,13 @@ def classify_tactical_setup(*, support_state: str, weakness_state: str,
             message=(f"15M 跌破後回測 {support:.2f} 失敗，空方條件完成；"
                      f"失效價 {invalidation:.2f}。"))
 
-    missing = ("等待反彈回測失敗" if not retest_failed
-               else f"至下一支撐的盈虧比尚未達 {min_rr:.1f}")
+    missing_detail = ("等待反彈回測失敗" if not retest_failed
+                      else f"至下一支撐的盈虧比尚未達 {min_rr:.1f}")
     return TacticalSetup(
         tactical_bias="bearish", setup_state="SHORT_WATCH",
         trigger_level=support, invalidation_level=invalidation, expires_at=expires,
         next_check_time=next_check,
-        missing_condition=missing,
-        message=(f"15M 空方結構已確認；{missing}。"
+        missing_condition=missing_detail,
+        message=(f"15M 空方結構已確認；{missing_detail}。"
                  + ("4H/1H 仍偏多，僅降低信心，不否決短空。"
                     if trend_bias == "bullish" else "")))

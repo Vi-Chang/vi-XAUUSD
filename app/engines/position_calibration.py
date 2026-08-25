@@ -8,7 +8,7 @@ def calibration_report(cases: Iterable[dict]) -> dict:
     rows = list(cases)
     false_exits_new = false_exits_legacy = expected_holds = 0
     false_blocks = 0
-    horizon = {1: [], 2: [], 4: [], 8: []}
+    horizon: dict[int, list[float]] = {1: [], 2: [], 4: [], 8: []}
     for case in rows:
         expected_exit = bool(case.get("expected_exit"))
         context_complete = bool(case.get("context_complete"))

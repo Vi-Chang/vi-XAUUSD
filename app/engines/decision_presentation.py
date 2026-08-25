@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal, cast
 from zoneinfo import ZoneInfo
 
 from app.engines.confidence import confidence_label, normalize_signal_score
@@ -138,7 +139,8 @@ def _closed_candle_text(candle: dict) -> str:
 def format_decision_message(event: dict) -> str:
     canonical_type = str(event.get("event_type") or "")
     if canonical_type in {
-            "EARLY_ENTRY_WATCH", "EARLY_ENTRY_PREPARE", "EARLY_ENTRY_MISSED",
+            "EARLY_ENTRY_WATCH", "EARLY_ENTRY_PREPARE", "EARLY_ENTRY_REPLACED",
+            "EARLY_ENTRY_MISSED",
             "EARLY_ENTRY_INVALIDATED"}:
         side = str(event.get("candidateSide") or event.get("direction") or "LONG")
         word = "做多" if side == "LONG" else "做空"
@@ -161,6 +163,14 @@ def format_decision_message(event: dict) -> str:
             "BREAKOUT_COMPRESSION": "價格靠近突破位並收斂",
         }.get(reasons[0] if reasons else "", "價格與結構正在形成候選機會")
         price = float(event.get("currentPrice") or 0)
+        if canonical_type == "EARLY_ENTRY_REPLACED":
+            verb = "重新站回" if side == "LONG" else "重新跌回"
+            return "\n".join([
+                f"🟡【新的{word}機會形成】", f"現價：{price:.2f}",
+                f"新觀察區：{zone_text}",
+                "原因：舊候選區已失效，系統已立即依最新短線結構重新掃描。",
+                f"下一步：等待15M收盤{verb}新確認位置，通過風控後才可進場。",
+            ])
         if canonical_type == "EARLY_ENTRY_WATCH":
             lines = [f"👀【開始留意{word}機會】", f"現價：{price:.2f}",
                      f"觀察區：{zone_text}",
@@ -628,11 +638,11 @@ def format_decision_message(event: dict) -> str:
     data_time = _local_time(str(event.get("calculatedAt") or ""))
     state = str(event.get("currentState") or "WAIT")
     if state in {"BULLISH_RESTORED", "SHORT_TERM_BULLISH_RESTORED"}:
-        level = event.get("triggerLevel")
+        restored_level = event.get("triggerLevel")
         return "\n".join([
             "🟢【短線重新轉強】",
-            (f"15分鐘已收盤站回 {float(level):.2f} 上方。"
-             if isinstance(level, (int, float)) else "15分鐘已收盤站回重新轉強位置。"),
+            (f"15分鐘已收盤站回 {float(restored_level):.2f} 上方。"
+             if isinstance(restored_level, (int, float)) else "15分鐘已收盤站回重新轉強位置。"),
             "原本的短線轉弱判斷已取消。",
             "目前重新評估突破進場與回踩進場。",
         ])
@@ -705,8 +715,9 @@ def _format_double_sweep(event: dict, state: dict) -> str:
     if sample < 20:
         statistical = f"歷史同類樣本只有 {sample} 筆，暫不影響買賣判斷"
     else:
+        bias_key = str(profile.get("directionalBias") or "")
         bias = {"UP": "偏向後續上行", "DOWN": "偏向後續下行"}.get(
-            profile.get("directionalBias"), "沒有明確方向")
+            bias_key, "沒有明確方向")
         statistical = f"歷史同類 {sample} 筆，{bias}；剩餘統計優勢 {float(lifecycle.get('doubleSweepEdgeRemaining') or 0) * 100:.0f}%"
     return "\n".join([
         "🔎【XAUUSD｜雙邊掃價已確認】",
@@ -791,7 +802,7 @@ def _format_trend_continuation_event(event: dict, continuation_event: dict) -> s
     }
     return "\n".join([
         f"🟢【{side}進場條件成立｜可以進場】",
-        f"劇本：{names.get(setup.get('type'), setup.get('type'))}",
+        f"劇本：{names.get(str(setup.get('type') or ''), str(setup.get('type') or ''))}",
         f"建議進場區：{float(setup.get('entryZoneLow') or 0):.2f}–{float(setup.get('entryZoneHigh') or 0):.2f}",
         f"現價：{float(event.get('currentPrice') or 0):.2f}",
         f"防守價：{float(setup.get('stopPrice') or 0):.2f}",
@@ -808,7 +819,7 @@ def _format_trend_continuation_event(event: dict, continuation_event: dict) -> s
 def _format_breakout_setup_event(event: dict, breakout_event: dict) -> str:
     setup = breakout_event.get("setup") or {}
     state = str(breakout_event.get("currentState") or "")
-    direction = str(setup.get("direction") or "LONG")
+    direction = cast(Literal["LONG", "SHORT"], str(setup.get("direction") or "LONG"))
     trigger = float(setup.get("breakoutTrigger") or 0)
     zone = f"{float(setup.get('entryZoneLow') or 0):.2f}–{float(setup.get('entryZoneHigh') or 0):.2f}"
     retest = f"{float(setup.get('retestZoneLow') or 0):.2f}–{float(setup.get('retestZoneHigh') or 0):.2f}"
@@ -925,11 +936,13 @@ def _format_position_event(event: dict, position: dict) -> str:
     target = position.get("targetPrice")
     next_level = position.get("nextLevel")
     lines = [titles.get(event_type, f"🔵【{side}持倉管理】"), f"現價：{price:.2f}"]
+    protection_text = (f"{float(protection):.2f}"
+                       if isinstance(protection, (int, float)) else "—")
     if event_type.startswith("TAKE_PROFIT"):
         lines.extend([
             f"觸發價：{float(target):.2f}" if isinstance(target, (int, float)) else "觸發價：—",
             f"{conditional}：建議平倉 {position.get('percent', 0)}%",
-            f"剩餘部位防守調整至：{float(protection):.2f}",
+            f"剩餘部位防守調整至：{protection_text}",
             (f"下一目標：{float(next_level):.2f}" if isinstance(next_level, (int, float))
              else "下一步：剩餘 40% 採 15M 結構移動止盈"),
         ])
@@ -938,17 +951,17 @@ def _format_position_event(event: dict, position: dict) -> str:
             f"觸發原因：{position.get('earlyExitCondition')}",
             f"最新15M收盤：{float(position['closedPrice']):.2f}",
             f"{conditional}：建議減倉或退出剩餘部位",
-            f"剩餘部位防守價：{float(protection):.2f}",
+            f"剩餘部位防守價：{protection_text}",
         ])
     elif event_type in ("STOP_TRIGGERED", "STRUCTURE_INVALIDATED"):
         lines.extend([
-            f"防守價：{float(protection):.2f}",
+            f"防守價：{protection_text}",
             f"{conditional}：依風控規則退出",
             "這是防守／停損訊號，不是止盈訊號",
         ])
     else:
         lines.extend([
-            f"新的追蹤防守價：{float(protection):.2f}",
+            f"新的追蹤防守價：{protection_text}",
             f"{conditional}：依更新後防守價管理剩餘部位",
         ])
     lines.append(f"資料時間：{_local_time(str(event.get('calculatedAt') or ''))}（UTC+8）")

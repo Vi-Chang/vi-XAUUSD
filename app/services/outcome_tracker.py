@@ -43,11 +43,13 @@ def _entry_price(row: AnalysisRun) -> float | None:
     value = (entry_engine.get("suggested_entry") if signal_mode(row) == "ENTRY_ENGINE"
              else shadow.get("referencePrice") if signal_mode(row) == "SHADOW"
              else (payload.get("current_price") or {}).get("mid"))
-    try:
-        value = float(value)
-    except (TypeError, ValueError):
+    if not isinstance(value, (int, float, str)):
         return None
-    return value if value > 0 else None
+    try:
+        numeric_value = float(value)
+    except ValueError:
+        return None
+    return numeric_value if numeric_value > 0 else None
 
 
 def _utc(value: datetime) -> datetime:

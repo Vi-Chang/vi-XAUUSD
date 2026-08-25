@@ -51,11 +51,13 @@ def opportunity_capabilities(data: dict) -> dict:
     }
 
 
-def _candidate(data: dict, side: str) -> dict | None:
+def _candidate(data: dict, side: str, *, excluded_ids: set[str] | None = None) -> dict | None:
     engine = data.get("entry_opportunity_engine") or {}
     primary_id = str(engine.get("primaryOpportunityId") or "")
+    excluded_ids = excluded_ids or set()
     items = [item for item in engine.get("opportunities") or []
              if str(item.get("side") or "").upper() == side
+             and str(item.get("opportunity_id") or "") not in excluded_ids
              and str(item.get("state") or "") not in {"EXPIRED", "INVALIDATED", "REJECTED"}
              and _zone(item)]
     items.sort(key=lambda item: (
@@ -147,6 +149,11 @@ def _event(state: dict, stage: str, previous_state: str) -> dict:
             "candidateReasons": state.get("candidateReasons") or [],
             "rejectionReasons": state.get("rejectionReasons") or [],
             "nextAction": state.get("nextAction"),
+            "zoneRole": state.get("zoneRole"),
+            "zoneTransitionReason": state.get("zoneTransitionReason"),
+            "zoneTouched": bool(state.get("zone_touched")),
+            "setupArmed": bool(state.get("setup_armed")),
+            "entryWasActionable": bool(state.get("entry_was_actionable")),
             "candidateCreatedAt": state.get("candidateCreatedAt"),
             "transitionReason": state.get("transitionReason"),
             "calculatedAt": state.get("evaluatedAt"), "notificationEligible": True}
@@ -160,12 +167,13 @@ def _previous_candidates(previous: dict) -> dict[str, dict]:
 
 
 def _evaluate_side(data: dict, side: str, previous: dict, *, symbol: str, now: str,
-                   price: float, atr: float, bias: str, capabilities: dict) -> tuple[dict, list[dict]]:
+                   price: float, atr: float, bias: str, capabilities: dict,
+                   excluded_ids: set[str] | None = None) -> tuple[dict, list[dict]]:
     old_state = str(previous.get("state") or "IDLE")
     log = {"timestamp": now, "symbol": symbol, "side": side, "canonical_bias": bias,
            "price": price, "data_health": capabilities["status"], "state_before": old_state,
            "candidate_reasons": [], "rejection_reasons": []}
-    if old_state in ACTIVE:
+    if old_state in ACTIVE | {"LONG_READY", "SHORT_READY"}:
         state = dict(previous)
         active_zone = (float(state["candidateZone"]["low"]),
                        float(state["candidateZone"]["high"]))
@@ -175,28 +183,59 @@ def _evaluate_side(data: dict, side: str, previous: dict, *, symbol: str, now: s
         structure_broken = (str(break_context.get("state") or "") in {"BREAK_CONFIRMED", "RECLAIM_FAILED"}
                             and ((side == "LONG" and str(break_context.get("direction") or "") == "DOWN")
                                  or (side == "SHORT" and str(break_context.get("direction") or "") == "UP")))
-        stop_crossed = stop is not None and ((side == "LONG" and price < stop)
-                                             or (side == "SHORT" and price > stop))
-        if not capabilities["watchAllowed"] or structure_broken or stop_crossed:
-            reason = "DATA_UNSAFE" if not capabilities["watchAllowed"] else "STRUCTURE_INVALIDATED"
+        decision_health = data.get("decision_health_state") or {}
+        health_scenario = str(decision_health.get("scenarioId") or "")
+        defense_broken = (str(decision_health.get("defenseState") or "") == "BROKEN_CONFIRMED"
+                          and (not health_scenario or health_scenario == str(state.get("setup_id") or "")))
+        intrabar_stop_crossed = stop is not None and (
+            (side == "LONG" and price < stop) or (side == "SHORT" and price > stop))
+        prior_bias = str(state.get("canonicalBias") or bias)
+        bias_changed = prior_bias not in {"", "NEUTRAL", bias}
+        if not capabilities["watchAllowed"] or structure_broken or defense_broken or bias_changed:
+            reason = ("DATA_UNSAFE" if not capabilities["watchAllowed"] else
+                      "BIAS_CHANGED" if bias_changed else "STRUCTURE_INVALIDATED")
             terminal = "INVALIDATED_LONG" if side == "LONG" else "INVALIDATED_SHORT"
             state.update({"state": terminal, "transitionReason": reason, "evaluatedAt": now,
-                          "dataHealth": capabilities["status"], "nextAction": "等待新結構"})
+                          "dataHealth": capabilities["status"], "nextAction": "立即掃描最新微結構",
+                          "zoneTransitionReason": reason})
             log.update({"state_after": terminal, "rejection_reasons": [reason]})
             state["evaluationLog"] = [*(state.get("evaluationLog") or []), log][-100:]
             return state, [_event(state, "INVALIDATED", old_state)]
+        in_zone = active_zone[0] <= price <= active_zone[1]
+        state["zone_touched"] = bool(state.get("zone_touched") or in_zone)
+        if old_state.startswith("PREPARE"):
+            state["setup_armed"] = True
         chasing, chase_reason, rr = is_chasing_entry(
             side=side, current_price=price, zone=active_zone, stop=stop, target=target,
             atr=atr, minimum_rr=float(get_settings().decision_assistant_min_rr))
         if chasing:
-            terminal = "MISSED_LONG" if side == "LONG" else "MISSED_SHORT"
-            state.update({"state": terminal, "transitionReason": chase_reason,
-                          "evaluatedAt": now, "dataHealth": capabilities["status"], "rr": rr,
-                          "nextAction": "等待價格回到合理區域或建立新劇本"})
-            log.update({"state_after": terminal, "rejection_reasons": [chase_reason], "rr": rr})
+            missed_allowed = (bool(state.get("zone_touched"))
+                              and bool(state.get("setup_armed"))
+                              and bool(state.get("entry_was_actionable")))
+            if missed_allowed:
+                terminal = "MISSED_LONG" if side == "LONG" else "MISSED_SHORT"
+                state.update({"state": terminal, "transitionReason": chase_reason,
+                              "evaluatedAt": now, "dataHealth": capabilities["status"], "rr": rr,
+                              "nextAction": "等待價格回到合理區域或建立新劇本"})
+                log.update({"state_after": terminal,
+                            "rejection_reasons": [chase_reason], "rr": rr})
+                state["evaluationLog"] = [*(state.get("evaluationLog") or []), log][-100:]
+                return state, [_event(state, "MISSED", old_state)]
+            state.update({"evaluatedAt": now, "dataHealth": capabilities["status"],
+                          "missedGateBlockedReason": "ENTRY_WAS_NEVER_ACTIONABLE",
+                          "nextAction": "等待原候選區或新結構；目前不算錯過"})
+            log.update({"state_after": old_state,
+                        "rejection_reasons": ["MISSED_REQUIRES_PRIOR_ACTIONABLE_ENTRY"]})
             state["evaluationLog"] = [*(state.get("evaluationLog") or []), log][-100:]
-            return state, [_event(state, "MISSED", old_state)]
-        opportunity = _candidate(data, side)
+            return state, []
+        opportunity = _candidate(data, side, excluded_ids=excluded_ids)
+        state["zoneTransitionReason"] = "ACTIVE_ZONE_LOCKED_NO_CONFIRMED_TRANSITION"
+        state["intrabarStopCrossed"] = intrabar_stop_crossed
+        if opportunity:
+            pending_zone = _zone(opportunity)
+            if pending_zone and pending_zone != active_zone:
+                state["pendingZoneCandidate"] = {
+                    "low": pending_zone[0], "high": pending_zone[1]}
         reasons, rejected = _evidence(data, side, price, atr, opportunity or {})
         if old_state.startswith("WATCH") and capabilities["prepareAllowed"] and not rejected:
             prepared = "PREPARE_LONG" if side == "LONG" else "PREPARE_SHORT"
@@ -211,7 +250,7 @@ def _evaluate_side(data: dict, side: str, previous: dict, *, symbol: str, now: s
         log["state_after"] = old_state
         state["evaluationLog"] = [*(state.get("evaluationLog") or []), log][-100:]
         return state, []
-    opportunity = _candidate(data, side)
+    opportunity = _candidate(data, side, excluded_ids=excluded_ids)
     if opportunity is None:
         log.update({"state_after": old_state, "rejection_reasons": ["NO_RUNTIME_ENTRY_ZONE"]})
         return {"state": old_state, "side": side, "evaluatedAt": now,
@@ -264,6 +303,11 @@ def _evaluate_side(data: dict, side: str, previous: dict, *, symbol: str, now: s
              "candidateReasons": reasons, "rejectionReasons": rejected,
              "candidateScore": score, "canonicalBias": bias,
              "countertrend": countertrend, "dataHealth": capabilities["status"],
+             "zoneRole": opportunity.get("support_role") or opportunity.get("anchor_role"),
+             "zoneTransitionReason": (opportunity.get("zone_transition_reason")
+                                      or "INITIAL_RUNTIME_CANDIDATE"),
+             "zone_touched": bool(zone[0] <= price <= zone[1]),
+             "setup_armed": bool(can_prepare), "entry_was_actionable": False,
              "defenseLevel": _num(opportunity.get("tactical_stop")),
              "targets": [v for v in [opportunity.get("target1")] if isinstance(v, (int, float))],
              "rr": rr, "evaluatedAt": now,
@@ -302,6 +346,29 @@ def evaluate_early_entry_candidate(data: dict, previous: dict | None = None) -> 
             data, side, prior.get(side, {"state": "IDLE", "side": side}),
             symbol=symbol, now=now, price=price, atr=atr, bias=bias,
             capabilities=capabilities)
+        if str(state.get("state") or "").startswith("INVALIDATED"):
+            old_source = str(state.get("sourceOpportunityId") or "")
+            replacement, replacement_events = _evaluate_side(
+                data, side, {"state": "IDLE", "side": side},
+                symbol=symbol, now=now, price=price, atr=atr, bias=bias,
+                capabilities=capabilities,
+                excluded_ids={old_source} if old_source else set())
+            if str(replacement.get("state") or "").startswith(("WATCH", "PREPARE")):
+                replacement["previousSetupId"] = state.get("setup_id")
+                replacement["zoneTransitionReason"] = "OLD_SETUP_INVALIDATED_NEW_MICRO_STRUCTURE"
+                replacement["transitionReason"] = "舊候選區失效後，立即依最新微結構建立新候選區"
+                combined = _event(
+                    replacement,
+                    "PREPARE" if str(replacement["state"]).startswith("PREPARE") else "WATCH",
+                    str(state.get("state") or "INVALIDATED"))
+                combined.update({
+                    "event_type": "EARLY_ENTRY_REPLACED",
+                    "previousSetupId": state.get("setup_id"),
+                    "zoneTransitionReason": replacement["zoneTransitionReason"],
+                })
+                state, side_events = replacement, [combined]
+            else:
+                side_events.extend(replacement_events)
         candidates[side] = state
         events.extend(side_events)
     primary = dict(_primary(candidates, bias))
@@ -321,7 +388,9 @@ def apply_canonical_entry_result(state: dict, canonical: dict, *, evaluated_at: 
         if str(candidate.get("state") or "") in ACTIVE:
             candidates[target_side] = {**candidate, "state": f"{target_side}_READY",
                                        "formalEntryConfirmedAt": evaluated_at,
-                                       "transitionReason": "CANONICAL_ENTRY_GATE_PASSED"}
+                                       "transitionReason": "CANONICAL_ENTRY_GATE_PASSED",
+                                       "zone_touched": True, "setup_armed": True,
+                                       "entry_was_actionable": True}
     if not candidates:
         return state
     primary = _primary(candidates, str(state.get("canonicalBias") or "NEUTRAL"))

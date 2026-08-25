@@ -1,7 +1,7 @@
 """Build and identify paper-only tactical signals without changing live advice."""
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from app.schemas.analysis import NormalizedAnalysisState, TacticalShadowRecord
 
@@ -13,6 +13,7 @@ def build_tactical_shadow(
     normalized: NormalizedAnalysisState, *, current_price: float, created_at: str, settings: Any
 ) -> TacticalShadowRecord:
     state = normalized.setupState
+    direction: Literal["LONG", "SHORT", "NONE"]
     if state.startswith("LONG"):
         direction = "LONG"
     elif state.startswith("SHORT"):

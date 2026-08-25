@@ -107,6 +107,8 @@ def _initial_stop(pos: Position) -> float:
     for h in (pos.stop_modification_history or []):
         if h.get("old_stop") is not None:
             return float(h["old_stop"])
+    if pos.stop_loss is None:
+        raise ValueError("持倉缺少初始停損，無法計算 R 倍數")
     return float(pos.stop_loss)
 
 

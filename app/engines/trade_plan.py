@@ -249,9 +249,10 @@ def evaluate_trade_plans(
                                          percent=0, next_level=updated))
         # Trailing profit protection remains separate from thesis invalidation
         # and only activates after at least TP1 has completed.
-        early_hit = "TAKE_PROFIT_1" in completed and isinstance(closed_price, (int, float)) and (
-            (direction == "LONG" and closed_price < float(plan["trailingStopPrice"]))
-            or (direction == "SHORT" and closed_price > float(plan["trailingStopPrice"]))
+        closed_value = float(closed_price) if isinstance(closed_price, (int, float)) else None
+        early_hit = closed_value is not None and "TAKE_PROFIT_1" in completed and (
+            (direction == "LONG" and closed_value < float(plan["trailingStopPrice"]))
+            or (direction == "SHORT" and closed_value > float(plan["trailingStopPrice"]))
         )
         if early_hit and "EARLY_EXIT" not in completed:
             completed.append("EARLY_EXIT")
@@ -259,7 +260,7 @@ def evaluate_trade_plans(
             events.append(_event(plan, "EARLY_EXIT", current_price,
                                  candle_close_time, target_index=0,
                                  percent=100, next_level=None,
-                                 closed_price=float(closed_price)))
+                                 closed_price=closed_value))
         plan["completedEvents"] = completed
         if len(events) > event_count_before:
             plan["lastEvent"] = events[-1]["event_type"]

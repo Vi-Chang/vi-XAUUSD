@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -33,13 +34,14 @@ def assess_event_reaction(*, post_event_wait: bool, m15_closed_at: str,
     outcome_status = ("available" if actual is not None and forecast is not None
                       else "pending" if forecast is not None or previous is not None
                       else "not_available")
-    surprise = round(actual - forecast, 6) if outcome_status == "available" else None
+    surprise = (round(actual - forecast, 6)
+                if actual is not None and forecast is not None else None)
     stronger_us = any(term in event_name.lower() for term in
                       ("cpi", "ppi", "pce", "employment", "payroll", "gdp", "fomc"))
     fundamental_bias = ("bearish_xauusd" if surprise is not None and surprise > 0 and stronger_us
                         else "bullish_xauusd" if surprise is not None and surprise < 0 and stronger_us
                         else "neutral" if surprise == 0 else "unknown")
-    common = {
+    common: dict[str, Any] = {
         "actual": actual,
         "forecast": forecast,
         "previous": previous,

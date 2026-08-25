@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 import pandas as pd
 
@@ -21,10 +22,10 @@ MISSING_CONTEXT_MESSAGE = (
 
 @dataclass(frozen=True)
 class PositionContext:
-    direction: str = "unknown"
+    direction: Literal["long", "short", "unknown"] = "unknown"
     entry_price: float | None = None
     size: float | None = None
-    timeframe: str = "unknown"
+    timeframe: Literal["15M", "1H", "4H", "1D", "unknown"] = "unknown"
     original_stop: float | None = None
     max_loss_usd: float | None = None
     thesis: str = ""
@@ -43,7 +44,10 @@ class PositionContext:
         )
 
 
-def classify_two_sided_risk(*, weakness: str, oversold: bool) -> str:
+def classify_two_sided_risk(
+    *, weakness: Literal["none", "early_warning", "confirmed", "accelerating"],
+    oversold: bool,
+) -> Literal["normal", "downside_continuation", "oversold_rebound", "high_whipsaw"]:
     if oversold and weakness in ("confirmed", "accelerating"):
         return "high_whipsaw"
     if oversold:
@@ -54,7 +58,10 @@ def classify_two_sided_risk(*, weakness: str, oversold: bool) -> str:
 
 
 def classify_reversal_state(*, m15_closed: pd.DataFrame | None, indicators: dict,
-                            support_state: str, oversold: bool) -> str:
+                            support_state: str, oversold: bool) -> Literal[
+                                "none", "oversold_without_reversal",
+                                "selling_exhaustion_candidate", "reclaim_attempt",
+                                "reversal_confirmed", "reversal_failed"]:
     """僅讀傳入快照最後三根已收盤 K；呼叫端不得傳入未來 K 棒。"""
     if m15_closed is None or len(m15_closed) == 0:
         return "oversold_without_reversal" if oversold else "none"
@@ -81,9 +88,20 @@ def classify_reversal_state(*, m15_closed: pd.DataFrame | None, indicators: dict
     return "none"
 
 
-def assess_trading_decision(*, market_regime: str, weakness: str, oversold: bool,
-                            reversal_state: str, readiness: str, long_allowed: bool,
-                            short_allowed: bool, position_risk: str,
+def assess_trading_decision(*, market_regime: Literal[
+                                "strong_bullish", "bullish", "range", "bearish",
+                                "strong_bearish"],
+                            weakness: Literal["none", "early_warning", "confirmed", "accelerating"],
+                            oversold: bool,
+                            reversal_state: Literal[
+                                "none", "oversold_without_reversal",
+                                "selling_exhaustion_candidate", "reclaim_attempt",
+                                "reversal_confirmed", "reversal_failed"],
+                            readiness: Literal[
+                                "ready", "wait_confirmation", "avoid_chasing", "no_trade"],
+                            long_allowed: bool,
+                            short_allowed: bool,
+                            position_risk: Literal["normal", "elevated", "high", "critical"],
                             context: PositionContext | None = None,
                             invalidation_confirmed: bool = False) -> TradingDecision:
     two_sided = classify_two_sided_risk(weakness=weakness, oversold=oversold)
@@ -114,7 +132,9 @@ def assess_trading_decision(*, market_regime: str, weakness: str, oversold: bool
             category="STRUCT", label=f"{ctx.timeframe} 交易假設已由已收盤結構確認失效",
             reason="對應持倉週期結構跌破、超過緩衝，且延續或反抽失敗")]
         if invalidation_confirmed:
-            action, thesis = "exit_confirmed", "invalidated"
+            action: Literal[
+                "follow_original_plan", "monitor_reclaim", "exit_confirmed"] = "exit_confirmed"
+            thesis: Literal["intact", "under_pressure", "invalidated"] = "invalidated"
         elif weakness in ("confirmed", "accelerating"):
             action, thesis = "monitor_reclaim", "under_pressure"
         else:

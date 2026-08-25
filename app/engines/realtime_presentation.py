@@ -4,7 +4,7 @@ from __future__ import annotations
 import math
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
-from typing import Any
+from typing import Any, Literal, cast
 
 from app.engines.decision_health import evaluate_decision_health, evaluate_defense_state
 from app.engines.freshness_state import evaluate_freshness_state
@@ -94,8 +94,8 @@ def build_realtime_presentation(data: dict, *, price: float | None = None,
     entry_high = _num(setup.get("entryZoneHigh"))
     chase = _num(setup.get("maxChasePrice"))
     invalidation = _num(setup.get("stopPrice") or setup.get("invalidationPrice"))
-    targets = [_num(setup.get(f"tp{i}")) for i in range(1, 4)]
-    targets = [value for value in targets if value is not None]
+    targets = [value for i in range(1, 4)
+               if (value := _num(setup.get(f"tp{i}"))) is not None]
     latest_closed = decision_health.get("latestClosed15m") or {}
     context_closed = decision_health.get("contextClosed15m") or {}
     closed_price = _num(latest_closed.get("close"))
@@ -143,8 +143,10 @@ def build_realtime_presentation(data: dict, *, price: float | None = None,
     rr = None
     if reference_entry is not None and invalidation is not None and targets:
         from app.engines.scenario_safety import calculate_risk_reward
+        rr_direction = cast(Literal["LONG", "SHORT"],
+                            "SHORT" if direction == "SHORT" else "LONG")
         details = calculate_risk_reward(
-            direction, evaluation_entry_price=reference_entry,
+            rr_direction, evaluation_entry_price=reference_entry,
             stop_loss=invalidation, target_price=targets[0],
             spread=_num((data.get("current_price") or {}).get("spread")) or 0.0)
         rr = details["ratio"]

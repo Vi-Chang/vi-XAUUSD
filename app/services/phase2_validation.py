@@ -173,8 +173,9 @@ def backfill_setup_outcomes(db, *, now: datetime, lookback_days: int = 90,
                 float(candle.close) >= trigger_price if direction == "LONG"
                 else float(candle.close) <= trigger_price)), None)
         entry_triggered = confirmation_index is not None
+        confirmed_index = int(confirmation_index) if confirmation_index is not None else None
         fill_index = next((i for i, c in enumerate(candles)
-                           if entry_triggered and i >= int(confirmation_index)
+                           if confirmed_index is not None and i >= confirmed_index
                            and float(c.low) <= high and float(c.high) >= low), None)
         entry_captured = entry_triggered and fill_index is not None
         reference = ((low + high) / 2 + slippage if direction == "LONG"
@@ -200,9 +201,10 @@ def backfill_setup_outcomes(db, *, now: datetime, lookback_days: int = 90,
         end_move = sign * (float(active[-1].close) - reference) - spread
         realized_r = (-1.0 if hard_hit else end_move / risk)
         success = bool(tp_hits and tp_hits[0])
+        hard_offset = int(hard_index) if hard_index is not None else -1
         false_stop = hard_hit and any(
             float(c.high) >= reference if sign > 0 else float(c.low) <= reference
-            for c in active[int(hard_index) + 1:])
+            for c in active[hard_offset + 1:])
         mfe_index = favorable.index(mfe) if favorable else None
         mae_index = adverse.index(mae) if adverse else None
         tp_indexes = [next((i for i, c in enumerate(active)
@@ -377,9 +379,11 @@ def validation_report(db, *, limit: int = 5000) -> dict:
               and (oos.get("expectancy") or 0) > 0 and walk_forward_passed]
     grade_order = [groups["grade"].get(name) for name in ("C", "B", "A", "A+")]
     grade_ready = all(item and item["sampleSize"] >= 20 for item in grade_order)
+    comparable_grades = [item for item in grade_order if item is not None]
     grade_monotonic = bool(grade_ready and all(
-        float(grade_order[index]["expectancy"]) < float(grade_order[index + 1]["expectancy"])
-        for index in range(len(grade_order) - 1)))
+        float(comparable_grades[index]["expectancy"])
+        < float(comparable_grades[index + 1]["expectancy"])
+        for index in range(len(comparable_grades) - 1)))
     overall = _metrics(rows)
     phase_passed = bool(
         overall["sampleSize"] >= MIN_COMPLETE_SETUPS

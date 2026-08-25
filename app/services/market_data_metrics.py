@@ -47,7 +47,11 @@ class MarketDataMetrics:
         }
 
     def reset(self) -> None:
-        self.__init__()
+        self.counters.clear()
+        self.by_timeframe.clear()
+        self.requests.clear()
+        self.circuit_state = "CLOSED"
+        self.market_data_age_seconds = None
 
 
 metrics = MarketDataMetrics()

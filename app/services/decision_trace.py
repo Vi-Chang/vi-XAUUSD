@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from app.schemas.analysis import AnalysisResult, DecisionTrace, Scenario
 
@@ -17,7 +17,8 @@ def _closed_bars_since(frame: Any, breakout_at: str) -> int:
         return 0
 
 
-def _chosen_scenario(result: AnalysisResult) -> tuple[str, Scenario]:
+def _chosen_scenario(result: AnalysisResult) -> tuple[
+        Literal["LONG", "SHORT", "NONE"], Scenario]:
     action = result.market_decision.action or result.decision.action
     if "LONG" in action:
         return "LONG", result.long_scenario

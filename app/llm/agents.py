@@ -67,7 +67,7 @@ async def run_analysts(snapshot: dict) -> tuple[dict[str, AnalystView], float]:
     views: dict[str, AnalystView] = {}
     cost = 0.0
     for name, res in zip(tasks.keys(), results):
-        if isinstance(res, Exception):
+        if isinstance(res, BaseException):
             views[name] = AnalystView(one_line=f"{name} 分析失敗,以中性代替")
         else:
             data, c = res
@@ -79,8 +79,8 @@ async def run_analysts(snapshot: dict) -> tuple[dict[str, AnalystView], float]:
 async def run_decision(snapshot: dict, analysts: dict[str, AnalystView],
                        feedback: str | None = None) -> tuple[dict, float]:
     """決策引擎;feedback 為守門退回原因(重試時附上)。"""
-    payload = {"snapshot": snapshot,
-               "analysts": {k: v.model_dump() for k, v in analysts.items()}}
+    payload: dict = {"snapshot": snapshot,
+                     "analysts": {k: v.model_dump() for k, v in analysts.items()}}
     if feedback:
         payload["validator_feedback"] = f"上一次輸出被程式退回,原因:{feedback}。請修正後重出。"
     # 中文 JSON 的 token 密度高,輸出上限給足(免費層不計費,截斷才是風險)

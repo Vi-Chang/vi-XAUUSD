@@ -133,7 +133,9 @@ def test_missed_requires_prior_ready_and_sent_notification():
     not_ready = evaluate_setup_lifecycle(**base)
     assert not_ready["state"] == "CONFIRMED_WAIT_RETEST"
     prior = {**not_ready, "state": "ENTRY_READY", "wasEntryReady": True,
-             "entryNotificationSentAt": "2026-08-21T14:01:01Z"}
+             "entryNotificationSentAt": "2026-08-21T14:01:01Z",
+             "zoneTouched": True, "setupArmed": True,
+             "entryWasActionable": True}
     missed = evaluate_setup_lifecycle(**{**base, "previous": prior})
     assert missed["state"] == "MISSED_ENTRY"
 

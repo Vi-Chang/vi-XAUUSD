@@ -8,7 +8,7 @@
 """
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, cast
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -235,7 +235,7 @@ class Decision(BaseModel):
 
         if self.signal_score is None and "evidence_score" in self.model_fields_set:
             self.signal_score = normalize_signal_score(self.evidence_score)
-        self.confidence_grade = get_confidence_grade(self.signal_score)
+        self.confidence_grade = cast(ConfidenceGrade, get_confidence_grade(self.signal_score))
         self.grading_version = GRADING_VERSION
         return self
 

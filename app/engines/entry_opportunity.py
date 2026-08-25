@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime, timedelta, timezone
+from typing import Literal, cast
 
 from app.config import get_settings
 from app.engines.scenario_safety import calculate_risk_reward
@@ -26,14 +27,15 @@ def _opportunity_id(setup_id: str, kind: str, low: float, high: float) -> str:
     return f"OP-{hashlib.sha256(raw.encode()).hexdigest()[:16]}"
 
 
-def _rr(side: str, entry: float, stop: float, target: float) -> float | None:
+def _rr(side: Literal["LONG", "SHORT"], entry: float, stop: float,
+        target: float) -> float | None:
     result = calculate_risk_reward(
         side, evaluation_entry_price=entry, stop_loss=stop, target_price=target)
     return round(float(result["ratio"]), 3) if result["available"] else None
 
 
 def _zone(kind: str, setup: dict, normalized: dict) -> tuple[float, float, float, list[str]] | None:
-    side = str(setup.get("direction") or "LONG")
+    side = cast(Literal["LONG", "SHORT"], str(setup.get("direction") or "LONG"))
     sign = 1 if side == "LONG" else -1
     trigger = _num(setup.get("breakoutTrigger"))
     atr = max(_num(setup.get("atr15") or normalized.get("atr15"), 0.0), .01)
@@ -165,6 +167,40 @@ def reanchor_entry_candidates(opportunities: list[dict], *, current_price: float
     return opportunities
 
 
+def assign_support_roles(opportunities: list[dict], *, current_price: float,
+                         atr15: float, direction: str) -> tuple[list[dict], str]:
+    """Keep tactical support primary until it is genuinely lost.
+
+    A deeper zone is insurance, not the default next action in a trend.  It is
+    promoted only after the shallow tactical structure is invalidated.
+    """
+    shallow = next((item for item in opportunities
+                    if item.get("type") == "SHALLOW_PULLBACK"), None)
+    deep = next((item for item in opportunities
+                 if item.get("type") == "DEEP_PULLBACK"), None)
+    if not shallow or not deep:
+        return opportunities, "SUPPORT_HIERARCHY_NOT_APPLICABLE"
+    # Live price may pierce a tactical zone before the confirming candle has
+    # closed.  That is not enough to promote the deeper backup.  Promotion is
+    # based on the opportunity's terminal state, which is closed-candle gated
+    # by the evaluator above.
+    _ = (current_price, atr15, direction)
+    shallow_lost = str(shallow.get("state")) in TERMINAL
+    if shallow_lost:
+        shallow["support_role"] = "PRIMARY_TACTICAL_INVALIDATED"
+        shallow["primary_eligible"] = False
+        deep["support_role"] = "PRIMARY_AFTER_TACTICAL_BREAK"
+        if not deep.get("anchor_stale") and str(deep.get("state")) not in TERMINAL:
+            deep["primary_eligible"] = True
+        return opportunities, "TACTICAL_SUPPORT_CONFIRMED_LOST"
+    shallow["support_role"] = "PRIMARY_TACTICAL_SUPPORT"
+    deep["support_role"] = "SECONDARY_DEEP_SUPPORT"
+    # Deep support remains visible as a backup but cannot displace a valid
+    # higher-low/tactical zone merely because it is also structurally valid.
+    deep["primary_eligible"] = False
+    return opportunities, "TACTICAL_SUPPORT_STILL_VALID"
+
+
 def evaluate_entry_opportunities(data: dict, previous: dict | None = None) -> tuple[dict, list[dict]]:
     previous = previous or {}
     normalized = data.get("normalized_analysis") or {}
@@ -174,7 +210,7 @@ def evaluate_entry_opportunities(data: dict, previous: dict | None = None) -> tu
         return {"opportunities": [], "primaryOpportunityId": None,
                 "alternativeOpportunityIds": []}, []
     setup_id = str(setup.get("setupId") or "")
-    side = str(setup.get("direction") or "LONG")
+    side = cast(Literal["LONG", "SHORT"], str(setup.get("direction") or "LONG"))
     price = _num(normalized.get("currentPrice"), 0.0)
     target = _num(setup.get("tp1"))
     candle = data.get("latest_closed_15m") or {}
@@ -186,6 +222,10 @@ def evaluate_entry_opportunities(data: dict, previous: dict | None = None) -> tu
         now + timedelta(hours=2),
     )
     previous_map = {str(x.get("opportunity_id")): x for x in previous.get("opportunities") or []}
+    previous_kind_map = {
+        str(x.get("type")): x for x in previous.get("opportunities") or []
+        if str(x.get("setup_id")) == setup_id and str(x.get("state")) not in TERMINAL
+    }
     opportunities = []
     events = []
     min_rr = float(get_settings().decision_assistant_min_rr)
@@ -205,16 +245,29 @@ def evaluate_entry_opportunities(data: dict, previous: dict | None = None) -> tu
                                 continuation_level + width))
             stop = (low - max(atr * .35, width * 1.5) if side == "LONG"
                     else high + max(atr * .35, width * 1.5))
-            built = (round(low, 2), round(high, 2), round(stop, 2),
-                     ["最近15M高低點", "新突破位轉為回測支撐／壓力"])
+            built: tuple[float, float, float, list[str]] | None = (
+                round(low, 2), round(high, 2), round(stop, 2),
+                ["最近15M高低點", "新突破位轉為回測支撐／壓力"])
         else:
             built = _zone(kind, setup, normalized)
         if not built or target is None:
             continue
         low, high, stop, reasons = built
+        locked = previous_kind_map.get(kind)
+        zone_transition_reason = "INITIAL_ZONE_CREATED"
+        if locked:
+            locked_zone = locked.get("entry_zone") or {}
+            locked_low, locked_high = (_num(locked_zone.get("lower")),
+                                       _num(locked_zone.get("upper")))
+            locked_stop = _num(locked.get("tactical_stop"))
+            if locked_low is not None and locked_high is not None and locked_stop is not None:
+                low, high, stop = locked_low, locked_high, locked_stop
+                reasons = list(locked.get("zone_reasons") or reasons)
+                zone_transition_reason = "ACTIVE_ZONE_LOCKED"
         opportunity_setup_id = (f"{setup_id}:CONT:{continuation_level:.2f}"
                                 if continuation else setup_id)
-        oid = _opportunity_id(opportunity_setup_id, kind, low, high)
+        oid = (str(locked.get("opportunity_id")) if locked
+               else _opportunity_id(opportunity_setup_id, kind, low, high))
         old = previous_map.get(oid) or {}
         item_target = target
         if continuation:
@@ -251,6 +304,7 @@ def evaluate_entry_opportunities(data: dict, previous: dict | None = None) -> tu
         breakout_candle_time = (old.get("breakout_confirmed_candle_time") or
                                 (candle_time if breakout_confirmed_now else None))
         if continuation and breakout_confirmed_at:
+            assert continuation_level is not None
             is_later_retest_candle = candle_time != str(breakout_candle_time or "")
             confirmation, evidence = _breakout_retest_confirmed(
                 side, continuation_level, (low, high), candle)
@@ -282,9 +336,14 @@ def evaluate_entry_opportunities(data: dict, previous: dict | None = None) -> tu
             executable_at = now_text
             state = "ENTRY_READY" if executable_rr is not None and executable_rr >= min_rr else "REJECTED"
         # Executable RR is ephemeral and is never retained outside the zone.
+        zone_touched = bool(old.get("zone_touched") or in_zone)
+        setup_armed = bool(old.get("setup_armed") or state == "ENTRY_READY")
+        entry_was_actionable = bool(
+            old.get("entry_was_actionable") or state == "ENTRY_READY")
         if not in_zone:
             executable_rr = executable_at = candidate_entry = None
-            if old.get("state") == "ENTRY_READY" and not continuation:
+            if (not continuation and zone_touched and setup_armed
+                    and entry_was_actionable and old.get("state") == "ENTRY_READY"):
                 state = "MISSED"
         reachability = max(0.0, 100.0 - distance / atr * 45.0)
         if strong_shallow and kind == "SHALLOW_PULLBACK":
@@ -320,6 +379,10 @@ def evaluate_entry_opportunities(data: dict, previous: dict | None = None) -> tu
             "breakout_buffer": round(breakout_buffer, 2) if continuation else None,
             "breakout_confirmed_at": breakout_confirmed_at,
             "breakout_confirmed_candle_time": breakout_candle_time,
+            "zone_touched": zone_touched,
+            "setup_armed": setup_armed,
+            "entry_was_actionable": entry_was_actionable,
+            "zone_transition_reason": zone_transition_reason,
         }
         opportunities.append(item)
         if old and old.get("state") != state:
@@ -338,11 +401,30 @@ def evaluate_entry_opportunities(data: dict, previous: dict | None = None) -> tu
                            "opportunityId": oid, "previousState": old.get("state"),
                            "currentState": state, "entryZone": {"low": low, "high": high},
                            "effectiveRR": executable_rr, "estimatedRR": estimated_rr,
+                           "supportRole": item.get("support_role"),
+                           "zoneTransitionReason": zone_transition_reason,
+                           "zoneTouched": zone_touched,
+                           "setupArmed": setup_armed,
+                           "entryWasActionable": entry_was_actionable,
                            "candleCloseTime": candle_time, "calculatedAt": now_text,
                            "direction": side})
     opportunities = reanchor_entry_candidates(
         opportunities, current_price=price, atr15=atr, direction=side,
         minimum_rr=min_rr)
+    opportunities, support_selection_reason = assign_support_roles(
+        opportunities, current_price=price, atr15=atr, direction=side)
+    opportunity_by_id = {str(item.get("opportunity_id")): item for item in opportunities}
+    for event in events:
+        matched_opportunity = opportunity_by_id.get(
+            str(event.get("opportunityId") or ""))
+        if matched_opportunity:
+            event.update({
+                "supportRole": matched_opportunity.get("support_role"),
+                "zoneTransitionReason": matched_opportunity.get("zone_transition_reason"),
+                "zoneTouched": bool(matched_opportunity.get("zone_touched")),
+                "setupArmed": bool(matched_opportunity.get("setup_armed")),
+                "entryWasActionable": bool(matched_opportunity.get("entry_was_actionable")),
+            })
     ranked = sorted(opportunities, key=lambda x: (
         not bool(x.get("primary_eligible")),
         x["state"] != "ENTRY_READY",
@@ -350,11 +432,13 @@ def evaluate_entry_opportunities(data: dict, previous: dict | None = None) -> tu
         ACTION_PRIORITY.get(str(x.get("type")), 99),
         -int(x.get("opportunity_score") or 0),
     ))
-    primary = next((item for item in ranked if item.get("primary_eligible")), None)
+    primary_opportunity: dict | None = next(
+        (item for item in ranked if item.get("primary_eligible")), None)
     for item in ranked:
-        if item is not primary and item["state"] == "ENTRY_READY":
+        if item is not primary_opportunity and item["state"] == "ENTRY_READY":
             item["state"] = "ALTERNATIVE_READY"
-    primary_id = primary["opportunity_id"] if primary else None
+    primary_id = (primary_opportunity["opportunity_id"]
+                  if primary_opportunity else None)
     events = [event for event in events
               if event.get("event_type") != "ENTRY_READY"
               or event.get("opportunityId") == primary_id]
@@ -377,6 +461,7 @@ def evaluate_entry_opportunities(data: dict, previous: dict | None = None) -> tu
         "opportunities": ranked,
         "primaryOpportunityId": primary_id,
         "alternativeOpportunityIds": [x["opportunity_id"] for x in ranked[1:]],
-        "bestReachableOpportunity": primary,
+        "bestReachableOpportunity": primary_opportunity,
+        "supportSelectionReason": support_selection_reason,
         "archivedOpportunities": archived,
     }, events

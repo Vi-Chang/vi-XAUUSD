@@ -342,7 +342,7 @@ def resolve_data_health_hysteresis(
         incident_id = f"DATA-{evaluated.strftime('%Y%m%d-%H%M%S')}"
         delay_notified, recovery_notified = False, False
 
-    health_event = None
+    health_event: dict[str, Any] | None = None
     delay_confirmed = (
         entered_incident and not transition.startswith("INITIAL_") or
         (health != "HEALTHY" and bool(incident_id) and

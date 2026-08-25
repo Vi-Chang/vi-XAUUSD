@@ -20,6 +20,7 @@ EntryStatus = Literal[
     "EXITED",
 ]
 Direction = Literal["LONG", "SHORT", "NONE"]
+EntrySide = Literal["LONG", "SHORT"]
 
 
 @dataclass(frozen=True)
@@ -63,7 +64,7 @@ class EntryEvaluation:
     message: str = ""
 
 
-def _stable_id(direction: str, level: float, candle_time: str) -> str:
+def _stable_id(direction: EntrySide, level: float, candle_time: str) -> str:
     seed = f"XAUUSD|{direction}|15M|{level:.2f}|{candle_time}"
     return f"XAU-{direction[0]}-{hashlib.sha256(seed.encode()).hexdigest()[:12]}"
 
@@ -72,7 +73,7 @@ def _zone_mid(zone: dict) -> float:
     return (float(zone["price_low"]) + float(zone["price_high"])) / 2
 
 
-def _targets(data: dict, scenario: dict, direction: str, entry: float) -> list[float]:
+def _targets(data: dict, scenario: dict, direction: EntrySide, entry: float) -> list[float]:
     resolved = scenario.get("resolved_prices") or {}
     values = []
     for target_id in scenario.get("target_ids") or []:
@@ -129,7 +130,8 @@ def ordered_profit_targets(
              or (direction == "SHORT" and float(value) < entry))
     }
     ordered = sorted(valid, reverse=direction == "SHORT")[:3]
-    return tuple((ordered + [None, None, None])[:3])
+    padded: list[float | None] = [*ordered, None, None, None]
+    return padded[0], padded[1], padded[2]
 
 
 def validate_executable_plan(plan: EntryPlan) -> tuple[bool, str]:
@@ -209,7 +211,7 @@ def calculate_short_entry_quality(
     weights = settings.short_entry_quality_weights
     score = round(sum(breakdown[key] * float(weights.get(key, 0))
                       for key in breakdown))
-    weakest = min(breakdown, key=breakdown.get)
+    weakest = min(breakdown, key=lambda key: breakdown[key])
     labels = {"structure": "15M結構", "location": "進場位置", "momentum": "5M動能",
               "risk_reward": "淨賺賠比", "execution": "點差與滑價",
               "freshness": "資料新鮮度"}
@@ -217,7 +219,7 @@ def calculate_short_entry_quality(
 
 
 def reversal_evidence(
-    direction: str, frame: pd.DataFrame, zone_low: float, zone_high: float
+    direction: EntrySide, frame: pd.DataFrame, zone_low: float, zone_high: float
 ) -> tuple[bool, str, float]:
     """Evaluate only completed candles; returns (confirmed, reason, trigger close)."""
     previous, bar = frame.iloc[-2], frame.iloc[-1]
@@ -254,7 +256,7 @@ def reversal_evidence(
     return bool(matched), matched or "尚缺已收盤反轉 K、影線收回或高低點結構確認", close
 
 
-def _build_candidate(data: dict, direction: str, *, now: datetime) -> EntryPlan:
+def _build_candidate(data: dict, direction: EntrySide, *, now: datetime) -> EntryPlan:
     normalized = data.get("normalized_analysis") or {}
     from app.engines.short_alert_state import validate_alert_zones
 
@@ -444,7 +446,8 @@ def evaluate_entry_engine(
         ).get("reversalState")
         == "reversal_confirmed"
     )
-    current_direction = "SHORT" if short_ok else "LONG" if long_ok else ""
+    current_direction: EntrySide | None = (
+        "SHORT" if short_ok else "LONG" if long_ok else None)
 
     if (
         previous.status in ("SETUP_WATCH", "ENTRY_READY")
@@ -510,24 +513,34 @@ def evaluate_entry_engine(
         timeframe, frame = _closed_frame(m5_closed, m15_closed)
         if frame is None:
             return EntryEvaluation(previous)
+        if (previous.direction not in ("LONG", "SHORT")
+                or previous.zone_low is None or previous.zone_high is None
+                or previous.stop_loss is None or previous.take_profit_1 is None):
+            return EntryEvaluation(replace(
+                previous, missing_condition="進場區、停損或第一目標資料不完整"))
+        side: EntrySide = previous.direction
+        zone_low = previous.zone_low
+        zone_high = previous.zone_high
+        stop_loss = previous.stop_loss
+        take_profit_1 = previous.take_profit_1
         triggered, evidence, trigger_price = reversal_evidence(
-            previous.direction, frame, previous.zone_low, previous.zone_high
+            side, frame, zone_low, zone_high
         )
         bar = frame.iloc[-1]
         touched = (
-            float(bar["high"]) >= previous.zone_low
-            and float(bar["low"]) <= previous.zone_high
+            float(bar["high"]) >= zone_low
+            and float(bar["low"]) <= zone_high
         )
         if triggered:
             risk = (
-                previous.stop_loss - trigger_price
-                if previous.direction == "SHORT"
-                else trigger_price - previous.stop_loss
+                stop_loss - trigger_price
+                if side == "SHORT"
+                else trigger_price - stop_loss
             )
             reward = (
-                trigger_price - previous.take_profit_1
-                if previous.direction == "SHORT"
-                else previous.take_profit_1 - trigger_price
+                trigger_price - take_profit_1
+                if side == "SHORT"
+                else take_profit_1 - trigger_price
             )
             rr = round(reward / risk, 2) if risk > 0 else 0
             from app.config import get_settings
@@ -536,15 +549,15 @@ def evaluate_entry_engine(
             max_chase = float(previous.max_chase_distance or
                               float(normalized.get("atr15") or 0)
                               * settings.short_entry_max_chase_atr_mult)
-            chase_limit = (previous.zone_high + max_chase
-                           if previous.direction == "LONG"
-                           else previous.zone_low - max_chase)
+            chase_limit = (zone_high + max_chase
+                           if side == "LONG"
+                           else zone_low - max_chase)
             location_state = classify_entry_location(
-                previous.direction, trigger_price, previous.zone_low,
-                previous.zone_high, chase_limit)
-            chase_distance = (trigger_price - previous.zone_high
+                side, trigger_price, zone_low,
+                zone_high, chase_limit)
+            chase_distance = (trigger_price - zone_high
                               if location_state == "CHASE_LONG"
-                              else previous.zone_low - trigger_price
+                              else zone_low - trigger_price
                               if location_state == "CHASE_SHORT" else 0.0)
             quality, breakdown, weakest = calculate_short_entry_quality(
                 data, previous, trigger_price=trigger_price,
@@ -592,10 +605,10 @@ def evaluate_entry_engine(
                 return EntryEvaluation(plan, False, "")
             if rr >= min_rr:
                 r3 = trigger_price + (
-                    1 if previous.direction == "LONG" else -1
+                    1 if side == "LONG" else -1
                 ) * risk * 3
                 tp1, tp2, tp3 = ordered_profit_targets(
-                    previous.direction,
+                    side,
                     trigger_price,
                     previous.take_profit_1,
                     previous.take_profit_2,
@@ -642,7 +655,7 @@ def evaluate_entry_engine(
         return EntryEvaluation(previous)
 
     direction = current_direction
-    if not direction:
+    if direction is None:
         return EntryEvaluation(
             EntryPlan(missing_condition="15M 尚未確認空方結構失守、空方失效或支撐止跌")
         )

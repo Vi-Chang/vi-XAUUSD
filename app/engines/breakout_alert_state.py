@@ -38,7 +38,11 @@ def evaluate_breakout_alert(
     )
     if not resistance and previous.zone_high is None:
         return previous, None
-    center = float(resistance["price"]) if resistance else float(previous.zone_high)
+    if resistance:
+        center = float(resistance["price"])
+    else:
+        assert previous.zone_high is not None
+        center = float(previous.zone_high)
     buffer = float(resistance.get("buffer") or 0) if resistance else 0.0
     low, high = center - buffer, center + buffer
     price = float(normalized.get("currentPrice") or center)

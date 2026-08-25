@@ -126,7 +126,11 @@ def evaluate_short_alert(normalized: dict, previous: ShortAlertState | None = No
     support = _support_level(normalized)
     if not support and previous.level is None:
         return AlertEvaluation(previous, False, blocked_reason="缺少有效 15M 支撐位")
-    level = float(support["price"]) if support else float(previous.level)
+    if support:
+        level = float(support["price"])
+    else:
+        assert previous.level is not None
+        level = float(previous.level)
     buffer = float(support.get("buffer") or 0) if support else 0.0
     price = float(normalized.get("currentPrice") or level)
     atr = float(normalized.get("atr15") or 0)

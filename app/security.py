@@ -120,7 +120,7 @@ def create_session() -> tuple[str, int]:
         _purge_expired_locked()
         cap = max(1, s.max_admin_sessions)
         while len(_sessions) >= cap:
-            oldest = min(_sessions, key=_sessions.get)   # 淘汰最早到期者
+            oldest = min(_sessions, key=lambda key: _sessions[key])  # 淘汰最早到期者
             _sessions.pop(oldest, None)
         _sessions[sid] = _now() + timedelta(seconds=ttl)
     return sid, ttl

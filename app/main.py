@@ -383,6 +383,8 @@ async def trigger_analysis() -> dict:
     """使用者手動請求分析(受管理權限保護 + 節流,避免濫用與重跑)。"""
     rate_limit("analysis_run", get_settings().analysis_run_cooldown_seconds)
     await _run_full_analysis_shared("manual")
+    if state.latest_result is None:
+        raise HTTPException(503, "分析尚未產生結果")
     return _serve_result(state.latest_result)
 
 
@@ -559,7 +561,7 @@ async def upcoming_events(limit: int = 5) -> list[dict]:
                         "name_zh": translate_event_name(ev.get("name", "")),
                         "country": ev.get("country"),
                         "impact": ev.get("impact"), "time": int(t.timestamp())})
-    out.sort(key=lambda e: e["time"])
+    out.sort(key=lambda e: int(e.get("time") or 0))
     return out[:limit]
 
 

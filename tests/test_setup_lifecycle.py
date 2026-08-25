@@ -45,6 +45,9 @@ def test_closed_above_inside_zone_and_controls_pass_becomes_entry_ready():
     result = evaluate(price=4539.5, close=4540.0)
     assert result["state"] == "ENTRY_READY"
     assert result["wasEntryReady"] is True
+    assert result["zoneTouched"] is True
+    assert result["setupArmed"] is True
+    assert result["entryWasActionable"] is True
     assert result["confirmedCandleTime"] == BASE["closed_candle_time"]
 
 
@@ -71,3 +74,14 @@ def test_illegal_wait_to_missed_is_impossible_even_with_stale_fields():
     }
     result = evaluate(previous=corrupt, price=4537.02, close=4538.0)
     assert result["state"] == "WAIT_CONFIRMATION"
+
+
+def test_missed_requires_zone_touch_arm_and_actionable_history():
+    corrupt = {
+        "setupId": BASE["setup_id"], "state": "ENTRY_READY",
+        "wasEntryReady": True, "entryNotificationSentAt": "2026-08-21T03:00:00Z",
+        "zoneTouched": False, "setupArmed": True, "entryWasActionable": True,
+    }
+    result = evaluate(previous=corrupt, price=4548.0, close=4545.0)
+    assert result["state"] == "ENTRY_READY"
+    assert result["missedAt"] is None
