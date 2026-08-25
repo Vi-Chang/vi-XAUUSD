@@ -106,6 +106,14 @@ def check_source_mismatch(primary_mid: float, secondary_mid: float | None,
     return False, ""
 
 
+CORE_DECISION_TIMEFRAMES = frozenset({"15M", "1H", "4H", "1D"})
+
+
+def _missing_timeframe(item: str) -> str:
+    """Return the timeframe prefix from a diagnostic such as ``15M: ...``."""
+    return item.split(":", 1)[0].strip().upper()
+
+
 def evaluate(candles_by_tf: dict[str, pd.DataFrame], tick: PriceTick | None, *,
              secondary_mid: float | None = None, atr15: float | None = None,
              holidays: frozenset[date] | set[date] = frozenset(),
@@ -132,11 +140,20 @@ def evaluate(candles_by_tf: dict[str, pd.DataFrame], tick: PriceTick | None, *,
             report.warnings.append(msg)
 
     required_missing = any(not df.empty for df in candles_by_tf.values())
+    core_missing = [item for item in report.missing_candles
+                    if _missing_timeframe(item) in CORE_DECISION_TIMEFRAMES]
+    optional_missing = [item for item in report.missing_candles
+                        if _missing_timeframe(item) not in CORE_DECISION_TIMEFRAMES]
+    if optional_missing:
+        report.warnings.append(
+            "OPTIONAL_TIMEFRAME_GAP: " + "; ".join(optional_missing))
     if tick is None or all(df.empty for df in candles_by_tf.values()):
         report.status = "FAILED"
     elif stale:
         report.status = "STALE"
-    elif report.missing_candles or report.source_mismatch or not required_missing or any("bid(" in w or "inconsistent OHLC" in w for w in report.warnings):
+    elif core_missing or report.source_mismatch or not required_missing or any(
+            "bid(" in warning or "inconsistent OHLC" in warning
+            for warning in report.warnings):
         report.status = "DEGRADED"
     else:
         report.status = "GOOD"
