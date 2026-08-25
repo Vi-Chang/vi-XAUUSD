@@ -49,6 +49,18 @@ def _profile(event: dict) -> dict:
         "pullbackLow": _number(setup.get("pullbackEntryZoneLow")),
         "pullbackHigh": _number(setup.get("pullbackEntryZoneHigh")),
         "atr": max(_number(setup.get("atr15")) or _number(event.get("atr15")) or 0.0, 0.0),
+        "marketBias": str(event.get("marketBias") or
+                          (event.get("canonicalDecision") or {}).get("marketBias") or "NEUTRAL"),
+        "entryConfirmation": str(event.get("entryConfirmation") or
+                                 (event.get("canonicalDecision") or {}).get(
+                                     "entryConfirmation") or ""),
+        "defenseState": str(event.get("defenseState") or
+                            (event.get("canonicalDecision") or {}).get("defenseState") or ""),
+        "dataHealth": str(event.get("dataHealth") or
+                          (event.get("canonicalDecision") or {}).get("dataHealth") or ""),
+        "primaryTriggerId": str(event.get("primaryTriggerId") or
+                                (event.get("canonicalDecision") or {}).get(
+                                    "activeSetupId") or ""),
     }
 
 
@@ -63,6 +75,11 @@ def is_meaningful_change(previous: dict | None, current: dict) -> tuple[bool, st
         return True, "DIRECTION_CHANGED"
     if old["setupId"] != new["setupId"]:
         return True, "NEW_SCENARIO"
+    for field in (
+            "marketBias", "entryConfirmation", "defenseState", "dataHealth",
+            "primaryTriggerId"):
+        if old[field] != new[field]:
+            return True, f"{field.upper()}_CHANGED"
     category = alert_category(current)
     if old["eventType"] != new["eventType"] and category in {
             "ENTRY_READY", "EXIT_WARNING", "MISSED_ENTRY",
@@ -121,12 +138,26 @@ def notification_fingerprint_parts(event: dict) -> dict[str, str]:
         _price(setup.get("pullbackEntryZoneLow")),
         _price(setup.get("pullbackEntryZoneHigh")),
     )))
-    # A setup's source candle is immutable. Do not use the latest polling candle,
-    # otherwise an unchanged WAIT becomes a new alert every 15 minutes.
-    source_time = (setup.get("confirmedCandleTime") or setup.get("createdFromCandleTime")
-                   or event.get("sourceDataTime")
-                   or event.get("decisionBasisCandleCloseTime")
-                   or event.get("candleCloseTime") or "")
+    event_type = str(event.get("event_type") or "")
+    candle_scoped_events = {
+        "DEFENSE_BROKEN_CONFIRMED", "BREAKOUT_CONFIRMED", "BREAK_CONFIRMED",
+        "RECLAIM_CONFIRMED", "DEFENSE_RECLAIMED", "DEFENSE_HELD",
+        "ENTRY_READY", "ENTRY_NOW",
+    }
+    # Candle time belongs to the identity only when that exact event requires a
+    # closed candle. A newer context candle must not turn an unchanged WAIT,
+    # defense test or retest wait into a new notification.
+    requires_closed_candle = (
+        event_type in candle_scoped_events or event_type.startswith("ENTRY_READY")
+    )
+    source_time = ""
+    if requires_closed_candle:
+        source_time = (setup.get("confirmedCandleTime")
+                       or event.get("decisionBasisCandleCloseTime")
+                       or event.get("closedBarTimestamp")
+                       or event.get("candleCloseTime")
+                       or setup.get("createdFromCandleTime")
+                       or event.get("sourceDataTime") or "")
     parts = {
         "symbol": str(event.get("symbol") or "XAUUSD"),
         "scenarioId": str(scenario_id),
@@ -139,8 +170,22 @@ def notification_fingerprint_parts(event: dict) -> dict[str, str]:
         "canonicalStateVersion": str(
             event.get("canonicalStateVersion") or event.get("decisionVersion") or
             (event.get("canonicalDecision") or {}).get("decisionVersion") or "1"),
+        "canonicalState": str(event.get("canonicalState") or
+                              event.get("currentState") or status),
+        "marketBias": str(event.get("marketBias") or
+                          (event.get("canonicalDecision") or {}).get("marketBias") or "NEUTRAL"),
+        "entryConfirmation": str(event.get("entryConfirmation") or
+                                 (event.get("canonicalDecision") or {}).get(
+                                     "entryConfirmation") or ""),
+        "defenseState": str(event.get("defenseState") or
+                            (event.get("canonicalDecision") or {}).get("defenseState") or ""),
+        "dataHealth": str(event.get("dataHealth") or
+                          (event.get("canonicalDecision") or {}).get("dataHealth") or ""),
+        "primaryTriggerId": str(event.get("primaryTriggerId") or
+                                (event.get("canonicalDecision") or {}).get(
+                                    "activeSetupId") or scenario_id),
     }
-    if str(event.get("event_type") or "") in {"DATA_STALE", "DATA_RECOVERED"}:
+    if event_type in {"DATA_STALE", "DATA_RECOVERED"}:
         # Freshness alerts are transitions, not candle-scoped market setups.
         parts["scenarioId"] = "DATA_HEALTH"
         parts["sourceCandleTime"] = ""
@@ -236,6 +281,9 @@ def semantic_key(event: dict) -> str:
             str(event.get("targetIndex") or 0),
         ))
         return hashlib.sha256(raw.encode()).hexdigest()
+    if any(key in event for key in (
+            "canonicalDecision", "marketBias", "entryConfirmation", "defenseState")):
+        return notification_fingerprint(event)
     raw = "|".join((
         str(event.get("symbol") or "XAUUSD"),
         str(event.get("timeframe") or "15M"),

@@ -552,6 +552,7 @@ class AnalysisResult(BaseModel):
     market_data_health: dict = Field(default_factory=dict)
     closed_candles: dict = Field(default_factory=dict)
     realtime_presentation: dict = Field(default_factory=dict)
+    decision_health_state: dict = Field(default_factory=dict)
     event_risk: EventRisk = EventRisk()
     cross_market_context: CrossMarketContext = CrossMarketContext()
     market_state: str = "INSUFFICIENT_DATA"

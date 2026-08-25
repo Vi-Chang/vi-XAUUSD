@@ -129,13 +129,14 @@ def test_short_price_invariant():
     assert not validate_trade_prices("SHORT", 4622, 4610, [4600])
 
 
-def test_short_defense_crossed_is_explicit():
+def test_short_defense_intrabar_cross_waits_for_closed_confirmation():
     data = fixture(direction="SHORT", trigger=4645)
     data["breakout_setup_manager"]["setups"][0].update(
         entryZoneLow=4620, entryZoneHigh=4624, maxChasePrice=4610,
         stopPrice=4626.13, tp1=4600, tp2=4590, tp3=4580)
     state = build_realtime_presentation(data, now=NOW)
-    assert state["defenseState"] == "POSITION_DEFENSE_TRIGGERED"
+    assert state["defenseState"] == "BROKEN_PENDING_CLOSE"
+    assert state["entryConfirmation"] == "WAIT_15M_CLOSE"
 
 
 def test_stale_ai_snapshot_cannot_override_realtime_price():

@@ -7,6 +7,7 @@ from app.config import get_settings
 from app.engines.candle_confirmation_registry import build_confirmation_registry
 from app.engines.confidence import get_confidence_grade
 from app.engines.data_health_gate import evaluate_data_health
+from app.engines.decision_health import evaluate_decision_health
 
 TERMINAL_SETUP_STATES = {"INVALIDATED", "ARCHIVED", "EXPIRED", "SETUP_EXPIRED",
                          "PULLBACK_INVALIDATED", "MISSED_ENTRY"}
@@ -128,6 +129,8 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
     settings = get_settings()
     minimum_rr = float(settings.decision_assistant_min_rr)
     health = evaluate_data_health(data)
+    decision_health = (data.get("decision_health_state") or
+                       evaluate_decision_health(data))
     normalized = data.get("normalized_analysis") or {}
     signal_score = _number((data.get("decision") or {}).get("signal_score"))
     closed_candle = ((data.get("closed_candles") or {}).get("15M") or {})
@@ -147,7 +150,8 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
     candidates = [item for item in all_candidates if item["active"]]
     behavior_state = data.get("market_behavior_engine") or {}
     rejection = data.get("wick_rejection_engine") or behavior_state.get("wick_rejection") or {}
-    market_bias = str(behavior_state.get("market_bias") or
+    market_bias = str(decision_health.get("marketBias") or
+                      behavior_state.get("market_bias") or
                       normalized.get("trendBias") or "neutral").upper()
     market_bias = ("BULLISH" if "BULL" in market_bias else
                    "BEARISH" if "BEAR" in market_bias else "NEUTRAL")
@@ -192,13 +196,20 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
     early = _number(normalized.get("triggerLevel"))
     if early == trigger_level:
         early = None
-    stale = not bool(health.get("healthy"))
+    entry_confirmation = str(decision_health.get("entryConfirmation") or
+                             "BLOCKED_BY_DATA")
+    data_confirmation_blocked = entry_confirmation in {
+        "WAIT_15M_CLOSE", "BLOCKED_BY_DATA"}
+    stale = not bool(health.get("healthy")) or data_confirmation_blocked
     behavior = str(behavior_state.get("market_behavior") or "RANGE")
     rr_ok = bool(selected.get("rrPassed")) if selected else False
     confirmation_closed = (trigger_level is None or
                            (confirmation or {}).get("status") == "CLOSED_CONFIRMED")
     can_enter = (bool(final.get("canEnter")) and rr_ok and not stale
-                 and closed_available and confirmation_closed)
+                  and entry_confirmation == "READY"
+                  and closed_available and confirmation_closed)
+    if str(decision_health.get("defenseState") or "") == "BROKEN_CONFIRMED":
+        can_enter = False
     conflict = str(rejection.get("momentum_price_conflict") or "NONE")
     rejection_state = str(rejection.get("wick_rejection_state") or "NO_SIGNIFICANT_REJECTION")
     rejection_breakout = str(rejection.get("breakout_state") or "NONE")
@@ -249,8 +260,29 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
                 "label": (f"15M 收盤{'站穩' if recovery_direction == 'LONG' else '跌破'} "
                           f"{recovery_trigger:.2f}；確認後仍須通過位置、停損與 RR 閘門"),
             }
+    if entry_confirmation in {"WAIT_15M_CLOSE", "BLOCKED_BY_DATA"}:
+        canonical_trigger = {
+            "setupId": selected.get("setupId") if selected else None,
+            "direction": direction, "timeframe": "15M",
+            "condition": "waitForLatestClosedCandle", "status": "PENDING",
+            "source": "CLOSED_CANDLE", "sourceCandleTime": candle_time,
+            "label": "等待最新一根 15M K 棒正式收盤；取得後重新計算進場條件",
+        }
+    elif entry_confirmation == "WAIT_NEW_STRUCTURE":
+        canonical_trigger = {
+            "setupId": None, "direction": direction, "timeframe": "15M",
+            "condition": "waitForNewStructure", "status": "PENDING",
+            "source": "CLOSED_CANDLE", "sourceCandleTime": candle_time,
+            "label": "當前劇本已失效；等待新的15M回踩或跌破回測結構形成",
+        }
     primary_reason = str(final.get("humanSummary") or "等待條件一致")
-    if stale:
+    if entry_confirmation == "WAIT_15M_CLOSE":
+        primary_reason = "市場方向保留，但最新15M收盤暫缺，暫停新進場。"
+    elif entry_confirmation == "BLOCKED_BY_DATA":
+        primary_reason = "行情資料不足，等待最新15M收盤後再判斷。"
+    elif entry_confirmation == "WAIT_NEW_STRUCTURE":
+        primary_reason = "高週期方向保留；當前交易劇本已失效，等待新的短線結構。"
+    elif stale:
         primary_reason = "行情資料延遲，等待最新資料確認。"
     elif direction == "LONG" and behavior == "SLOW_BEARISH_DRIFT":
         primary_reason = "大方向仍偏多，但15M正在緩步下降，暫停追多並等待止跌。"
@@ -439,8 +471,19 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
         "closedCandle": closed_candle,
         "closedCandleAvailable": closed_available,
         "closedCandleErrorReason": closed_error,
-        "marketBias": behavior_state.get("market_bias") or str(
-            normalized.get("trendBias") or "neutral").upper(),
+        "marketBias": market_bias,
+        "dataHealth": decision_health.get("dataHealth"),
+        "entryConfirmation": entry_confirmation,
+        "defenseState": decision_health.get("defenseState"),
+        "defenseLevel": decision_health.get("defenseLevel"),
+        "falseBreakDetected": bool(decision_health.get("falseBreakDetected")),
+        "activeLongScenario": decision_health.get("activeLongScenario", "ACTIVE"),
+        "activeShortScenario": decision_health.get("activeShortScenario", "ACTIVE"),
+        "shortTermStructure": decision_health.get("shortTermStructure", "UNCHANGED"),
+        "searchNextScenario": bool(decision_health.get("searchNextScenario")),
+        "nextScenarioCandidates": list(
+            decision_health.get("nextScenarioCandidates") or []),
+        "contextClosed15m": decision_health.get("contextClosed15m"),
         "signalScore": signal_score,
         "confidenceGrade": (get_confidence_grade(signal_score)
                             if signal_score is not None else None),

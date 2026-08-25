@@ -249,6 +249,9 @@ class Settings(BaseSettings):
     decision_assistant_min_price_delta: float = 0.50
     entry_anchor_max_distance_atr_mult: float = 1.20
     entry_anchor_max_distance_price_pct: float = 0.0035
+    closed_15m_context_max_staleness_seconds: int = 20 * 60
+    defense_confirmation_buffer_atr_mult: float = 0.10
+    defense_approaching_atr_mult: float = 0.25
     long_breakout_threshold_atr: float = 0.10
     short_breakout_threshold_atr: float = 0.12
     long_pullback_threshold_atr: float = 0.70
