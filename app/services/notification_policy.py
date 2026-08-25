@@ -9,7 +9,7 @@ ACTION = {
     "SOFT_INVALIDATED", "EXIT_NOW", "ENTRY_INVALIDATED",
 }
 IMPORTANT = {
-    "DATA_STALE", "DATA_RECOVERED", "DOUBLE_SWEEP_CONFIRMED",
+    "DATA_DELAYED", "DATA_STALE", "DATA_RECOVERED", "DOUBLE_SWEEP_CONFIRMED",
     "FAILED_BREAKOUT", "FAILED_BREAKDOWN", "LIQUIDITY_SWEEP_HIGH",
     "LIQUIDITY_SWEEP_LOW", "WAIT_RETEST", "MISSED_ENTRY", "SETUP_EXPIRED",
     "TP1_HIT", "TP2_HIT", "TP3_HIT", "TRAIL_UPDATED", "POSITION_REDUCE",
@@ -33,7 +33,7 @@ WAIT_STATES = {"WAIT", "NO_TRADE", "WAIT_CONFIRMATION"}
 
 
 def priority(event_type: str, payload: dict) -> str:
-    if event_type == "DATA_STALE" and payload.get("positionId"):
+    if event_type in {"DATA_DELAYED", "DATA_STALE"} and payload.get("positionId"):
         return "CRITICAL"
     if event_type in CRITICAL:
         return "CRITICAL"

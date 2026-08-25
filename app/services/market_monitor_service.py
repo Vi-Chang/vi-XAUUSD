@@ -309,18 +309,13 @@ def evaluate_market_monitors(
                     + assistant_events + opportunity_events)
     signal_facts += (double_sweep_events + break_events + recovery_events
                      + profit_events)
-    previous_health_name = str(previous_decision_health.get("dataHealth") or "")
-    current_health_name = str(decision_health.get("dataHealth") or "")
-    if previous_health_name and previous_health_name != current_health_name:
+    health_event = decision_health.get("dataHealthEvent")
+    if health_event:
         signal_facts.append({
-            "event_type": ("DATA_RECOVERED" if current_health_name in {
-                "HEALTHY", "RECOVERING"} else "DATA_STALE"),
-            "currentState": current_health_name,
+            **dict(health_event),
             "marketBias": decision_health.get("marketBias"),
             "entryConfirmation": decision_health.get("entryConfirmation"),
-            "closedBarTimestamp": ((decision_health.get("latestClosed15m") or
-                                    decision_health.get("contextClosed15m") or {}).get(
-                                        "closeTime")),
+            "dataHealth": decision_health.get("dataHealth"),
             "transitionReason": decision_health.get("reason"),
         })
     previous_defense = str(previous_decision_health.get("defenseState") or "")
@@ -466,6 +461,15 @@ def evaluate_live_quote_state(
     )
     _save(symbol, "regime_state", regime_state)
     live_facts: list[dict] = []
+    health_event = decision_health.get("dataHealthEvent")
+    if health_event:
+        live_facts.append({
+            **dict(health_event),
+            "marketBias": decision_health.get("marketBias"),
+            "entryConfirmation": decision_health.get("entryConfirmation"),
+            "dataHealth": decision_health.get("dataHealth"),
+            "transitionReason": decision_health.get("reason"),
+        })
     old_defense = str(previous_decision_health.get("defenseState") or "")
     new_defense = str(decision_health.get("defenseState") or "")
     defense_events = {

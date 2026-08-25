@@ -97,7 +97,13 @@ def test_data_recovery_emits_a_distinct_canonical_event_once():
     stale_data = market()
     stale_data["normalized_analysis"]["marketDataStatus"] = "STALE"
     stale, _ = evaluate_final_decision(stale_data)
-    recovered, events = evaluate_final_decision(market(), previous=stale)
+    recovered_data = market()
+    recovered_data["signal_facts"] = [{
+        "event_type": "DATA_RECOVERED",
+        "dataIncidentId": "DATA-20260821-1500",
+        "dataHealthEventKey": "DATA_RECOVERED:DATA-20260821-1500",
+    }]
+    recovered, events = evaluate_final_decision(recovered_data, previous=stale)
     assert recovered["primaryReason"] != "DATA_STALE"
     assert "DATA_RECOVERED" in {event["event_type"] for event in events}
     _same, repeated = evaluate_final_decision(market(), previous=recovered)

@@ -250,6 +250,8 @@ class Settings(BaseSettings):
     entry_anchor_max_distance_atr_mult: float = 1.20
     entry_anchor_max_distance_price_pct: float = 0.0035
     closed_15m_context_max_staleness_seconds: int = 20 * 60
+    data_health_degrade_confirm_count: int = 2
+    data_health_recovery_confirm_count: int = 2
     defense_confirmation_buffer_atr_mult: float = 0.10
     defense_approaching_atr_mult: float = 0.25
     long_breakout_threshold_atr: float = 0.10

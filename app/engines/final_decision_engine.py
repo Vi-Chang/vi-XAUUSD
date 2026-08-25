@@ -640,13 +640,6 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
     events: list[dict] = []
     event_types: list[str] = []
     if changed:
-        if (previous and primary in {
-                "DATA_STALE", "WAIT_15M_CLOSE", "BLOCKED_BY_DATA"}
-                and str(previous.get("primaryReason") or "") != primary):
-            event_types.append("DATA_STALE")
-        elif str(previous.get("primaryReason") or "") in {
-                "DATA_STALE", "WAIT_15M_CLOSE", "BLOCKED_BY_DATA"}:
-            event_types.append("DATA_RECOVERED")
         if action in {"ENTER_LONG", "ENTER_SHORT"}:
             event_types.append("ENTRY_READY")
         elif primary in {"SCENARIO_INVALIDATED", "SCENARIO_DEFENSE_INVALIDATED"}:
@@ -671,7 +664,7 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
         "RECOVERY_SETUP_INVALIDATED",
         "DEFENSE_TEST", "DEFENSE_RECLAIMED", "DEFENSE_HELD",
         "DEFENSE_BROKEN_CONFIRMED",
-        "DATA_STALE", "DATA_RECOVERED",
+        "DATA_DELAYED", "DATA_STALE", "DATA_RECOVERED",
     }
     # Lifecycle facts are state transitions in their own right. They must not
     # disappear merely because the high-level ENTER/WAIT/MANAGE action stayed
@@ -738,7 +731,9 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
                 "emergencyStop", "reclaimDeadline", "reasonCode", "closedPrice",
                 "previousBehavior", "behaviorConfidence", "marketBias",
                 "breakLifecycle", "positionProfitDecision", "triggerLevel",
-                "opportunityId", "defenseSide", "confirmationBuffer")
+                "opportunityId", "defenseSide", "confirmationBuffer",
+                "dataIncidentId", "dataHealthEventKey", "previousDataHealth",
+                "currentDataHealth", "closedBarTimestamp")
                if canonical_fact.get(key) is not None},
         })
         if canonical_fact.get("fakeBreakoutRecovery"):
