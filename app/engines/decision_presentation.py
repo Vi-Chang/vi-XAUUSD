@@ -223,13 +223,8 @@ def _format_decision_message_legacy(event: dict) -> str:
                 "原因：價格沒有守住收復條件，這次反向觀察不再使用。",
                 "現在：先不要進場，等待系統重新建立市場結構。",
             ])
-        failed_text = "空頭跌破" if failed_direction == "SHORT" else "多頭突破"
-        bias_text = "多方" if opposite == "LONG" else "空方"
-        title = (
-            f"🟢【{failed_text}失敗｜{bias_text}重新取得優勢】"
-            if opposite == "LONG" else
-            f"🔴【{failed_text}失敗｜{bias_text}重新取得優勢】"
-        )
+        title = ("🟡【短多反彈正在形成】" if opposite == "LONG" else
+                 "🟡【短空機會正在形成】")
         confirmed = canonical_type == "OPPOSITE_SETUP_CONFIRMED"
         lines = [
             title,
@@ -237,18 +232,29 @@ def _format_decision_message_legacy(event: dict) -> str:
             ("發生什麼事：關鍵位跌破後快速站回，且下跌沒有延續。"
              if failed_direction == "SHORT" else
              "發生什麼事：關鍵位突破後快速跌回，且上漲沒有延續。"),
-            ("現在：反向觀察條件已由收盤確認，仍需通過進場位置、停損與盈虧比。"
+            ("現在：最近短線確認已完成，仍需通過進場位置、停損與風險報酬比。"
              if confirmed else
-             "現在：先不要追價，等待下一根已收盤 15 分鐘 K 棒確認。"),
+             ("目前先準備，等待15M收盤重新站回最近的短線位置。"
+              if opposite == "LONG" else
+              "目前先準備，等待15M收盤跌破最近的短線位置。")),
         ]
         if failed_direction:
             lines.insert(3, f"原{'空方' if failed_direction == 'SHORT' else '多方'}劇本：已取消")
         if isinstance(trigger, (int, float)):
             verb = "站上" if opposite == "LONG" else "跌破"
-            lines.append(f"下一觸發：15M 收盤{verb} {float(trigger):.2f}")
+            lines.append(f"短線進場確認：15M 收盤{verb} {float(trigger):.2f}")
         if isinstance(strong, (int, float)):
             verb = "站穩" if opposite == "LONG" else "跌破並站穩"
-            lines.append(f"較強確認：15M 收盤{verb} {float(strong):.2f}")
+            strong_timeframe = str(next_action.get(
+                "strongConfirmationTimeframe") or "15M")
+            lines.append(
+                f"趨勢{'翻多' if opposite == 'LONG' else '翻空'}確認："
+                f"{strong_timeframe} 收盤{verb} {float(strong):.2f}")
+            lines.append("⚠️ 趨勢確認只影響信心與持有時間，不會阻擋合格的短線進場。")
+        zone_low = next_action.get("entryZoneLow")
+        zone_high = next_action.get("entryZoneHigh")
+        if isinstance(zone_low, (int, float)) and isinstance(zone_high, (int, float)):
+            lines.append(f"候選進場：{float(zone_low):.2f}–{float(zone_high):.2f}")
         if isinstance(invalidation, (int, float)):
             verb = "跌破" if opposite == "LONG" else "站上"
             lines.append(f"取消條件：15M 收盤{verb} {float(invalidation):.2f}")

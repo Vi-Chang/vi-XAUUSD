@@ -115,20 +115,26 @@ def collect_signal_candidates(data: dict) -> list[SignalCandidate]:
         setup_ledgers.append({
             "setupId": f"FBR-{recovery.get('sourceFailureId')}",
             "lineageId": str(recovery.get("sourceFailureId") or ""),
-            "direction": recovery_direction, "status": "WATCHING",
+            "direction": recovery_direction,
+            "status": "ENTRY_READY" if recovery.get("scalpEntryReady") else "WATCHING",
             "signalScore": min(100, 50 + recovery_boost),
             "breakoutTrigger": next_action.get("triggerLevel"),
+            "entryZoneLow": next_action.get("entryZoneLow"),
+            "entryZoneHigh": next_action.get("entryZoneHigh"),
             "stopPrice": next_action.get("invalidationLevel"),
             "tp1": targets[0] if targets else None,
             "tp2": targets[1] if len(targets) > 1 else None,
             "tp3": targets[2] if len(targets) > 2 else None,
             "expiresAt": recovery.get("expiresAt"),
             "type": "FAKE_BREAKOUT_RECOVERY",
+            "riskReward": recovery.get("executableRR"),
+            "estimatedRR": next_action.get("estimatedRR"),
             "passedReasons": [
                 str(recovery.get("breakoutFailureState") or ""),
                 str(recovery.get("liquiditySweepState") or ""),
             ],
-            "missingConditions": ["等待新的15M收盤完成反向確認"],
+            "missingConditions": ([] if recovery.get("scalpEntryReady") else
+                                   ["等待新的15M收盤完成短線進場確認"]),
         })
     opportunity_engine = data.get("entry_opportunity_engine") or {}
     unified_opportunities = list(opportunity_engine.get("opportunities") or [])
@@ -349,6 +355,14 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
         return executable, item.lifecycle_state == "ENTRY_READY", item.strength
 
     selected = max(candidates, key=_selection_rank, default=None)
+    recovery_scalp = bool(selected and selected.setup_type == "FAKE_BREAKOUT_RECOVERY")
+    if (recovery_scalp and selected is not None
+            and selected.lifecycle_state == "ENTRY_READY"
+            and bool(recovery.get("scalpEntryReady"))):
+        # A failed-break recovery owns its local execution confirmation.  It
+        # must not be vetoed by the older trend-confirmation ladder, while all
+        # price, stop, RR and data gates below remain mandatory.
+        entry_confirmation = "READY"
     # Score and R/R must belong to the selected setup. Assistant summaries may
     # describe a different, higher-scoring but non-executable candidate.
     raw_score = int(selected.strength if selected else
@@ -375,7 +389,9 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
         not event.get("event_lockout") and not event.get("post_event_wait")
         and spread <= spread_limit and not position_active
         and not (selected and selected.direction == "LONG" and behavior in {
-            "STRONG_DECLINE", "REVERSAL_WARNING", "REVERSAL_CONFIRMED"})
+            "STRONG_DECLINE", "REVERSAL_CONFIRMED"})
+        and not (selected and selected.direction == "LONG" and not recovery_scalp
+                 and behavior == "REVERSAL_WARNING")
         and not (defense_state == "BROKEN_CONFIRMED" and (
             not selected or selected.direction == decision_health.get("side"))))
     execution_gate = (can_execute_scenario(
@@ -420,10 +436,11 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
         action, primary, risk_gate = "NO_TRADE", "SPREAD_TOO_HIGH", "RISK_BLOCK"
     elif position_active:
         action, primary, risk_gate = "MANAGE_POSITION", "POSITION_ACTIVE", "POSITION_MANAGEMENT"
-    elif (selected and selected.direction == "LONG"
-          and behavior in {"STRONG_DECLINE", "REVERSAL_WARNING", "REVERSAL_CONFIRMED"}):
+    elif (selected and selected.direction == "LONG" and (
+            behavior in {"STRONG_DECLINE", "REVERSAL_CONFIRMED"}
+            or (not recovery_scalp and behavior == "REVERSAL_WARNING"))):
         action, primary, risk_gate = "NO_TRADE", "BEHAVIOR_LONG_BLOCK", "RISK_BLOCK"
-    elif (selected and selected.direction == "LONG"
+    elif (selected and selected.direction == "LONG" and not recovery_scalp
           and behavior == "SLOW_BEARISH_DRIFT"):
         action, primary, risk_gate = "WAIT", "BEHAVIOR_WAIT_PULLBACK", "WAIT"
     elif str(assistant.get("regime")) in {"RANGE", "NO_EDGE", "REVERSAL_RISK"}:

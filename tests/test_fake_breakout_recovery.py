@@ -103,8 +103,9 @@ def test_recovery_telegram_explains_action_trigger_invalidation_and_targets():
         **events[0], "fakeBreakoutRecovery": state,
         "nextAction": state["nextAction"],
     })
-    assert "空頭跌破失敗" in text
-    assert "先不要追價" in text
-    assert "下一觸發：15M 收盤站上" in text
+    assert "短多反彈正在形成" in text
+    assert "短線進場確認：15M 收盤站上" in text
+    assert "趨勢翻多確認：15M 收盤站穩" in text
+    assert "趨勢確認只影響信心與持有時間" in text
     assert "取消條件：15M 收盤跌破" in text
     assert "參考目標" in text
