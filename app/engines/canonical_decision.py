@@ -9,6 +9,7 @@ from app.engines.confidence import get_confidence_grade
 from app.engines.data_health_gate import evaluate_data_health
 from app.engines.decision_health import evaluate_decision_health
 from app.engines.multi_timeframe_bias import derive_multi_timeframe_bias
+from app.engines.pullback_zone_semantics import normalize_pullback_zones
 from app.engines.scalp_decision import build_scalp_decision_snapshot
 from app.engines.scenario_execution import resolve_scenario_validity
 
@@ -212,6 +213,16 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
                         default=None)
     trigger_level = selected.get("confirmationLevel") if selected else None
     direction = str(selected.get("direction") or final.get("direction") or "NEUTRAL")
+    pullback_raw = [dict(item) for item in raw_opportunities
+                    if "PULLBACK" in str(item.get("type") or "")]
+    pullback_reference = (_number(trigger_level) or current)
+    normalized_pullbacks = (normalize_pullback_zones(
+        direction, pullback_reference, pullback_raw)
+        if pullback_reference is not None else [])
+    shallow_pullback = next((item for item in normalized_pullbacks
+                             if item.get("semanticPullbackType") == "SHALLOW"), None)
+    deep_pullback = next((item for item in reversed(normalized_pullbacks)
+                         if item.get("semanticPullbackType") == "DEEP"), None)
     decision_timestamp = str(data.get("timestamp_utc") or health.get("evaluatedAt") or "")
     candle_time = str(closed_candle.get("close_time") or
                       normalized.get("lastClosedCandleTimestamp") or "")
@@ -651,10 +662,9 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
                             "ENTRY_READY" if can_enter else "WAIT_CONFIRMATION"),
             "selectedSetup": selected or None,
             "primaryOpportunityId": opportunity_engine.get("primaryOpportunityId"),
-            "shallowPullback": next((x for x in raw_opportunities
-                                     if x.get("type") == "SHALLOW_PULLBACK"), None),
-            "deepPullback": next((x for x in raw_opportunities
-                                  if x.get("type") == "DEEP_PULLBACK"), None),
+            "shallowPullback": shallow_pullback,
+            "deepPullback": deep_pullback,
+            "normalizedPullbackZones": normalized_pullbacks,
             "breakoutRetest": next((x for x in raw_opportunities
                                     if x.get("type") == "BREAKOUT_RETEST"), None),
             "pullbackLong": best_pullback,

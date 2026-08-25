@@ -7,9 +7,39 @@ from typing import Literal, cast
 from zoneinfo import ZoneInfo
 
 from app.engines.confidence import confidence_label, normalize_signal_score
+from app.engines.multi_timeframe_bias import derive_multi_timeframe_bias
 from app.engines.user_facing_trade_message import UserFacingTradeMessageBuilder
 
 TAIPEI = ZoneInfo("Asia/Taipei")
+
+
+def _direction_first_context(event: dict, canonical: dict) -> tuple[str, list[str]]:
+    multi = event.get("multiTimeframeBias") or canonical.get("multiTimeframeBias")
+    if not multi:
+        multi = derive_multi_timeframe_bias(
+            event.get("normalized_analysis") or canonical or event,
+            canonical_bias=str(canonical.get("marketBias") or
+                               event.get("marketBias") or "NEUTRAL"),
+        )
+    labels = {
+        "BULLISH": "🟢 偏多", "BEARISH": "🔴 偏空",
+        "BULLISH_CORRECTION": "🟠 多頭修正",
+        "BEARISH_CORRECTION": "🟠 空頭修正",
+        "NEUTRAL": "⚪ 震盪", "TRANSITION": "🟡 轉換中",
+        "UNKNOWN": "資料確認中",
+    }
+    short = str(multi.get("shortTermBias") or "SHORT_TERM_TRANSITION")
+    short_label = {
+        "SHORT_TERM_BULLISH": "🟢 偏多", "SHORT_TERM_BEARISH": "🔴 偏空",
+        "SHORT_TERM_MIXED": "🟡 方向分歧", "SHORT_TERM_TRANSITION": "🟡 轉換中",
+    }.get(short, "資料確認中")
+    direction_text = ("短線偏多" if short == "SHORT_TERM_BULLISH" else
+                      "短線偏空" if short == "SHORT_TERM_BEARISH" else "方向分歧")
+    lines = [f"短線：{short_label}"]
+    for key, timeframe in (("bias15m", "15M"), ("bias1h", "1H"), ("bias4h", "4H")):
+        value = str(multi.get(key) or "UNKNOWN")
+        lines.append(f"{timeframe}：{labels.get(value, '資料確認中')}")
+    return direction_text, lines
 
 
 def plain_trade_status(state: str, *, can_enter: bool = False) -> str:
@@ -513,28 +543,38 @@ def _format_decision_message_legacy(event: dict) -> str:
             return ("⚠️【XAUUSD 決策資料不完整】\n"
                     "暫停交易判斷。\n"
                     f"原因：{'、'.join(completeness.get('errors') or ['UNKNOWN'])}")
-        title = ("🟢【XAUUSD｜現在可以進場】" if action in {"BUY", "SELL"}
-                 else "🟡【XAUUSD｜現在先不要進場】")
+        direction_text, direction_lines = _direction_first_context(event, canonical)
+        if action in {"BUY", "SELL"}:
+            title = f"{'🟢' if action == 'BUY' else '🔴'}【XAUUSD｜{direction_text}｜可以進場】"
+        else:
+            phase = str(canonical.get("entryConfirmation") or "")
+            wait_text = ("等回踩進場" if "RETEST" in phase or "PULLBACK" in phase
+                         else "等突破確認" if "CONFIRM" in phase else "暫不進場")
+            title = f"🟡【XAUUSD｜{direction_text}｜{wait_text}】"
         lines = [title, f"現價：{float(event.get('currentPrice') or 0):.2f}",
+                 *direction_lines,
                  f"原因：{canonical.get('primaryReason')}",
                  f"最近可執行觸發：{trigger.get('label')}"]
         chosen = entry.get("selectedSetup") or {}
-        if chosen:
+        if chosen and chosen.get("entryZone"):
             zone = chosen.get("entryZone") or {}
+            zone_label = chosen.get("entryZoneLabel") or "候選進場區"
             lines.extend([
-                f"{chosen.get('entryZoneLabel')}：{zone.get('low') or '—'}～{zone.get('high') or '—'}",
+                f"{zone_label}：{zone.get('low') or '—'}～{zone.get('high') or '—'}",
                 (f"可執行 RR：{chosen.get('executableRR')}" if chosen.get('executableRR') is not None
                  else f"預估 RR：{chosen.get('estimatedRR') if chosen.get('estimatedRR') is not None else '—'}"),
             ])
-        opportunities = canonical.get("entryOpportunities") or []
-        labels = {"SHALLOW_PULLBACK": "淺回踩",
-                  "DEEP_PULLBACK": "深度備案",
-                  "BREAKOUT_RETEST": "突破回測"}
+        normalized_zones = entry.get("normalizedPullbackZones") or []
+        opportunities = normalized_zones or canonical.get("entryOpportunities") or []
+        labels = {"SHALLOW": "淺回踩", "MEDIUM": "次要回踩",
+                  "DEEP": "深度備案", "BREAKOUT_RETEST": "突破回測",
+                  "SHALLOW_PULLBACK": "淺回踩", "DEEP_PULLBACK": "深度備案"}
         for opportunity in opportunities[:3]:
             zone = opportunity.get("entry_zone") or {}
             role = ("備用觀察區" if opportunity.get("anchor_role") ==
                     "DEEP_PULLBACK_BACKUP" else
-                    labels.get(opportunity.get("type"), opportunity.get("type")))
+                    labels.get(opportunity.get("semanticPullbackType") or
+                               opportunity.get("type"), "候選進場區"))
             lines.append(
                 f"{role} "
                 f"{zone.get('lower', '—')}～{zone.get('upper', '—')}｜"

@@ -5,6 +5,7 @@ import hashlib
 import math
 
 from app.config import get_settings
+from app.services.semantic_decision import build_semantic_decision
 
 ALERT_PRIORITY = {
     "POSITION_EMERGENCY": 140, "SCENARIO_INVALIDATED": 135,
@@ -193,6 +194,7 @@ def notification_fingerprint_parts(event: dict) -> dict[str, str]:
                        or event.get("candleCloseTime")
                        or setup.get("createdFromCandleTime")
                        or event.get("sourceDataTime") or "")
+    semantic = build_semantic_decision(event)
     parts = {
         "symbol": str(event.get("symbol") or "XAUUSD"),
         "scenarioId": str(scenario_id),
@@ -202,9 +204,6 @@ def notification_fingerprint_parts(event: dict) -> dict[str, str]:
         "chaseLimit": _price(chase),
         "invalidationPrice": _price(invalidation),
         "sourceCandleTime": str(source_time),
-        "canonicalStateVersion": str(
-            event.get("canonicalStateVersion") or event.get("decisionVersion") or
-            (event.get("canonicalDecision") or {}).get("decisionVersion") or "1"),
         "canonicalState": str(event.get("canonicalState") or
                               event.get("currentState") or status),
         "marketBias": str(event.get("marketBias") or
@@ -219,6 +218,16 @@ def notification_fingerprint_parts(event: dict) -> dict[str, str]:
         "primaryTriggerId": str(event.get("primaryTriggerId") or
                                 (event.get("canonicalDecision") or {}).get(
                                     "activeSetupId") or scenario_id),
+        "canonicalAction": str(semantic["canonicalAction"]),
+        "shortTermBias": str(semantic["shortTermBias"]),
+        "bias15m": str(semantic["bias15m"]),
+        "bias1h": str(semantic["bias1h"]),
+        "bias4h": str(semantic["bias4h"]),
+        "triggerStatus": str(semantic["triggerStatus"]),
+        "entryZoneState": str(semantic["entryZoneState"]),
+        "rrState": str(semantic["rrState"]),
+        "positionState": str(semantic["positionState"]),
+        "strategyPhase": str(semantic["strategyPhase"]),
     }
     if event_type in {"DATA_DELAYED", "DATA_STALE", "DATA_RECOVERED"}:
         # Freshness alerts are transitions, not candle-scoped market setups.
@@ -245,7 +254,7 @@ def notification_fingerprint(event: dict) -> str:
         "chaseLimit": settings.telegram_chase_change_min_delta,
         "invalidationPrice": settings.telegram_invalidation_change_min_delta,
     }
-    stable = {**parts, "eventType": str(event.get("event_type") or "DECISION_UPDATED")}
+    stable = dict(parts)
     wrapper = event.get("breakoutSetupEvent") or event.get("trendContinuationEvent") or {}
     setup = wrapper.get("setup") or {}
     entry_zone = "-".join(filter(None, (

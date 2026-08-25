@@ -26,20 +26,23 @@ from app.engines.trigger_lifecycle import validate_notification
 from app.services.alert_aggregator import (
     aggregate_signal_facts,
     is_meaningful_change,
+    notification_fingerprint,
     notification_state_regression,
 )
 from app.services.notification_coordinator import coordinate_notification_intents
 from app.services.notification_policy import (
     canonical_dedupe_key,
     eligibility,
-    has_meaningful_action_delta,
     is_expired,
-    user_visible_state_fingerprint,
 )
 from app.services.pre_delivery_trade_safety import (
     audit_delivery_block,
     transition_blocked_entry,
     validate_pre_delivery,
+)
+from app.services.semantic_decision import (
+    build_decision_signature,
+    detect_meaningful_transition,
 )
 
 logger = logging.getLogger(__name__)
@@ -86,10 +89,8 @@ def _notification_event_key(payload: dict, semantic_key: str) -> str:
 
 
 def _notification_payload_hash(payload: dict) -> str:
-    """Secondary semantic guard for separately-created but identical messages."""
-    rendered = format_decision_message(payload)
-    normalized = "\n".join(line.strip() for line in rendered.splitlines() if line.strip())
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    """Secondary guard that never renders text or includes live quote fields."""
+    return notification_fingerprint(payload)
 
 
 def _audit_log(*, payload: dict, event_key: str, payload_hash: str,
@@ -140,12 +141,16 @@ def persist_decision_events(symbol: str, events: list[dict]) -> list[dict]:
     valid_events = []
     for payload in events:
         payload["symbol"] = symbol
-        decision = ({"eligible": False, "reasonCode": "LOG_ONLY_INTENT",
+        # Legacy payloads must pass the same actionability policy. Treating
+        # every payload without eventVersion as meaningful made ordinary WAIT
+        # snapshots enter the durable outbox.
+        decision = ({"eligible": True, "reasonCode": "TEST_NOTIFICATION",
+                     "priority": "INFO"}
+                    if payload.get("event_type") == "TEST_NOTIFICATION" else
+                    {"eligible": False, "reasonCode": "LOG_ONLY_INTENT",
                      "priority": "DEBUG"}
                     if payload.get("notificationRoute") == "LOG_ONLY" else
-                    eligibility(payload) if payload.get("eventVersion") else {
-            "eligible": True, "reasonCode": "SEND_LEGACY_MEANINGFUL_EVENT",
-            "priority": "IMPORTANT"})
+                    eligibility(payload))
         payload["notificationDecision"] = decision
         payload["notificationEligible"] = decision["eligible"]
         if payload.get("eventVersion"):
@@ -285,34 +290,11 @@ def persist_decision_events(symbol: str, events: list[dict]) -> list[dict]:
                     "setupId": payload.get("setupId"),
                     "positionId": payload.get("positionId"),
                     "snapshotId": payload.get("snapshotId")}, created_at=now))
+            if not notice_decision["eligible"] and not is_test:
+                logger.info("telegram notification suppressed by eligibility: %s (%s)",
+                            event_id, notice_decision["reasonCode"])
+                continue
             previous_sent = _last_sent_market_decision(db, symbol, payload)
-            action_delta, action_delta_reason = has_meaningful_action_delta(
-                previous_sent, payload)
-            if notice_decision["eligible"] and not is_test and not action_delta:
-                before_fingerprint = (user_visible_state_fingerprint(previous_sent)
-                                      if previous_sent else "")
-                after_fingerprint = user_visible_state_fingerprint(payload)
-                logger.info(
-                    "telegram action suppressed: snapshot=%s intent=%s reason=%s before=%s after=%s",
-                    payload.get("snapshotId"), payload.get("event_type"),
-                    action_delta_reason, before_fingerprint, after_fingerprint,
-                )
-                db.add(NotificationAudit(
-                    event_id=event_id,
-                    event_type=str(payload.get("event_type") or ""),
-                    eligible=False, reason_code=action_delta_reason,
-                    dedupe_key=semantic_key,
-                    payload={"snapshotId": payload.get("snapshotId"),
-                             "priority": notice_decision.get("userPriority"),
-                             "notificationIntent": payload.get("event_type"),
-                             "fingerprintBefore": before_fingerprint,
-                             "fingerprintAfter": after_fingerprint},
-                    created_at=now,
-                ))
-                notice_decision = {**notice_decision, "eligible": False,
-                                   "reasonCode": action_delta_reason}
-                payload["notificationDecision"] = notice_decision
-                payload["notificationEligible"] = False
             regressed, regression_reason = notification_state_regression(
                 previous_sent, payload)
             if regressed:
@@ -332,12 +314,14 @@ def persist_decision_events(symbol: str, events: list[dict]) -> list[dict]:
                     created_at=now,
                 ))
                 continue
-            meaningful, reason = is_meaningful_change(previous_sent, payload)
-            if not meaningful:
+            semantic_reason = detect_meaningful_transition(previous_sent, payload)
+            meaningful, numeric_reason = is_meaningful_change(previous_sent, payload)
+            reason = semantic_reason or (numeric_reason if meaningful else None)
+            if not reason:
                 logger.info(
                     "telegram notification suppressed: %s (%s)",
                     payload.get("setupId") or event_id,
-                    reason,
+                    numeric_reason,
                 )
                 db.add(NotificationAudit(
                     event_id=event_id,
@@ -345,10 +329,13 @@ def persist_decision_events(symbol: str, events: list[dict]) -> list[dict]:
                     eligible=False,
                     reason_code="SKIP_NO_MEANINGFUL_DECISION_CHANGE",
                     dedupe_key=semantic_key,
-                    payload={"meaningfulChangeReason": reason},
+                    payload={"meaningfulChangeReason": numeric_reason,
+                             "decisionSignature": build_decision_signature(payload)},
                     created_at=now,
                 ))
                 continue
+            payload["decisionSignature"] = build_decision_signature(payload)
+            payload["notificationReason"] = reason
             payload["meaningfulChangeReason"] = reason
             exists = db.execute(
                 select(DecisionEvent.id).where(DecisionEvent.event_id == event_id)
@@ -367,7 +354,7 @@ def persist_decision_events(symbol: str, events: list[dict]) -> list[dict]:
                     event_time_utc=str(payload.get("eventTimeUtc") or payload.get(
                         "candleCloseTime") or ""),
                     notification_eligible=bool(notice_decision["eligible"]),
-                    notification_reason=str(notice_decision["reasonCode"]),
+                    notification_reason=str(reason),
                     notification_priority=str(notice_decision["priority"]),
                     symbol=symbol,
                     previous_state=str(payload.get("previousState") or "WAIT"),

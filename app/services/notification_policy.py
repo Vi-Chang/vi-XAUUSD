@@ -1,12 +1,10 @@
 """Canonical event priority, eligibility, TTL and trace metadata."""
 from __future__ import annotations
 
-import hashlib
-import json
 from datetime import datetime, timezone
 from typing import ClassVar
 
-from app.engines.multi_timeframe_bias import derive_multi_timeframe_bias
+from app.services.semantic_decision import build_decision_signature
 
 CRITICAL = {"STOP_TRIGGERED", "POSITION_EXIT", "HARD_INVALIDATED"}
 ACTION = {
@@ -121,39 +119,7 @@ def is_user_actionable_notification(payload: dict) -> tuple[bool, str, str]:
 
 def user_visible_state_fingerprint(payload: dict) -> str:
     """Identity made only from fields that can alter the user's next action."""
-    canonical = _canonical(payload)
-    scalp = payload.get("scalpDecision") or canonical.get("scalpDecision") or {}
-    multi = payload.get("multiTimeframeBias") or canonical.get("multiTimeframeBias")
-    if not multi:
-        multi = derive_multi_timeframe_bias(
-            payload.get("normalized_analysis") or canonical or payload,
-            canonical_bias=str(payload.get("marketBias") or
-                               canonical.get("marketBias") or "NEUTRAL"))
-    entry = canonical.get("newEntryDecision") or {}
-    selected = entry.get("selectedSetup") or {}
-    position = canonical.get("positionManagement") or {}
-    event_type = str(payload.get("event_type") or "")
-    position_event_action = (event_type if event_type in {
-        "EXIT_NOW", "EXIT_ZONE_REACHED", "EARLY_EXIT", "STOP_TRIGGERED",
-        "POSITION_DEFEND", "TP1_HIT", "TP2_HIT", "TP3_HIT",
-        "TAKE_PROFIT_1", "TAKE_PROFIT_2", "TAKE_PROFIT_3",
-        "TRAILING_STOP_UPDATE"} else None)
-    visible = {
-        "tradingHorizon": payload.get("tradingHorizon") or
-                          canonical.get("tradingHorizon") or "SCALP_INTRADAY",
-        "shortTermBias": scalp.get("scalpBias") or multi.get("shortTermBias"),
-        "macroBias": multi.get("macroBias"),
-        "preferredScalpSide": scalp.get("preferredSide") or
-                              payload.get("preferredScalpSide"),
-        "opportunityState": payload.get("currentState") or canonical.get("setupState"),
-        "entryPermission": payload.get("canEnter", entry.get("canEnter")),
-        "entryZone": payload.get("entryZone") or selected.get("entryZone"),
-        "invalidation": payload.get("stopLoss") or selected.get("tacticalStop"),
-        "positionAction": position.get("action") or position_event_action,
-        "criticalDataBlock": _critical_data_block(payload),
-    }
-    raw = json.dumps(visible, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(raw.encode()).hexdigest()
+    return build_decision_signature(payload)
 
 
 def has_meaningful_action_delta(previous: dict | None,
