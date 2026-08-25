@@ -364,9 +364,10 @@ async def test_same_cycle_three_facts_make_one_telegram_call():
 
 
 @pytest.mark.asyncio
-async def test_two_workers_claim_same_semantic_notification_once():
+async def test_ten_workers_claim_same_semantic_notification_once():
     import asyncio
 
+    init_db()
     facts = [{
         "eventId": "multi-worker-raw", "event_type": "EXIT_NOW",
         "previousState": "WAIT", "currentState": "MISSED_ENTRY",
@@ -383,12 +384,171 @@ async def test_two_workers_claim_same_semantic_notification_once():
         await asyncio.sleep(0.02)
         return "one-worker-won"
 
-    results = await asyncio.gather(
-        deliver_pending_telegram(sender=slow_sender, event_id=created[0]["eventId"]),
-        deliver_pending_telegram(sender=slow_sender, event_id=created[0]["eventId"]),
-    )
+    results = await asyncio.gather(*[
+        deliver_pending_telegram(sender=slow_sender, event_id=created[0]["eventId"])
+        for _ in range(10)
+    ])
     assert sum(results) == 1
     assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_ten_concurrent_emitters_create_one_atomic_outbox_claim():
+    import asyncio
+
+    init_db()
+    symbol = "XAUUSD-ATOMIC-EMIT"
+
+    def emit(_index: int):
+        return persist_decision_events(symbol, [{
+            "eventId": "atomic-emitter-shared", "eventVersion": 1,
+            "event_type": "DATA_DELAYED",
+            "dataHealthEventKey": "DATA_DELAYED:INC-ATOMIC",
+            "dataIncidentId": "INC-ATOMIC", "previousState": "WAIT",
+            "currentState": "DATA_STALE", "transitionReason": "行情延遲",
+            "finalDecision": "WAIT", "currentPrice": 4660,
+            "candleCloseTime": "2026-08-25T04:30:00+00:00",
+            "calculatedAt": "2026-08-25T04:30:01+00:00", "dataVersion": 102,
+        }])
+
+    results = await asyncio.gather(*[
+        asyncio.to_thread(emit, index) for index in range(10)
+    ])
+    # Some callers may observe the same pending aggregate being enriched, but
+    # database ownership and delivery remain exactly one.
+    assert any(results)
+    with db_session() as db:
+        rows = db.execute(select(TelegramNotification).where(
+            TelegramNotification.symbol == symbol)).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].event_key
+        assert rows[0].status == "PENDING"
+        event_id = rows[0].event_id
+    sends = 0
+
+    async def sender(_message):
+        nonlocal sends
+        sends += 1
+        return "atomic-emitter-message"
+
+    delivered = await asyncio.gather(*[
+        deliver_pending_telegram(sender=sender, event_id=event_id)
+        for _ in range(10)
+    ])
+    assert sum(delivered) == 1
+    assert sends == 1
+
+
+@pytest.mark.asyncio
+async def test_data_health_message_uses_latest_canonical_bias_only():
+    from app.services.current_decision_store import (
+        get_canonical_market_bias,
+        publish_current_final_decision,
+    )
+
+    init_db()
+    symbol = "XAUUSD-CANONICAL-BIAS"
+    publish_current_final_decision(symbol, {
+        "decisionSignature": "bias-long", "marketBias": "BULLISH",
+        "sourceCandleCloseTime": "2026-08-25T04:00:00+00:00",
+        "sourceDataVersion": 100, "evaluatedAt": "2026-08-25T04:00:01+00:00",
+        "finalAction": "WAIT", "events": [],
+    })
+    current, _ = publish_current_final_decision(symbol, {
+        "decisionSignature": "bias-short", "marketBias": "BEARISH",
+        "entryConfirmation": "BLOCKED_BY_DATA", "dataHealth": "DEGRADED",
+        "sourceCandleCloseTime": "2026-08-25T04:15:00+00:00",
+        "sourceDataVersion": 101, "evaluatedAt": "2026-08-25T04:15:01+00:00",
+        "finalAction": "WAIT", "events": [],
+    })
+    assert get_canonical_market_bias(symbol) == "BEARISH"
+    event = {
+        "eventId": "canonical-bias-data-delayed", "eventVersion": 1,
+        "event_type": "DATA_DELAYED", "dataHealthEventKey": "DATA_DELAYED:INC-1",
+        "dataIncidentId": "INC-1", "marketBias": "BULLISH",
+        "previousState": "WAIT", "currentState": "DATA_STALE",
+        "transitionReason": "行情延遲", "finalDecision": "WAIT",
+        "currentPrice": 4660, "candleCloseTime": "2026-08-25T04:15:00+00:00",
+        "calculatedAt": "2026-08-25T04:15:01+00:00", "dataVersion": 101,
+        "decisionId": current["decisionId"], "decisionVersion": current["decisionVersion"],
+    }
+    created = persist_decision_events(symbol, [event])
+    assert len(created) == 1
+    assert created[0]["marketBias"] == "BEARISH"
+    assert created[0]["canonicalDecision"]["marketBias"] == "BEARISH"
+
+
+@pytest.mark.asyncio
+async def test_stale_state_version_is_dropped_before_delivery():
+    from app.services.current_decision_store import publish_current_final_decision
+
+    init_db()
+    symbol = "XAUUSD-STALE-VERSION"
+    current, _ = publish_current_final_decision(symbol, {
+        "decisionSignature": "v100", "marketBias": "BULLISH",
+        "sourceCandleCloseTime": "2026-08-25T05:00:00+00:00",
+        "sourceDataVersion": 100, "evaluatedAt": "2026-08-25T05:00:01+00:00",
+        "finalAction": "WAIT", "events": [],
+    })
+    event = {
+        "eventId": "stale-v100-notification", "eventVersion": 1,
+        "event_type": "DATA_DELAYED", "dataHealthEventKey": "DATA_DELAYED:INC-STALE",
+        "dataIncidentId": "INC-STALE", "previousState": "WAIT",
+        "currentState": "DATA_STALE", "transitionReason": "行情延遲",
+        "finalDecision": "WAIT", "currentPrice": 4650,
+        "candleCloseTime": "2026-08-25T05:00:00+00:00",
+        "calculatedAt": "2026-08-25T05:00:01+00:00", "dataVersion": 100,
+        "decisionId": current["decisionId"], "decisionVersion": current["decisionVersion"],
+    }
+    assert persist_decision_events(symbol, [event])
+    publish_current_final_decision(symbol, {
+        "decisionSignature": "v101", "marketBias": "BEARISH",
+        "sourceCandleCloseTime": "2026-08-25T05:15:00+00:00",
+        "sourceDataVersion": 101, "evaluatedAt": "2026-08-25T05:15:01+00:00",
+        "finalAction": "WAIT", "events": [],
+    })
+    calls = 0
+
+    async def sender(_message):
+        nonlocal calls
+        calls += 1
+        return "must-not-send"
+
+    assert await deliver_pending_telegram(
+        sender=sender, event_id=event["eventId"]) == 0
+    assert calls == 0
+    with db_session() as db:
+        row = db.execute(select(TelegramNotification).where(
+            TelegramNotification.event_id == event["eventId"])).scalar_one()
+        assert row.status == "CANCELLED"
+        assert row.cancellation_reason == "STALE_STATE_VERSION"
+
+
+@pytest.mark.asyncio
+async def test_identical_rendered_payload_is_secondary_deduplicated():
+    symbol = "XAUUSD-PAYLOAD-HASH"
+    base = {
+        "event_type": "EXIT_WARNING", "previousState": "LONG_MANAGE",
+        "currentState": "LONG_MANAGE", "transitionReason": "防守條件接近",
+        "currentPrice": 4668, "candleCloseTime": "2026-08-25T06:00:00+00:00",
+        "calculatedAt": "2026-08-25T06:00:01+00:00", "dataVersion": 200,
+        "direction": "LONG", "scenarioId": "same-rendered-scenario",
+    }
+    first = persist_decision_events(symbol, [{**base, "eventId": "payload-hash-a"}])
+    assert first
+
+    async def sender(_message):
+        return "payload-hash-message"
+
+    assert await deliver_pending_telegram(
+        sender=sender, event_id=first[0]["eventId"]) == 1
+    # A separately-created event identity with the same user-facing decision is
+    # suppressed by the rendered payload hash during the cooldown window.
+    repeated = {**base, "eventId": "payload-hash-b", "scenarioId": "different-id"}
+    assert persist_decision_events(symbol, [repeated]) == []
+    with db_session() as db:
+        assert db.scalar(select(func.count()).select_from(TelegramNotification).where(
+            TelegramNotification.symbol == symbol)) == 1
 
 
 @pytest.mark.asyncio

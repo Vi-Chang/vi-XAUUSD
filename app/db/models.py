@@ -419,6 +419,16 @@ class TelegramNotification(Base):
         ForeignKey("decision_events.event_id"), unique=True)
     semantic_dedup_key: Mapped[str | None] = mapped_column(
         String(64), unique=True, nullable=True)
+    # event_key is the authoritative, database-enforced idempotency key.  It is
+    # deliberately independent from scheduler runs and worker identities.
+    event_key: Mapped[str | None] = mapped_column(
+        String(128), unique=True, nullable=True)
+    event_type: Mapped[str] = mapped_column(String(48), default="")
+    symbol: Mapped[str] = mapped_column(String(32), default="XAUUSD")
+    state_version: Mapped[int] = mapped_column(Integer, default=0)
+    incident_id: Mapped[str] = mapped_column(String(64), default="")
+    payload_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    sender_worker_id: Mapped[str] = mapped_column(String(64), default="")
     status: Mapped[str] = mapped_column(String(16), default="PENDING")
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     message_id: Mapped[str | None] = mapped_column(String(64), nullable=True)

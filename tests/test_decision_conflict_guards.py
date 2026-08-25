@@ -110,7 +110,8 @@ async def test_delayed_old_wait_never_reaches_telegram():
         row = db.execute(select(TelegramNotification).where(
             TelegramNotification.event_id == event_id)).scalar_one()
         assert row.status == "CANCELLED"
-        assert row.cancellation_reason in {"CANCELLED_SUPERSEDED", "STALE_DECISION_VERSION"}
+        assert row.cancellation_reason in {
+            "CANCELLED_SUPERSEDED", "STALE_DECISION_VERSION", "STALE_STATE_VERSION"}
 
 
 def test_same_candle_old_entry_is_revoked_when_new_price_is_not_executable():

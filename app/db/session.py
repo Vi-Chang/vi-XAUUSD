@@ -71,6 +71,13 @@ def init_db() -> None:
         },
         "telegram_notifications": {
             "semantic_dedup_key": "VARCHAR(64)",
+            "event_key": "VARCHAR(128)",
+            "event_type": "VARCHAR(48) DEFAULT ''",
+            "symbol": "VARCHAR(32) DEFAULT 'XAUUSD'",
+            "state_version": "INTEGER DEFAULT 0",
+            "incident_id": "VARCHAR(64) DEFAULT ''",
+            "payload_hash": "VARCHAR(64)",
+            "sender_worker_id": "VARCHAR(64) DEFAULT ''",
             "decision_id": "VARCHAR(64) DEFAULT ''",
             "decision_version": "INTEGER DEFAULT 0",
             "cancellation_reason": "TEXT DEFAULT ''",
@@ -121,6 +128,12 @@ def init_db() -> None:
         conn.execute(text(
             "CREATE UNIQUE INDEX IF NOT EXISTS uq_telegram_semantic_dedup "
             "ON telegram_notifications (semantic_dedup_key)"))
+        conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_telegram_event_key "
+            "ON telegram_notifications (event_key)"))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_telegram_payload_dedup "
+            "ON telegram_notifications (symbol, event_type, payload_hash, sent_at)"))
 
     from app.services.confidence_history import backfill_confidence_history
     backfill_confidence_history()

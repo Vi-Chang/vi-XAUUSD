@@ -311,9 +311,14 @@ def evaluate_market_monitors(
                      + profit_events)
     health_event = decision_health.get("dataHealthEvent")
     if health_event:
+        published_bias = str(previous_final_decision.get("marketBias") or
+                             previous_final_decision.get("direction") or
+                             decision_health.get("marketBias") or "NEUTRAL").upper()
+        published_bias = {"LONG": "BULLISH", "SHORT": "BEARISH"}.get(
+            published_bias, published_bias)
         signal_facts.append({
             **dict(health_event),
-            "marketBias": decision_health.get("marketBias"),
+            "marketBias": published_bias,
             "entryConfirmation": decision_health.get("entryConfirmation"),
             "dataHealth": decision_health.get("dataHealth"),
             "transitionReason": decision_health.get("reason"),
@@ -461,11 +466,18 @@ def evaluate_live_quote_state(
     )
     _save(symbol, "regime_state", regime_state)
     live_facts: list[dict] = []
+    canonical_bias = str(previous_final.get("marketBias") or
+                         previous_final.get("direction") or
+                         decision_health.get("marketBias") or "NEUTRAL")
+    canonical_bias = {"LONG": "BULLISH", "SHORT": "BEARISH"}.get(
+        canonical_bias.upper(), canonical_bias.upper())
     health_event = decision_health.get("dataHealthEvent")
     if health_event:
         live_facts.append({
             **dict(health_event),
-            "marketBias": decision_health.get("marketBias"),
+            # Data health consumes the last published canonical direction; it
+            # never derives or restores a separate cached market bias.
+            "marketBias": canonical_bias,
             "entryConfirmation": decision_health.get("entryConfirmation"),
             "dataHealth": decision_health.get("dataHealth"),
             "transitionReason": decision_health.get("reason"),

@@ -94,7 +94,16 @@ def build_degraded_result(current: dict | None, last_good: dict, *, module: str)
     normalized["longEntryAllowed"] = False
     normalized["shortEntryAllowed"] = False
     output["normalized_analysis"] = normalized
-    direction = str(last_good.get("direction") or "UNKNOWN")
+    from app.services.current_decision_store import (
+        get_canonical_market_bias,
+        get_current_final_decision,
+    )
+    symbol = str(output.get("symbol") or last_good.get("symbol") or "XAUUSD")
+    # Failure recovery may gate entries, but must not resurrect a direction
+    # copied from an older last-known-good snapshot.
+    direction = (get_canonical_market_bias(symbol)
+                 if get_current_final_decision(symbol)
+                 else str(last_good.get("direction") or "UNKNOWN"))
     output["analysis_failure_recovery"] = {
         "status": "DEGRADED", "module": module,
         "lastKnownGood": last_good, "entrySignalsPaused": True,
@@ -171,9 +180,11 @@ class AnalysisFailureRecovery:
             last_good = build_last_known_good_state(current or {})
         degraded = build_degraded_result(current, last_good, module=module)
         if notifier and not self.degraded_notice_sent:
+            from app.services.current_decision_store import get_canonical_market_bias
+            canonical_bias = get_canonical_market_bias(symbol)
             direction = {"BULLISH": "偏多", "BEARISH": "偏空",
                          "NEUTRAL": "中立"}.get(
-                             str(last_good.get("direction") or "UNKNOWN"), "暫無法確認")
+                             canonical_bias, "暫無法確認")
             message = (
                 "⚠️【分析服務暫時異常】\n\n"
                 "目前報價仍由報價層持續監控\n"
@@ -193,9 +204,9 @@ class AnalysisFailureRecovery:
         if not notifier:
             return
         final = payload.get("final_decision_state") or {}
+        from app.services.current_decision_store import get_canonical_market_bias
         direction = {"BULLISH": "偏多", "BEARISH": "偏空", "NEUTRAL": "中立"}.get(
-            str(final.get("marketDirection") or
-                resolve_market_direction(payload, final)["direction"]), "暫無法確認")
+            get_canonical_market_bias(symbol), "暫無法確認")
         next_action = final.get("nextAction") or {}
         trigger = next_action.get("triggerLevel")
         next_text = f"15M 收盤確認 {float(trigger):.2f}" if isinstance(

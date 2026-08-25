@@ -494,13 +494,12 @@ async def run_full_analysis(*, trigger: str, reason_zh: str | None) -> None:
             return
         state.latest_result = result.model_dump()
         state.last_full_analysis = datetime.now(timezone.utc)
-        from app.services.market_data_notifications import notify_market_data_transition
-        state.last_market_data_health = await notify_market_data_transition(
-            notifier=state.notifier,
-            previous=state.last_market_data_health,
-            health=state.latest_result.get("market_data_health") or {},
-            payload=state.latest_result,
-        )
+        # Data-health Telegram events are emitted by the canonical decision
+        # engine/outbox.  The former direct notifier was a second delivery path
+        # and could race the outbox with a separately-derived market bias.
+        state.last_market_data_health = str(
+            (state.latest_result.get("market_data_health") or {}).get("status") or
+            state.last_market_data_health or "GOOD")
 
         action = result.decision.action
         entry = state.latest_result.get("entry_engine") or {}

@@ -3,8 +3,8 @@ from __future__ import annotations
 
 
 def _direction(payload: dict) -> str:
-    value = str((payload.get("final_decision_state") or {}).get("marketDirection") or
-                (payload.get("normalized_analysis") or {}).get("trendBias") or "UNKNOWN").upper()
+    from app.services.current_decision_store import get_canonical_market_bias
+    value = get_canonical_market_bias(str(payload.get("symbol") or "XAUUSD"))
     return {"BULLISH": "🟢 偏多", "BEARISH": "🔴 偏空",
             "NEUTRAL": "⚪ 震盪"}.get(value, "⚪ 暫無法確認")
 

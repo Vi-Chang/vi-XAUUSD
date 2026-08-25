@@ -95,6 +95,7 @@ class Settings(BaseSettings):
     alert_aggregation_window_seconds: int = 4
     notify_cooldown_seconds: int = 900
     telegram_wait_cooldown_seconds: int = 1800
+    telegram_payload_dedup_cooldown_seconds: int = 1800
     telegram_trigger_change_atr_ratio: float = 0.10
     telegram_trigger_change_min_delta: float = 0.50
     telegram_entry_zone_change_atr_ratio: float = 0.10
