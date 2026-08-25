@@ -645,7 +645,7 @@ async def run_analysis(provider: MarketDataProvider, *, trigger: str = "manual",
     result.decision.blocked_reason = str(
         canonical.get("primaryReason") or result.decision.blocked_reason or "")
     result.decision.reason = result.decision.blocked_reason
-    entry_legacy_action = (
+    entry_legacy_action: DecisionAction = (
         "NO_TRADE" if not elig.eligible else
         "LONG" if canonical_entry_action == "BUY" else
         "SHORT" if canonical_entry_action == "SELL" else "WATCH"
