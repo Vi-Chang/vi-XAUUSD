@@ -540,14 +540,23 @@ function renderHomeRoute(direction, candidate, canonical, livePrice) {
   const ready = !!(candidate && isSelected && canonical.newEntryDecision?.canEnter);
   const inZone = livePrice != null && zone.low != null && zone.high != null &&
     Number(livePrice) >= Number(zone.low) && Number(livePrice) <= Number(zone.high);
-  const invalid = Boolean(candidate) && (candidate.active === false || ["INVALIDATED", "ARCHIVED", "MISSED"].includes(candidate.setupState));
+  const executionLocked = canonical.executionAllowed === false &&
+    ["INVALIDATED", "STALE", "BLOCKED_BY_DATA"].includes(canonical.scenarioValidity);
+  const invalid = executionLocked || (Boolean(candidate) && (candidate.active === false ||
+    ["INVALIDATED", "ARCHIVED", "MISSED"].includes(candidate.setupState) ||
+    ["INVALIDATED", "STALE", "BLOCKED_BY_DATA"].includes(candidate.scenarioValidity)));
   const status = invalid ? "INVALID" : ready ? "READY" : inZone ? "APPROACHING" : "WAIT";
   card.dataset.status = status;
   $(`${prefix}-status`).textContent = ({READY: "已成立", APPROACHING: "接近／等待確認", WAIT: "等待", INVALID: "已失效"})[status];
-  $(`${prefix}-condition`).textContent = candidateCondition(candidate);
-  $(`${prefix}-entry`).textContent = zone.low == null || zone.high == null ? "–" : `${fmt(zone.low)}–${fmt(zone.high)}`;
-  $(`${prefix}-stop`).textContent = candidate?.tacticalStop == null ? "–" : fmt(candidate.tacticalStop);
-  $(`${prefix}-targets`).textContent = (candidate?.targets || []).slice(0, 2).map(fmt).join(" / ") || "–";
+  $(`${prefix}-condition`).textContent = invalid
+    ? "原劇本暫停，等待最新資料與結構重新計算" : candidateCondition(candidate);
+  const lockedText = "暫不具執行效力";
+  $(`${prefix}-entry`).textContent = invalid ? lockedText :
+    (zone.low == null || zone.high == null ? "–" : `${fmt(zone.low)}–${fmt(zone.high)}`);
+  $(`${prefix}-stop`).textContent = invalid ? lockedText :
+    (candidate?.tacticalStop == null ? "–" : fmt(candidate.tacticalStop));
+  $(`${prefix}-targets`).textContent = invalid ? lockedText :
+    ((candidate?.targets || []).slice(0, 2).map(fmt).join(" / ") || "–");
   return { candidate, status };
 }
 
@@ -557,7 +566,9 @@ function renderDecisionHome(canonical, finalState) {
   const realtime = finalState.realtimePresentation || (S.analysis && S.analysis.realtime_presentation) || {};
   const livePrice = realtime.currentPrice ?? finalState.source_price ?? canonical.positionManagement?.currentPrice;
   const completeness = canonical.decisionCompleteness || {};
-  const critical = canonical.dataStale || canonical.closedCandleAvailable === false || completeness.valid === false;
+  const critical = canonical.dataStale || canonical.closedCandleAvailable === false ||
+    completeness.valid === false || canonical.scenarioValidity === "BLOCKED_BY_DATA";
+  const scenarioInvalid = ["INVALIDATED", "STALE"].includes(canonical.scenarioValidity);
   let displayState = "WAIT";
   if (critical) displayState = "INVALID";
   else if (entry.canEnter && entry.action === "BUY") displayState = "BUY";
@@ -568,10 +579,12 @@ function renderDecisionHome(canonical, finalState) {
   $("home-display-state").textContent = `${icons[displayState]} ${displayState}`;
   $("home-primary-card").dataset.state = displayState;
   const marketText = humanMarketState(canonical);
-  $("home-market-state").textContent = critical ? "暫停進場，等待資料恢復" : `市場狀態：${marketText}`;
+  $("home-market-state").textContent = critical ? "暫停進場，等待資料恢復" :
+    scenarioInvalid ? `市場狀態：${marketText}｜原交易劇本已失效` : `市場狀態：${marketText}`;
   $("home-primary-reason").textContent = critical
     ? "行情或決策資料不完整，恢復前不提供可執行訊號。"
-    : canonical.primaryReason || "目前條件尚未一致。";
+    : scenarioInvalid ? "高週期方向保留；舊劇本的進場、停損與止盈已停止執行，等待新結構。"
+      : canonical.primaryReason || "目前條件尚未一致。";
 
   const longRoute = renderHomeRoute("LONG", bestDisplayCandidate(canonical, "LONG"), canonical, livePrice);
   const shortRoute = renderHomeRoute("SHORT", bestDisplayCandidate(canonical, "SHORT"), canonical, livePrice);
@@ -695,13 +708,18 @@ function renderDecisionAssistant(v3, finalDecision = {}) {
   const zone = v3.entryZone || {};
   const canonical = ((S.analysis || {}).decision_snapshot || {}).canonicalDecision || finalDecision.canonicalDecision || {};
   const selected = ((canonical.newEntryDecision || {}).selectedSetup) || {};
+  const executionLocked = canonical.executionAllowed === false &&
+    ["INVALIDATED", "STALE", "BLOCKED_BY_DATA"].includes(canonical.scenarioValidity);
   const canonicalZone = selected.entryZone || zone;
   $("v3-direction").textContent = `${side}｜15M ${canonical.behavior15m || "等待資料"}`;
   $("v3-can-enter").textContent = finalDecision.canEnter ? "可以評估進場" : (finalDecision.humanSummary || v3.actionSummary);
-  $("v3-entry-zone-label").textContent = selected.entryZoneLabel || "候選進場區";
-  $("v3-entry-zone").textContent = canonicalZone.low != null && canonicalZone.high != null ? `${fmt(canonicalZone.low)}–${fmt(canonicalZone.high)}` : "尚未形成";
-  $("v3-invalidation").textContent = selected.tacticalStop == null ? "尚未形成" : fmt(selected.tacticalStop);
-  $("v3-target").textContent = (selected.targets || []).length ? fmt(selected.targets[0]) : "尚未形成";
+  $("v3-entry-zone-label").textContent = executionLocked ? "原進場參數" : (selected.entryZoneLabel || "候選進場區");
+  $("v3-entry-zone").textContent = executionLocked ? "暫不具執行效力" :
+    (canonicalZone.low != null && canonicalZone.high != null ? `${fmt(canonicalZone.low)}–${fmt(canonicalZone.high)}` : "尚未形成");
+  $("v3-invalidation").textContent = executionLocked ? "暫不具執行效力" :
+    (selected.tacticalStop == null ? "尚未形成" : fmt(selected.tacticalStop));
+  $("v3-target").textContent = executionLocked ? "暫不具執行效力" :
+    ((selected.targets || []).length ? fmt(selected.targets[0]) : "尚未形成");
   const rrText = selected.executableRR != null
     ? `可執行 RR ${Number(selected.executableRR).toFixed(2)}`
     : `預估 RR ${selected.estimatedRR == null ? "–" : Number(selected.estimatedRR).toFixed(2)}`;

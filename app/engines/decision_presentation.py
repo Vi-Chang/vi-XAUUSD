@@ -337,6 +337,8 @@ def format_decision_message(event: dict) -> str:
             ])
             return "\n".join(lines)
         entry_confirmation = str(canonical.get("entryConfirmation") or "")
+        scenario_validity = str(canonical.get("scenarioValidity") or
+                                "PENDING_CONFIRMATION")
         if entry_confirmation in {"WAIT_15M_CLOSE", "BLOCKED_BY_DATA"}:
             bias = str(canonical.get("marketBias") or "NEUTRAL")
             return "\n".join([
@@ -344,6 +346,16 @@ def format_decision_message(event: dict) -> str:
                 f"市場方向：{'🟢 偏多' if bias == 'BULLISH' else '🔴 偏空' if bias == 'BEARISH' else '⚪ 中性'}",
                 "資料狀態：最新 15M 收盤暫缺",
                 "系統仍保留原市場方向，但取得最新已收盤 K 棒以前，不產生新的 ENTRY_READY。",
+                "原進場、停損與止盈：暫不具執行效力。",
+            ])
+        if scenario_validity in {"INVALIDATED", "STALE"}:
+            bias = str(canonical.get("marketBias") or "NEUTRAL")
+            return "\n".join([
+                "⚪【XAUUSD｜原交易劇本已失效】",
+                f"市場方向：{'🟢 偏多' if bias == 'BULLISH' else '🔴 偏空' if bias == 'BEARISH' else '⚪ 中性'}（未被這次失效改寫）",
+                "目前動作：先不要進場。",
+                "原進場、停損與止盈：暫不具執行效力。",
+                "下一步：等待系統依最新短線結構建立新劇本。",
             ])
         if completeness and not completeness.get("valid"):
             return ("⚠️【XAUUSD 決策資料不完整】\n"
