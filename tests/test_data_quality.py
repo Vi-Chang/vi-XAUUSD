@@ -1,5 +1,5 @@
 """Data Quality Engine(spec 四):缺漏、過期、Bid/Ask、休市防呆、SOURCE_MISMATCH。"""
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import pandas as pd
 
@@ -68,3 +68,32 @@ def test_evaluate_failed_without_data():
                          None, now=utc(2026, 7, 15, 12, 0))
     assert report.status == "FAILED"
     assert not report.tradeable
+
+
+def test_optional_5m_historical_gap_does_not_block_core_decision():
+    """A diagnostic 5M gap must not label fresh 15M/HTF inputs as stale."""
+    now = utc(2026, 7, 14, 14, 0)
+    core = m15_df(utc(2026, 7, 14, 10, 0), 16)
+    optional = make_df(
+        zigzag_path([(47, 0.5)]), start_time=utc(2026, 7, 14, 10, 0), minutes=5)
+    optional = optional.drop(optional.index[5])
+    tick = PriceTick("XAUUSD", 4000.0, 4000.4,
+                     quote_time=now, provider="test")
+
+    report = dq.evaluate({"15M": core, "5M": optional}, tick, now=now)
+
+    assert report.status == "GOOD"
+    assert any(item.startswith("5M:") for item in report.missing_candles)
+    assert any("OPTIONAL_TIMEFRAME_GAP" in item for item in report.warnings)
+
+
+def test_core_15m_gap_still_blocks_entry_quality():
+    now = utc(2026, 7, 14, 14, 0)
+    core = m15_df(utc(2026, 7, 14, 10, 0), 16)
+    core = core.drop(core.index[5])
+    tick = PriceTick("XAUUSD", 4000.0, 4000.4,
+                     quote_time=now, provider="test")
+
+    report = dq.evaluate({"15M": core}, tick, now=now)
+
+    assert report.status == "DEGRADED"
