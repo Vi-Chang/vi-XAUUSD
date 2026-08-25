@@ -171,6 +171,18 @@ def _analysis_closed_15m() -> datetime | None:
         return None
 
 
+def _decision_recovery_sync_needed() -> bool:
+    """Return whether fresh candle data has not reached the canonical decision yet."""
+    latest = state.latest_result or {}
+    normalized = latest.get("normalized_analysis") or {}
+    final = latest.get("final_decision_state") or {}
+    return normalized.get("marketDataStatus") == "GOOD" and (
+        final.get("dataHealth") in {"STALE", "DEGRADED", "DEGRADED_15M"}
+        or final.get("scenarioValidity") == "BLOCKED_BY_DATA"
+        or final.get("entryConfirmation") == "BLOCKED_BY_DATA"
+    )
+
+
 async def job_candle_close_refresh() -> None:
     """Refresh once a newly closed 15M candle should be available."""
     if not _owns_scheduler():
@@ -181,9 +193,18 @@ async def job_candle_close_refresh() -> None:
     s = get_settings()
     expected = expected_closed_15m()
     current = _analysis_closed_15m()
+    is_new_bucket = state.candle_refresh_bucket != expected
     if current is not None and current >= expected:
         state.candle_refresh_bucket = expected
         state.candle_refresh_attempts = 0
+        # A lightweight candle refresh can update lastClosedCandleTimestamp before
+        # the canonical decision is recomputed.  Do one full sync for the new
+        # bucket when data is already GOOD but the decision remains fail-closed.
+        if is_new_bucket and _decision_recovery_sync_needed():
+            await run_full_analysis(
+                trigger="candle_close_recovery_sync",
+                reason_zh="最新 15 分鐘 K 棒已收盤，資料恢復後同步重算決策",
+            )
         return
     if state.candle_refresh_bucket != expected:
         state.candle_refresh_bucket = expected

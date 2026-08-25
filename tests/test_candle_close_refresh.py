@@ -62,6 +62,68 @@ async def test_close_refresh_runs_once_and_marks_current(monkeypatch):
     assert scheduler.state.candle_refresh_attempts == 0
 
 
+async def test_close_refresh_syncs_fresh_data_into_stale_decision_once(monkeypatch):
+    from app.services import scheduler
+
+    expected = datetime(2026, 8, 25, 7, 45, tzinfo=timezone.utc)
+    monkeypatch.setattr(scheduler.state, "latest_result", {
+        "normalized_analysis": {
+            "lastClosedCandleTimestamp": expected.isoformat(),
+            "marketDataStatus": "GOOD",
+        },
+        "final_decision_state": {
+            "dataHealth": "STALE",
+            "scenarioValidity": "BLOCKED_BY_DATA",
+        },
+    })
+    monkeypatch.setattr(scheduler.state, "candle_refresh_bucket", None)
+    monkeypatch.setattr(scheduler.state, "candle_refresh_attempts", 1)
+    monkeypatch.setattr(scheduler, "market_is_open", lambda: True)
+    monkeypatch.setattr(scheduler, "expected_closed_15m", lambda: expected)
+    calls = []
+
+    async def fake_analysis(*, trigger, reason_zh):
+        calls.append((trigger, reason_zh))
+
+    monkeypatch.setattr(scheduler, "run_full_analysis", fake_analysis)
+
+    await scheduler.job_candle_close_refresh()
+    await scheduler.job_candle_close_refresh()
+
+    assert [call[0] for call in calls] == ["candle_close_recovery_sync"]
+    assert scheduler.state.candle_refresh_bucket == expected
+    assert scheduler.state.candle_refresh_attempts == 0
+
+
+async def test_close_refresh_does_not_resync_healthy_decision(monkeypatch):
+    from app.services import scheduler
+
+    expected = datetime(2026, 8, 25, 7, 45, tzinfo=timezone.utc)
+    monkeypatch.setattr(scheduler.state, "latest_result", {
+        "normalized_analysis": {
+            "lastClosedCandleTimestamp": expected.isoformat(),
+            "marketDataStatus": "GOOD",
+        },
+        "final_decision_state": {
+            "dataHealth": "HEALTHY",
+            "scenarioValidity": "VALID",
+        },
+    })
+    monkeypatch.setattr(scheduler.state, "candle_refresh_bucket", None)
+    monkeypatch.setattr(scheduler.state, "candle_refresh_attempts", 0)
+    monkeypatch.setattr(scheduler, "market_is_open", lambda: True)
+    monkeypatch.setattr(scheduler, "expected_closed_15m", lambda: expected)
+    calls = []
+
+    async def fake_analysis(*, trigger, reason_zh):
+        calls.append((trigger, reason_zh))
+
+    monkeypatch.setattr(scheduler, "run_full_analysis", fake_analysis)
+    await scheduler.job_candle_close_refresh()
+
+    assert calls == []
+
+
 def test_freshness_blocks_entry_while_new_closed_candle_is_pending():
     now = datetime(2026, 8, 13, 17, 3, tzinfo=timezone.utc)
     payload = {
