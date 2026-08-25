@@ -177,11 +177,15 @@ async def run_monitor(state) -> None:
                          else telegram_outbox_health())
     if delivery_failures:
         logger.error("telegram delivery unhealthy: %s", delivery_failures)
+        ambiguous = any(item.endswith(":DELIVERY_UNKNOWN")
+                        for item in delivery_failures)
         await state.notifier.notify(
             "RISK", "telegram_delivery_failure",
-            "Telegram 傳送異常，系統仍持續分析；待送事件："
-            + "、".join(delivery_failures[:3]),
-            severity="ERROR", force_push=True, bypass_cooldown=True)
+            ("🔴 系統通知\n部分 Telegram 訊息傳送狀態尚未確認，"
+             "策略分析仍正常運作。" if ambiguous else
+             "🔴 系統通知\n部分 Telegram 訊息傳送失敗，策略分析仍正常運作。"),
+            severity="ERROR", force_push=True,
+            persistent_cooldown_seconds=30 * 60)
         return
 
     # 2) 資料延遲 → WARN

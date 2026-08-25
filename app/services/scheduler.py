@@ -635,8 +635,12 @@ async def job_outcome_backfill() -> None:
 async def job_telegram_outbox() -> None:
     """Retry-safe Telegram delivery; rows survive restarts."""
     state.mark("telegram_outbox")
-    from app.services.decision_outbox import deliver_pending_telegram
+    from app.services.decision_outbox import (
+        deliver_pending_telegram,
+        reconcile_unknown_deliveries,
+    )
 
+    reconcile_unknown_deliveries()
     await deliver_pending_telegram()
 
 

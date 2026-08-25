@@ -136,6 +136,9 @@ def notification_fingerprint_parts(event: dict) -> dict[str, str]:
         "chaseLimit": _price(chase),
         "invalidationPrice": _price(invalidation),
         "sourceCandleTime": str(source_time),
+        "canonicalStateVersion": str(
+            event.get("canonicalStateVersion") or event.get("decisionVersion") or
+            (event.get("canonicalDecision") or {}).get("decisionVersion") or "1"),
     }
     if str(event.get("event_type") or "") in {"DATA_STALE", "DATA_RECOVERED"}:
         # Freshness alerts are transitions, not candle-scoped market setups.

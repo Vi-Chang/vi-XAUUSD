@@ -296,7 +296,7 @@ def format_decision_message(event: dict) -> str:
                  else "🟡【XAUUSD｜現在先不要進場】")
         lines = [title, f"現價：{float(event.get('currentPrice') or 0):.2f}",
                  f"原因：{canonical.get('primaryReason')}",
-                 f"下一個重要條件：{trigger.get('label')}"]
+                 f"最近可執行觸發：{trigger.get('label')}"]
         chosen = entry.get("selectedSetup") or {}
         if chosen:
             zone = chosen.get("entryZone") or {}
@@ -306,13 +306,16 @@ def format_decision_message(event: dict) -> str:
                  else f"預估 RR：{chosen.get('estimatedRR') if chosen.get('estimatedRR') is not None else '—'}"),
             ])
         opportunities = canonical.get("entryOpportunities") or []
-        labels = {"SHALLOW_PULLBACK": "第一觀察：淺回踩",
-                  "DEEP_PULLBACK": "第二觀察：深回踩",
+        labels = {"SHALLOW_PULLBACK": "淺回踩",
+                  "DEEP_PULLBACK": "深度備案",
                   "BREAKOUT_RETEST": "突破回測"}
         for opportunity in opportunities[:3]:
             zone = opportunity.get("entry_zone") or {}
+            role = ("備用觀察區" if opportunity.get("anchor_role") ==
+                    "DEEP_PULLBACK_BACKUP" else
+                    labels.get(opportunity.get("type"), opportunity.get("type")))
             lines.append(
-                f"{labels.get(opportunity.get('type'), opportunity.get('type'))} "
+                f"{role} "
                 f"{zone.get('lower', '—')}～{zone.get('upper', '—')}｜"
                 f"預估 RR {opportunity.get('estimated_rr') if opportunity.get('estimated_rr') is not None else '—'}")
         if not position.get("positionKnown"):

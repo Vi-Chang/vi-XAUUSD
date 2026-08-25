@@ -120,6 +120,10 @@ def collect_signal_candidates(data: dict) -> list[SignalCandidate]:
     opportunity_engine = data.get("entry_opportunity_engine") or {}
     unified_opportunities = list(opportunity_engine.get("opportunities") or [])
     for opportunity in unified_opportunities:
+        # Distant legacy anchors remain visible as deep-pullback backups, but
+        # cannot compete for the canonical next action.
+        if opportunity.get("primary_eligible") is False:
+            continue
         zone = opportunity.get("entry_zone") or {}
         setup_ledgers.append({
             "setupId": opportunity.get("opportunity_id"),
@@ -130,8 +134,9 @@ def collect_signal_candidates(data: dict) -> list[SignalCandidate]:
             "entryZoneLow": zone.get("lower"), "entryZoneHigh": zone.get("upper"),
             "stopPrice": opportunity.get("tactical_stop"),
             "tp1": opportunity.get("target1"),
+            "breakoutTrigger": opportunity.get("trigger_level"),
             "expiresAt": opportunity.get("expires_at"),
-            "type": opportunity.get("type"),
+            "type": opportunity.get("entry_type") or opportunity.get("type"),
             # Only the post-confirmation, current execution RR can grant entry.
             "riskReward": opportunity.get("executable_rr"),
             "estimatedRR": opportunity.get("estimated_rr"),

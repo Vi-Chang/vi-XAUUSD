@@ -35,6 +35,11 @@ from app.services.pre_delivery_trade_safety import (
 )
 
 logger = logging.getLogger(__name__)
+DELIVERED_STATUSES = ("SENT", "CONFIRMED")
+
+
+class DeliveryUnknownError(RuntimeError):
+    """Telegram may have accepted the message but its receipt was lost."""
 
 
 def _last_sent_market_decision(db, symbol: str, payload: dict) -> dict | None:
@@ -45,7 +50,7 @@ def _last_sent_market_decision(db, symbol: str, payload: dict) -> dict | None:
         .join(TelegramNotification,
               TelegramNotification.event_id == DecisionEvent.event_id)
         .where(DecisionEvent.symbol == symbol,
-               TelegramNotification.status == "SENT")
+               TelegramNotification.status.in_(DELIVERED_STATUSES))
         .order_by(TelegramNotification.sent_at.desc())
         .limit(50)
     ).scalars().all()
@@ -122,7 +127,7 @@ def persist_decision_events(symbol: str, events: list[dict]) -> list[dict]:
                 # rerun creates fresh eventIds/dataVersions, but no new market
                 # decision. Never turn a successfully sent fingerprint back
                 # into PENDING/EDIT_PENDING.
-                if existing_notice.status == "SENT":
+                if existing_notice.status in (*DELIVERED_STATUSES, "DELIVERY_UNKNOWN"):
                     continue
                 canonical = db.execute(select(DecisionEvent).where(
                     DecisionEvent.event_id == existing_notice.event_id)).scalar_one()
@@ -394,6 +399,8 @@ async def deliver_pending_telegram(
                 message_id = await editor(prior_message_id, format_telegram_event(payload))
             else:
                 message_id = await sender(format_telegram_event(payload))
+            if str(message_id).upper() == "DELIVERY_UNKNOWN":
+                raise DeliveryUnknownError("Telegram delivery receipt unavailable")
             if not message_id:
                 raise RuntimeError("Telegram 未回傳 message_id")
             with db_session() as db:
@@ -403,7 +410,7 @@ async def deliver_pending_telegram(
                     )
                 ).scalar_one()
                 row.status, row.message_id, row.sent_at = (
-                    "SENT", str(message_id), delivery_now)
+                    "CONFIRMED", str(message_id), delivery_now)
                 row.last_error, row.updated_at = "", delivery_now
                 lifecycle = payload.get("setupLifecycle") or {}
                 if lifecycle.get("state") == "ENTRY_READY" and payload.get("setupId"):
@@ -433,13 +440,64 @@ async def deliver_pending_telegram(
                 # A timeout is ambiguous: Telegram may have accepted the
                 # message while its response was lost. Retrying sendMessage
                 # could duplicate it, so park it for operator reconciliation.
-                timeout_unknown = "timeout" in type(exc).__name__.lower()
+                timeout_unknown = (isinstance(exc, DeliveryUnknownError)
+                                   or "timeout" in type(exc).__name__.lower())
                 row.status = "DELIVERY_UNKNOWN" if timeout_unknown else "FAILED"
                 row.last_error = type(exc).__name__
                 row.next_attempt_at = (None if timeout_unknown else
                                        now + timedelta(seconds=min(300, 2**attempts)))
                 row.updated_at = now
     return sent
+
+
+def reconcile_unknown_deliveries(*, limit: int = 100) -> dict:
+    """Inspect ambiguous rows without resending them.
+
+    Telegram Bot API has no reliable lookup-by-client-fingerprint endpoint.
+    Rows with a persisted receipt can be confirmed; receipt-less rows remain
+    parked until an operator or a future provider reconciliation explicitly
+    resolves them. Merely running this queue never calls sendMessage.
+    """
+    with db_session() as db:
+        rows = db.execute(select(TelegramNotification).where(
+            TelegramNotification.status == "DELIVERY_UNKNOWN"
+        ).order_by(TelegramNotification.updated_at).limit(limit)).scalars().all()
+        confirmed = 0
+        for row in rows:
+            if row.message_id:
+                row.status = "CONFIRMED"
+                row.sent_at = row.sent_at or row.updated_at
+                row.last_error = ""
+                confirmed += 1
+    unresolved = len(rows) - confirmed
+    if unresolved:
+        logger.warning("telegram reconciliation pending for %d ambiguous deliveries",
+                       unresolved)
+    return {"checked": len(rows), "confirmed": confirmed,
+            "unresolved": unresolved}
+
+
+def resolve_delivery_unknown(event_id: str, *, delivered: bool,
+                             message_id: str = "") -> str:
+    """Explicit reconciliation result; retry is enabled only when not delivered."""
+    now = datetime.now(timezone.utc)
+    with db_session() as db:
+        row = db.execute(select(TelegramNotification).where(
+            TelegramNotification.event_id == event_id)).scalar_one()
+        if row.status != "DELIVERY_UNKNOWN":
+            return row.status
+        if delivered:
+            row.status = "CONFIRMED"
+            row.message_id = message_id or row.message_id
+            row.sent_at = row.sent_at or now
+            row.next_attempt_at = None
+            row.last_error = ""
+        else:
+            row.status = "FAILED"
+            row.next_attempt_at = now
+            row.last_error = "RECONCILIATION_CONFIRMED_NOT_DELIVERED"
+        row.updated_at = now
+        return row.status
 
 
 def telegram_delivery_status() -> dict:
@@ -454,7 +512,7 @@ def telegram_delivery_status() -> dict:
         ).first()
         last_sent = db.execute(
             select(TelegramNotification)
-            .where(TelegramNotification.status == "SENT")
+            .where(TelegramNotification.status.in_(DELIVERED_STATUSES))
             .order_by(TelegramNotification.sent_at.desc())
             .limit(1)
         ).scalar_one_or_none()
@@ -462,8 +520,10 @@ def telegram_delivery_status() -> dict:
             TelegramNotification).where(TelegramNotification.status.in_((
                 "PENDING", "FAILED", "RETRYING", "EDIT_PENDING")))) or 0
         failed_count = db.scalar(select(func.count()).select_from(
-            TelegramNotification).where(TelegramNotification.status.in_((
-                "FAILED", "DELIVERY_UNKNOWN")))) or 0
+            TelegramNotification).where(TelegramNotification.status == "FAILED")) or 0
+        unknown_count = db.scalar(select(func.count()).select_from(
+            TelegramNotification).where(
+                TelegramNotification.status == "DELIVERY_UNKNOWN")) or 0
         gap_count = db.scalar(select(func.count()).select_from(TelegramNotification).where(
             TelegramNotification.status.in_(("PENDING", "FAILED", "RETRYING")),
             TelegramNotification.created_at < datetime.now(timezone.utc) - timedelta(seconds=30)
@@ -482,6 +542,7 @@ def telegram_delivery_status() -> dict:
             "pipelineStatus": "HEALTHY",
             "queueDepth": int(pending_count),
             "failedCount": int(failed_count),
+            "reconciliationPendingCount": int(unknown_count),
             "deliveryGapCount": int(gap_count),
             "lastDeliveryLatencyMs": None,
             "lastError": "",
@@ -497,11 +558,14 @@ def telegram_delivery_status() -> dict:
         if last_sent and last_sent.sent_at
         else "",
         "lastEvent": event.current_state,
-        "delivered": notification.status == "SENT",
+        "delivered": notification.status in DELIVERED_STATUSES,
         "messageId": notification.message_id or "",
         "eventId": event.event_id,
-        "pipelineStatus": "NOTIFICATION_PIPELINE_DEGRADED" if gap_count else "HEALTHY",
+        "pipelineStatus": ("NOTIFICATION_PIPELINE_DEGRADED" if gap_count else
+                           "RECONCILIATION_PENDING" if unknown_count else "HEALTHY"),
         "queueDepth": int(pending_count), "failedCount": int(failed_count),
+        "reconciliationPendingCount": int(unknown_count),
         "deliveryGapCount": int(gap_count), "lastDeliveryLatencyMs": latency_ms,
-        "lastError": notification.last_error,
+        "lastError": ("" if notification.status == "DELIVERY_UNKNOWN"
+                      else notification.last_error),
     }

@@ -247,6 +247,8 @@ class Settings(BaseSettings):
     decision_assistant_missed_entry_atr: float = 0.70
     decision_assistant_trigger_hysteresis_atr: float = 0.10
     decision_assistant_min_price_delta: float = 0.50
+    entry_anchor_max_distance_atr_mult: float = 1.20
+    entry_anchor_max_distance_price_pct: float = 0.0035
     long_breakout_threshold_atr: float = 0.10
     short_breakout_threshold_atr: float = 0.12
     long_pullback_threshold_atr: float = 0.70
