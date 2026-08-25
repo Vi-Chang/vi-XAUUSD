@@ -219,9 +219,12 @@ def notification_fingerprint_parts(event: dict) -> dict[str, str]:
                                 (event.get("canonicalDecision") or {}).get(
                                     "activeSetupId") or scenario_id),
     }
-    if event_type in {"DATA_STALE", "DATA_RECOVERED"}:
+    if event_type in {"DATA_DELAYED", "DATA_STALE", "DATA_RECOVERED"}:
         # Freshness alerts are transitions, not candle-scoped market setups.
-        parts["scenarioId"] = "DATA_HEALTH"
+        incident = str(event.get("dataIncidentId") or "DATA_HEALTH")
+        parts["scenarioId"] = incident
+        parts["primaryTriggerId"] = str(
+            event.get("dataHealthEventKey") or f"{event_type}:{incident}")
         parts["sourceCandleTime"] = ""
     scenario_validity = str(event.get("scenarioValidity") or
                             (event.get("canonicalDecision") or {}).get(

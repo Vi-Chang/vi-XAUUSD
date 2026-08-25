@@ -139,7 +139,7 @@ def test_case_d_missing_latest_15m_uses_recent_context_without_erasing_htf_bias(
     assert result["latestClosed15m"] is None
     assert result["contextClosed15m"]["close"] == 4671.0
     assert health["marketBias"] == "BULLISH"
-    assert health["dataHealth"] == "DEGRADED_15M"
+    assert health["dataHealth"] == "DEGRADED"
     assert health["entryConfirmation"] == "WAIT_15M_CLOSE"
 
 

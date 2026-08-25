@@ -15,7 +15,7 @@ from typing import Any
 from app.config import get_settings
 from app.utils.timeutils import iso_utc, parse_utc
 
-DATA_HEALTH_STATES = {"HEALTHY", "DEGRADED_15M", "STALE", "RECOVERING"}
+DATA_HEALTH_STATES = {"HEALTHY", "DEGRADED", "DEGRADED_15M", "STALE"}
 ENTRY_CONFIRMATION_STATES = {
     "READY", "WAIT_15M_CLOSE", "WAIT_NEW_STRUCTURE", "BLOCKED_BY_DATA",
 }
@@ -214,11 +214,8 @@ def get_latest_valid_closed_15m(
 
     current_age = age_seconds(current)
     if current and current_age is not None and current_age <= allowed:
-        previous_health = str(previous.get("dataHealth") or "")
-        health = ("RECOVERING" if previous_health in {"DEGRADED_15M", "STALE"}
-                  else "HEALTHY")
         return {
-            "dataHealth": health, "entryConfirmation": "READY",
+            "dataHealth": "HEALTHY", "entryConfirmation": "READY",
             "latestClosed15m": current, "contextClosed15m": current,
             "lastKnownGoodClosed15m": current, "usingFallbackForContext": False,
             "allowedStalenessSeconds": allowed, "closedCandleAgeSeconds": current_age,
@@ -239,6 +236,163 @@ def get_latest_valid_closed_15m(
         "lastKnownGoodClosed15m": fallback, "usingFallbackForContext": bool(fallback),
         "allowedStalenessSeconds": allowed, "closedCandleAgeSeconds": fallback_age,
         "reason": "沒有時效內的已收盤 15M，暫停新進場",
+    }
+
+
+def _canonical_health(value: object) -> str:
+    state = str(value or "").upper()
+    if state in {"DEGRADED", "DEGRADED_15M", "RECOVERING"}:
+        return "DEGRADED"
+    return state if state in {"HEALTHY", "STALE"} else ""
+
+
+def _market_timestamp(data: dict) -> str:
+    normalized = data.get("normalized_analysis") or {}
+    current = data.get("current_price") or {}
+    return iso_utc(
+        normalized.get("marketDataTimestamp") or current.get("last_update") or
+        data.get("snapshot_ts") or "")
+
+
+def resolve_data_health_hysteresis(
+    observation: dict, *, data: dict, previous: dict | None = None,
+    now: datetime | str | None = None,
+) -> dict:
+    """Turn polling observations into durable health transitions.
+
+    A successful response is only recovery evidence when its market timestamp
+    advances and both the quote and closed-candle freshness checks pass.
+    """
+    previous = previous or {}
+    settings = get_settings()
+    evaluated = parse_utc(now or data.get("timestamp_utc") or
+                          datetime.now(timezone.utc)) or datetime.now(timezone.utc)
+    raw_health = _canonical_health(observation.get("dataHealth")) or "STALE"
+    previous_health = _canonical_health(previous.get("canonicalDataHealth") or
+                                        previous.get("dataHealth"))
+    market_timestamp = _market_timestamp(data)
+    closed_timestamp = str(((observation.get("latestClosed15m") or {}).get(
+        "closeTime")) or "")
+    market_dt = parse_utc(market_timestamp)
+    market_age = (max(0.0, (evaluated - market_dt).total_seconds())
+                  if market_dt else None)
+    max_age = int(settings.closed_15m_context_max_staleness_seconds)
+    explicit_15m = (data.get("closed_candles") or {}).get("15M")
+    normalized = data.get("normalized_analysis") or {}
+    observation_known = bool(
+        explicit_15m is not None or
+        (normalized.get("lastClosedCandlePrice") is not None and
+         normalized.get("lastClosedCandleTimestamp")))
+    api_ok = bool(data.get("api_ok", observation.get("latestClosed15m")))
+    data_fresh = bool(api_ok and market_age is not None and market_age <= max_age)
+    candle_fresh = bool(api_ok and
+                        observation.get("closedCandleAgeSeconds") is not None and
+                        float(observation["closedCandleAgeSeconds"]) <= max_age)
+    previous_market = parse_utc(previous.get("lastObservedMarketTimestamp"))
+    market_advanced = bool(market_dt and
+                           (previous_market is None or market_dt > previous_market))
+    recovery_evidence = bool(
+        api_ok and data_fresh and candle_fresh and market_advanced)
+
+    failure_count = int(previous.get("freshnessFailureCount") or 0)
+    success_count = int(previous.get("freshnessSuccessCount") or 0)
+    transition = "NONE"
+    health = previous_health or raw_health
+
+    if not observation_known:
+        health = previous_health or "HEALTHY"
+        transition = "INITIAL_TO_HEALTHY" if not previous_health else "NONE"
+    elif not previous_health:
+        health = raw_health
+        failure_count = 0 if raw_health == "HEALTHY" else 1
+        success_count = 0
+        transition = f"INITIAL_TO_{health}"
+    elif previous_health == "HEALTHY":
+        success_count = 0
+        if raw_health == "HEALTHY" and data_fresh and candle_fresh:
+            failure_count = 0
+        else:
+            failure_count += 1
+            if failure_count >= max(1, settings.data_health_degrade_confirm_count):
+                health = "STALE" if raw_health == "STALE" else "DEGRADED"
+                transition = f"HEALTHY_TO_{health}"
+    else:
+        if recovery_evidence:
+            success_count += 1
+            failure_count = 0
+            if success_count >= max(1, settings.data_health_recovery_confirm_count):
+                health = "HEALTHY"
+                transition = f"{previous_health}_TO_HEALTHY"
+                success_count = 0
+        else:
+            success_count = 0
+            failure_count += 1
+            if raw_health == "STALE" and previous_health != "STALE":
+                health = "STALE"
+                transition = f"{previous_health}_TO_STALE"
+
+    incident_id = str(previous.get("dataIncidentId") or "")
+    delay_notified = bool(previous.get("delayNotified"))
+    recovery_notified = bool(previous.get("recoveryNotified"))
+    entered_incident = transition in {
+        "INITIAL_TO_DEGRADED", "INITIAL_TO_STALE",
+        "HEALTHY_TO_DEGRADED", "HEALTHY_TO_STALE",
+    }
+    if entered_incident:
+        incident_id = f"DATA-{evaluated.strftime('%Y%m%d-%H%M%S')}"
+        delay_notified, recovery_notified = False, False
+
+    health_event = None
+    delay_confirmed = (
+        entered_incident and not transition.startswith("INITIAL_") or
+        (health != "HEALTHY" and bool(incident_id) and
+         failure_count >= max(1, settings.data_health_degrade_confirm_count))
+    )
+    if delay_confirmed and not delay_notified:
+        delay_notified = True
+        health_event = {
+            "event_type": "DATA_DELAYED", "dataIncidentId": incident_id,
+            "dataHealthEventKey": f"DATA_DELAYED:{incident_id}",
+            "previousDataHealth": previous_health or "UNKNOWN",
+            "currentDataHealth": health, "currentState": health,
+        }
+    elif transition in {"DEGRADED_TO_HEALTHY", "STALE_TO_HEALTHY"} and not recovery_notified:
+        recovery_notified = True
+        health_event = {
+            "event_type": "DATA_RECOVERED", "dataIncidentId": incident_id,
+            "dataHealthEventKey": f"DATA_RECOVERED:{incident_id}",
+            "previousDataHealth": previous_health, "currentDataHealth": "HEALTHY",
+            "currentState": "HEALTHY", "closedBarTimestamp": closed_timestamp,
+            "latestClosedCandlePrice": ((observation.get("latestClosed15m") or {}).get(
+                "close")),
+        }
+
+    # During the recovery confirmation window, fresh data may be used as
+    # context but never as a new-entry confirmation.
+    entry_confirmation = str(observation.get("entryConfirmation") or "BLOCKED_BY_DATA")
+    if health != "HEALTHY":
+        entry_confirmation = ("BLOCKED_BY_DATA" if health == "STALE"
+                              else "WAIT_15M_CLOSE")
+    return {
+        **observation,
+        "dataHealth": health,
+        "canonicalDataHealth": health,
+        "observedDataHealth": raw_health,
+        "entryConfirmation": entry_confirmation,
+        "apiOk": api_ok, "dataFresh": data_fresh, "candleFresh": candle_fresh,
+        "healthObservationKnown": observation_known,
+        "marketTimestampAdvanced": market_advanced,
+        "recoveryEvidenceAccepted": recovery_evidence,
+        "freshnessFailureCount": failure_count,
+        "freshnessSuccessCount": success_count,
+        "lastObservedMarketTimestamp": market_timestamp,
+        "lastClosed15mTimestamp": closed_timestamp or str(
+            previous.get("lastClosed15mTimestamp") or ""),
+        "dataIncidentId": incident_id,
+        "delayNotified": delay_notified,
+        "recoveryNotified": recovery_notified,
+        "healthTransition": transition,
+        "dataHealthEvent": health_event,
     }
 
 
@@ -459,7 +613,9 @@ def evaluate_defense_state(
 def evaluate_decision_health(data: dict, *, previous: dict | None = None,
                              now: datetime | str | None = None) -> dict:
     previous = previous or {}
-    closed = get_latest_valid_closed_15m(data, previous=previous, now=now)
+    observation = get_latest_valid_closed_15m(data, previous=previous, now=now)
+    closed = resolve_data_health_hysteresis(
+        observation, data=data, previous=previous, now=now)
     evaluated_at = iso_utc(now or data.get("timestamp_utc") or
                            datetime.now(timezone.utc))
     market_bias = resolve_market_bias(data)

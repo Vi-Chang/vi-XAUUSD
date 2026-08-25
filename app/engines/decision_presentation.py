@@ -245,6 +245,8 @@ def format_decision_message(event: dict) -> str:
             "✅【XAUUSD 行情資料已恢復】",
             (f"最新15M收盤：{float(closed):.2f}" if isinstance(closed, (int, float))
              else "最新15M收盤已恢復。"),
+            (f"資料時間：{event.get('closedBarTimestamp')}"
+             if event.get("closedBarTimestamp") else "資料時間：最新有效收盤"),
             "策略已使用最新收盤重新計算；沒有新決策時不會重複通知。",
         ])
     if canonical_type in {
@@ -269,7 +271,7 @@ def format_decision_message(event: dict) -> str:
         }
         health_text = {
             "HEALTHY": "🟢 正常", "RECOVERING": "🟡 資料恢復中",
-            "DEGRADED_15M": "🟠 15M 資料延遲",
+            "DEGRADED": "🟠 15M 資料延遲", "DEGRADED_15M": "🟠 15M 資料延遲",
             "STALE": "🔴 行情資料過期",
         }.get(data_health, "🟠 資料狀態待確認")
         side = str(event.get("defenseSide") or canonical.get("defenseSide") or
@@ -481,7 +483,7 @@ def format_decision_message(event: dict) -> str:
             "系統將依最新結構重新計算進場、防守、止盈與 RR。",
             "目前：等待新劇本完成確認，尚不可進場。",
         ])
-    if canonical_type == "DATA_STALE":
+    if canonical_type in {"DATA_DELAYED", "DATA_STALE"}:
         scenario_invalid = str(canonical.get("scenarioState") or "") == "INVALIDATED"
         lines = [
             "🔴【XAUUSD 行情資料延遲】",
