@@ -236,8 +236,11 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
     early = _number(normalized.get("triggerLevel"))
     if early == trigger_level:
         early = None
-    data_confirmation_blocked = entry_confirmation in {
-        "WAIT_15M_CLOSE", "BLOCKED_BY_DATA"}
+    # WAIT_15M_CLOSE is a normal strategy confirmation state when data health
+    # is good.  It blocks entry through the READY gate below, but must not be
+    # presented as a data outage.  Only an explicit data block (or an unhealthy
+    # data-health gate) makes the canonical snapshot stale.
+    data_confirmation_blocked = entry_confirmation == "BLOCKED_BY_DATA"
     stale = not bool(health.get("healthy")) or data_confirmation_blocked
     scenario_validity = str(final.get("scenarioValidity") or "")
     if stale:
