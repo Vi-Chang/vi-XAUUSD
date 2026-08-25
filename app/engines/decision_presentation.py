@@ -176,7 +176,10 @@ def _format_decision_message_legacy(event: dict) -> str:
             lines = [f"👀【開始留意{word}機會】", f"現價：{price:.2f}",
                      f"觀察區：{zone_text}",
                      "現在：只是接近有效價區，尚不可進場。",
-                     "下一步：等待價格反應與短線結構確認；成立後會再通知。"]
+                     "下一步：等待價格反應與短線結構確認；成立後會再通知。",
+                     ("下一個做多觸發：15分鐘回踩觀察區守住並收盤確認。"
+                      if side == "LONG" else
+                      "下一個做空觸發：15分鐘反抽觀察區失敗並收盤確認。")]
             if str(event.get("dataHealth") or "") == "DEGRADED_15M":
                 lines.append("資料提醒：15M 資料降級，只能觀察，不能確認進場。")
             return "\n".join(lines)
@@ -188,6 +191,10 @@ def _format_decision_message_legacy(event: dict) -> str:
             if isinstance(defense, (int, float)):
                 verb = "跌破" if side == "LONG" else "站上"
                 lines.append(f"失效：15M 收盤{verb} {float(defense):.2f}")
+            lines.append(
+                "下一個做多觸發：15分鐘回踩候選區守住並收盤確認。"
+                if side == "LONG" else
+                "下一個做空觸發：15分鐘反抽候選區失敗並收盤確認。")
             return "\n".join(lines)
         if canonical_type == "EARLY_ENTRY_MISSED":
             return "\n".join([f"⚪【{word}機會已錯過】", f"現價：{price:.2f}",
@@ -347,7 +354,7 @@ def _format_decision_message_legacy(event: dict) -> str:
         if defense_state == "BROKEN_PENDING_CLOSE":
             reclaim_word = "站回" if side == "LONG" else "跌回"
             break_word = "跌破" if side == "LONG" else "站上"
-            scenario_name = "Long" if side == "LONG" else "Short"
+            scenario_name = "做多" if side == "LONG" else "做空"
             defense_name = "多方" if side == "LONG" else "空方"
             return "\n".join([
                 "【XAUUSD 現在怎麼做】", "🟠 暫停新進場", f"現價：{price:.2f}",
@@ -365,7 +372,7 @@ def _format_decision_message_legacy(event: dict) -> str:
                 (f"❌ 收盤確認{break_word} {confirmed_break_level:.2f} → 取消目前 {scenario_name} Scenario；高週期方向保留，等待新結構"
                  if confirmed_break_level is not None else
                  f"❌ 收盤確認失守 → 取消目前 {scenario_name} Scenario；高週期方向保留，等待新結構"),
-                "目前不做多，也不提前追空。" if side == "LONG"
+                "目前不做多；若短線轉空條件形成，系統會立即改掃做空機會。" if side == "LONG"
                 else "目前不做空，也不提前追多。",
             ])
         if canonical_type == "DEFENSE_HELD":

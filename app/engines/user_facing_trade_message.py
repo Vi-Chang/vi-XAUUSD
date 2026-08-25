@@ -15,6 +15,10 @@ from app.engines.scalp_decision import (
     preferred_scalp_side,
     scalp_bias_lines,
 )
+from app.engines.user_facing_localization import (
+    assert_no_internal_user_facing_terms,
+    localize_user_facing_text,
+)
 
 NULLISH = {"", "none", "null", "undefined", "nan", "n/a", "—"}
 _NULLISH_TEXT = re.compile(r"(?i)(?:^|[：:\s])(none|null|undefined|nan|n/a)(?:$|[\s，,。])")
@@ -106,6 +110,7 @@ class UserFacingTradeMessageBuilder:
             if len(lines) > 1 and lines[1].startswith("現價："):
                 insert_at = 2
             lines[insert_at:insert_at] = bias_lines
-        result = "\n".join(lines)
+        result = localize_user_facing_text("\n".join(lines))
         assert_no_nullish_user_facing_text(result)
+        assert_no_internal_user_facing_terms(result)
         return result

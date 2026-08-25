@@ -12,6 +12,10 @@ from app.engines.scalp_decision import (
     scalp_opportunity_coverage,
     scalp_setup_ttl_bars,
 )
+from app.engines.user_facing_localization import (
+    assert_no_internal_user_facing_terms,
+    translate_user_facing_term,
+)
 from app.services.notification_policy import eligibility
 from tests.test_early_entry_candidate import _data as early_data
 from tests.test_entry_opportunity import by_type
@@ -162,3 +166,57 @@ def test_scalp_opportunity_coverage_gap_is_auditable():
         "watchRecorded": False, "prepareRecorded": False, "entryRecorded": False})
     assert metric["coverageGap"] is True
     assert metric["eventType"] == "SCALP_OPPORTUNITY_COVERAGE_GAP"
+
+
+def test_13_confirmed_long_defense_break_immediately_rescans_short():
+    data = early_data(side="LONG", price=99.0, break_state="LEVEL_TEST")
+    data["normalized_analysis"]["timeframeAssessments"] = assessments()
+    data["normalized_analysis"]["trendBias"] = "bullish"
+    data["decision_health_state"].update({
+        "marketBias": "BULLISH", "defenseState": "BROKEN_CONFIRMED",
+        "side": "LONG", "defenseLevel": 100.0, "scenarioId": "OLD-LONG",
+    })
+    state, events = evaluate_early_entry_candidate(data, {"state": "IDLE"})
+    short = state["candidates"]["SHORT"]
+    assert state["preferredScalpSide"] == "SHORT"
+    assert state["state"] in {"WATCH_SHORT", "PREPARE_SHORT"}
+    assert short["state"] in {"WATCH_SHORT", "PREPARE_SHORT"}
+    assert short["zoneTransitionReason"] == "SYMMETRIC_RESCAN_AFTER_DEFENSE_BREAK"
+    assert "COUNTER_HIGHER_TIMEFRAME_RISK" in short["riskFlags"]
+    assert not state["candidates"]["LONG"]["state"].startswith(("WATCH", "PREPARE"))
+    message = format_decision_message(next(
+        item for item in events if item.get("candidateSide") == "SHORT"))
+    assert "短線：🔴 偏空" in message
+    assert "目前策略：優先找空" in message
+    assert "下一個做空觸發" in message
+    assert "高週期偏多，所以不提前追空" not in message
+
+
+def test_14_missing_15m_only_blocks_ready_not_short_watch_prepare():
+    data = early_data(side="SHORT", health="DEGRADED_15M",
+                      break_state="FAILED_BREAKOUT", break_direction="UP")
+    data["normalized_analysis"]["timeframeAssessments"] = assessments()
+    data["decision_health_state"]["marketBias"] = "BULLISH"
+    state, _ = evaluate_early_entry_candidate(data, {"state": "IDLE"})
+    assert state["state"] in {"WATCH_SHORT", "PREPARE_SHORT"}
+    assert state["capabilities"]["entryAllowed"] is False
+
+
+def test_15_telegram_localization_boundary_hides_engine_codes():
+    assert translate_user_facing_term("ENTRY_READY") == "可以進場"
+    assert translate_user_facing_term(None) is None
+    event = {
+        "event_type": "EARLY_ENTRY_PREPARE", "candidateSide": "SHORT",
+        "direction": "SHORT", "currentPrice": 99.0,
+        "candidateZone": {"low": 99.0, "high": 101.0},
+        "candidateDefenseLevel": 103.0,
+        "candidateReasons": ["FAILED_BREAKOUT"],
+        "dataHealth": "DEGRADED_15M",
+        "multiTimeframeBias": derive_multi_timeframe_bias(
+            {"timeframeAssessments": assessments()}, canonical_bias="BULLISH"),
+    }
+    message = format_decision_message(event)
+    assert_no_internal_user_facing_terms(message)
+    for raw in ("ENTRY_READY", "PREPARE_SHORT", "FAILED_BREAKOUT",
+                "DEGRADED_15M", "None", "null", "undefined", "NaN"):
+        assert raw not in message

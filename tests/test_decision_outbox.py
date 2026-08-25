@@ -281,7 +281,7 @@ def test_continuation_telegram_is_directionally_symmetric(
     assert title in message
     assert f"劇本：{name}" in message
     assert invalidation in message
-    assert "TP1：" in message and "TP2：" in message and "TP3：" in message
+    assert "第一停利：" in message and "第二停利：" in message and "第三停利：" in message
 
 
 def test_tp_and_stop_telegram_are_actionable_and_semantically_distinct():

@@ -6,7 +6,12 @@ from datetime import datetime, timedelta, timezone
 from typing import Literal, cast
 
 from app.config import get_settings
-from app.engines.scalp_decision import scalp_setup_ttl_bars
+from app.engines.multi_timeframe_bias import derive_multi_timeframe_bias
+from app.engines.scalp_decision import (
+    derive_scalp_bias,
+    preferred_scalp_side,
+    scalp_setup_ttl_bars,
+)
 from app.engines.scenario_safety import calculate_risk_reward
 
 TYPES = ("SHALLOW_PULLBACK", "DEEP_PULLBACK", "BREAKOUT_RETEST")
@@ -206,6 +211,10 @@ def assign_support_roles(opportunities: list[dict], *, current_price: float,
 def evaluate_entry_opportunities(data: dict, previous: dict | None = None) -> tuple[dict, list[dict]]:
     previous = previous or {}
     normalized = data.get("normalized_analysis") or {}
+    multi = derive_multi_timeframe_bias(
+        normalized, canonical_bias=str(normalized.get("trendBias") or "NEUTRAL"))
+    scalp_bias = derive_scalp_bias(multi)
+    preferred_side = preferred_scalp_side(scalp_bias)
     manager = data.get("breakout_setup_manager") or {}
     setup = manager.get("activeSetup") or {}
     if not setup:
@@ -435,6 +444,12 @@ def evaluate_entry_opportunities(data: dict, previous: dict | None = None) -> tu
         minimum_rr=min_rr)
     opportunities, support_selection_reason = assign_support_roles(
         opportunities, current_price=price, atr15=atr, direction=side)
+    scalp_direction_matches = preferred_side not in {"LONG", "SHORT"} or side == preferred_side
+    if not scalp_direction_matches:
+        for item in opportunities:
+            item["primary_eligible"] = False
+            item["candidate_role"] = "OPPOSITE_SCALP_DIRECTION_BACKUP"
+            item["scalp_direction_mismatch"] = True
     opportunity_by_id = {str(item.get("opportunity_id")): item for item in opportunities}
     for event in events:
         matched_opportunity = opportunity_by_id.get(
@@ -479,6 +494,13 @@ def evaluate_entry_opportunities(data: dict, previous: dict | None = None) -> tu
                            "direction": old.get("side")})
     return {
         "schemaVersion": "entry-opportunity-v2", "setupId": setup_id,
+        "tradingHorizon": "SCALP_INTRADAY", "scalpBias": scalp_bias,
+        "preferredScalpSide": preferred_side,
+        "counterHigherTimeframe": bool(
+            preferred_side in {"LONG", "SHORT"} and any(
+                ((preferred_side == "LONG" and "BEARISH" in str(multi.get(key) or "")) or
+                 (preferred_side == "SHORT" and "BULLISH" in str(multi.get(key) or "")))
+                for key in ("bias4h", "bias1d"))),
         "strongTrendShallowRetraceMode": strong_shallow,
         "opportunities": ranked,
         "primaryOpportunityId": primary_id,
