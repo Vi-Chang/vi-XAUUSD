@@ -145,8 +145,23 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
     settings = get_settings()
     minimum_rr = float(settings.decision_assistant_min_rr)
     health = evaluate_data_health(data)
-    decision_health = (data.get("decision_health_state") or
-                       evaluate_decision_health(data))
+    decision_health = dict(
+        data.get("decision_health_state") or evaluate_decision_health(data)
+    )
+    # Live quote evaluation can advance the canonical health transition after
+    # the original analysis payload was created.  The final decision is newer
+    # than the persisted observation embedded in that payload, so it must win
+    # when rebuilding the dashboard/Telegram snapshot.
+    for key in (
+        "dataHealth",
+        "canonicalDataHealth",
+        "entryConfirmation",
+        "marketBias",
+        "latestClosed15m",
+        "contextClosed15m",
+    ):
+        if final.get(key) is not None:
+            decision_health[key] = final[key]
     normalized = data.get("normalized_analysis") or {}
     signal_score = _number((data.get("decision") or {}).get("signal_score"))
     closed_candle = ((data.get("closed_candles") or {}).get("15M") or {})

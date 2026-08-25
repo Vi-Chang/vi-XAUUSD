@@ -114,6 +114,31 @@ def test_stale_data_forces_wait_even_when_engine_says_enter():
     assert canonical["newEntryDecision"]["tradeStatus"] == "WAIT_DATA_CONFIRMATION"
 
 
+def test_latest_final_health_overrides_stale_embedded_observation_in_snapshot():
+    data = payload()
+    data["decision_health_state"] = {
+        "dataHealth": "STALE",
+        "canonicalDataHealth": "STALE",
+        "entryConfirmation": "BLOCKED_BY_DATA",
+        "marketBias": "BULLISH",
+    }
+    data["final_decision_state"].update({
+        "dataHealth": "HEALTHY",
+        "canonicalDataHealth": "HEALTHY",
+        "entryConfirmation": "READY",
+        "marketBias": "BULLISH",
+        "scenarioValidity": "PENDING_CONFIRMATION",
+    })
+
+    snapshot = build_decision_snapshot(data)
+    canonical = snapshot["canonicalDecision"]
+
+    assert canonical["dataHealth"] == "HEALTHY"
+    assert canonical["dataStale"] is False
+    assert canonical["scenarioValidity"] != "BLOCKED_BY_DATA"
+    assert snapshot["dataHealth"]["healthy"] is True
+
+
 def test_unknown_position_is_explicit_not_hypothetical():
     data = payload()
     data["position_management"] = {
