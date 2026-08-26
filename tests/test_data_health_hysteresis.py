@@ -128,3 +128,54 @@ def test_case_g_same_closed_candle_after_recovery_does_not_recover_again():
     at_1200 = _step(at_1157, 20, candle_time=same_candle)
     assert at_1157["dataHealthEvent"] is None
     assert at_1200["dataHealthEvent"] is None
+
+
+def test_three_total_fetch_failures_escalate_degraded_to_invalid():
+    healthy = _step({}, 0)
+    failed_once_data = _sample(BASE + timedelta(minutes=1), available=False)
+    failed_once_data["current_price"] = {}
+    failed_once_data["api_ok"] = False
+    failed_once = evaluate_decision_health(
+        failed_once_data, previous=healthy, now=BASE + timedelta(minutes=1))
+    failed_twice_data = _sample(BASE + timedelta(minutes=2), available=False)
+    failed_twice_data["current_price"] = {}
+    failed_twice_data["api_ok"] = False
+    failed_twice = evaluate_decision_health(
+        failed_twice_data, previous=failed_once, now=BASE + timedelta(minutes=2))
+    failed_thrice_data = _sample(BASE + timedelta(minutes=3), available=False)
+    failed_thrice_data["current_price"] = {}
+    failed_thrice_data["api_ok"] = False
+    failed_thrice = evaluate_decision_health(
+        failed_thrice_data, previous=failed_twice, now=BASE + timedelta(minutes=3))
+
+    assert failed_once["dataHealth"] == "HEALTHY"
+    assert failed_twice["dataHealth"] == "DEGRADED"
+    assert failed_thrice["dataHealth"] == "INVALID"
+    assert failed_thrice["entryConfirmation"] == "BLOCKED_BY_DATA"
+    assert failed_thrice["strategySnapshotMode"] == "CLEARED"
+
+
+def test_degraded_preserves_last_valid_strategy_as_reference_only():
+    snapshot = {"scenarioId": "LONG-KEEP", "entryZone": [4639, 4643]}
+    healthy_data = _sample(BASE)
+    healthy_data["previous_canonical_strategy_snapshot"] = snapshot
+    healthy = evaluate_decision_health(healthy_data, now=BASE)
+    degraded = _step(_step(healthy, 1, available=False), 2, available=False)
+
+    assert degraded["dataHealth"] == "DEGRADED"
+    assert degraded["lastValidStrategySnapshot"] == snapshot
+    assert degraded["strategySnapshotMode"] == "REFERENCE_ONLY"
+    assert degraded["executionAllowed"] is False
+    assert degraded["entryLevelsExecutable"] is False
+    assert degraded["suppressScenarioInvalidation"] is True
+
+
+def test_corrupt_candle_set_is_immediately_invalid():
+    healthy = _step({}, 0)
+    corrupt = _sample(BASE + timedelta(minutes=1))
+    corrupt["data_quality"] = {"candle_complete": False}
+    result = evaluate_decision_health(
+        corrupt, previous=healthy, now=BASE + timedelta(minutes=1))
+    assert result["dataHealth"] == "INVALID"
+    assert result["hardInvalidReason"] == "CANDLE_CORRUPTION"
+    assert result["lastValidStrategySnapshot"] is None

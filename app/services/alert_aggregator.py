@@ -5,10 +5,13 @@ import hashlib
 import math
 
 from app.config import get_settings
+from app.services.semantic_decision import build_semantic_decision
 
 ALERT_PRIORITY = {
+    "CANDLE_CLOSE_REPORT": 150,
     "POSITION_EMERGENCY": 140, "SCENARIO_INVALIDATED": 135,
-    "ENTRY_READY": 130, "EXIT_WARNING": 120, "PREPARE": 90, "WATCHING": 80,
+    "ENTRY_READY": 130, "PROBE_READY": 125, "EXIT_WARNING": 120,
+    "PREPARE": 90, "WATCHING": 80,
     "MISSED_ENTRY": 70, "DATA_STATUS": 60, "WAIT_RETEST": 50,
     "SETUP_CONFIRMED": 45, "PULLBACK_ZONE_CREATED": 40,
     "MEANINGFUL_SCENARIO_UPDATE": 30, "WAIT": 10,
@@ -52,6 +55,12 @@ def _profile(event: dict) -> dict:
         "atr": max(_number(setup.get("atr15")) or _number(event.get("atr15")) or 0.0, 0.0),
         "marketBias": str(event.get("marketBias") or
                           (event.get("canonicalDecision") or {}).get("marketBias") or "NEUTRAL"),
+        "liveBiasState": str(event.get("liveBiasState") or
+                             (event.get("canonicalDecision") or {}).get(
+                                 "liveBiasState") or "ALIGNED"),
+        "executionBias": str(event.get("executionBias") or
+                             (event.get("canonicalDecision") or {}).get(
+                                 "executionBias") or "NEUTRAL"),
         "entryConfirmation": str(event.get("entryConfirmation") or
                                  (event.get("canonicalDecision") or {}).get(
                                      "entryConfirmation") or ""),
@@ -110,7 +119,8 @@ def is_meaningful_change(previous: dict | None, current: dict) -> tuple[bool, st
     if old["setupId"] != new["setupId"]:
         return True, "NEW_SCENARIO"
     for field in (
-            "marketBias", "entryConfirmation", "defenseState", "dataHealth",
+            "marketBias", "liveBiasState", "executionBias",
+            "entryConfirmation", "defenseState", "dataHealth",
             "scenarioValidity",
             "primaryTriggerId"):
         if old[field] != new[field]:
@@ -178,6 +188,7 @@ def notification_fingerprint_parts(event: dict) -> dict[str, str]:
         "DEFENSE_BROKEN_CONFIRMED", "BREAKOUT_CONFIRMED", "BREAK_CONFIRMED",
         "RECLAIM_CONFIRMED", "DEFENSE_RECLAIMED", "DEFENSE_HELD",
         "ENTRY_READY", "ENTRY_NOW",
+        "LONG_WATCH", "SHORT_WATCH", "LONG_RESTORED", "SHORT_RESTORED",
     }
     # Candle time belongs to the identity only when that exact event requires a
     # closed candle. A newer context candle must not turn an unchanged WAIT,
@@ -193,6 +204,7 @@ def notification_fingerprint_parts(event: dict) -> dict[str, str]:
                        or event.get("candleCloseTime")
                        or setup.get("createdFromCandleTime")
                        or event.get("sourceDataTime") or "")
+    semantic = build_semantic_decision(event)
     parts = {
         "symbol": str(event.get("symbol") or "XAUUSD"),
         "scenarioId": str(scenario_id),
@@ -202,13 +214,12 @@ def notification_fingerprint_parts(event: dict) -> dict[str, str]:
         "chaseLimit": _price(chase),
         "invalidationPrice": _price(invalidation),
         "sourceCandleTime": str(source_time),
-        "canonicalStateVersion": str(
-            event.get("canonicalStateVersion") or event.get("decisionVersion") or
-            (event.get("canonicalDecision") or {}).get("decisionVersion") or "1"),
         "canonicalState": str(event.get("canonicalState") or
                               event.get("currentState") or status),
         "marketBias": str(event.get("marketBias") or
                           (event.get("canonicalDecision") or {}).get("marketBias") or "NEUTRAL"),
+        "liveBiasState": str(semantic["liveBiasState"]),
+        "executionBias": str(semantic["executionBias"]),
         "entryConfirmation": str(event.get("entryConfirmation") or
                                  (event.get("canonicalDecision") or {}).get(
                                      "entryConfirmation") or ""),
@@ -219,6 +230,20 @@ def notification_fingerprint_parts(event: dict) -> dict[str, str]:
         "primaryTriggerId": str(event.get("primaryTriggerId") or
                                 (event.get("canonicalDecision") or {}).get(
                                     "activeSetupId") or scenario_id),
+        "canonicalAction": str(semantic["canonicalAction"]),
+        "shortTermBias": str(semantic["shortTermBias"]),
+        "bias15m": str(semantic["bias15m"]),
+        "bias1h": str(semantic["bias1h"]),
+        "bias4h": str(semantic["bias4h"]),
+        "triggerStatus": str(semantic["triggerStatus"]),
+        "entryZoneState": str(semantic["entryZoneState"]),
+        "rrState": str(semantic["rrState"]),
+        "positionState": str(semantic["positionState"]),
+        "strategyPhase": str(semantic["strategyPhase"]),
+        "waitReason": str(semantic["waitReason"]),
+        "targetCloseTime": str(((event.get("canonicalDecision") or {}).get(
+            "closeGate") or event.get("closeGate") or {}).get(
+                "targetCandleCloseTime") or ""),
     }
     if event_type in {"DATA_DELAYED", "DATA_STALE", "DATA_RECOVERED"}:
         # Freshness alerts are transitions, not candle-scoped market setups.
@@ -238,6 +263,11 @@ def notification_fingerprint_parts(event: dict) -> dict[str, str]:
 
 
 def notification_fingerprint(event: dict) -> str:
+    if str(event.get("event_type") or "") in {
+            "CANDLE_CLOSE_ANALYSIS_15M", "CANDLE_CLOSE_ANALYSIS_1H",
+            "CANDLE_CLOSE_ANALYSIS_COMBINED"}:
+        identity = str(event.get("reportDedupeKey") or event.get("eventKey") or "")
+        return hashlib.sha256(identity.encode()).hexdigest()
     parts = notification_fingerprint_parts(event)
     settings = get_settings()
     steps = {
@@ -245,7 +275,7 @@ def notification_fingerprint(event: dict) -> str:
         "chaseLimit": settings.telegram_chase_change_min_delta,
         "invalidationPrice": settings.telegram_invalidation_change_min_delta,
     }
-    stable = {**parts, "eventType": str(event.get("event_type") or "DECISION_UPDATED")}
+    stable = dict(parts)
     wrapper = event.get("breakoutSetupEvent") or event.get("trendContinuationEvent") or {}
     setup = wrapper.get("setup") or {}
     entry_zone = "-".join(filter(None, (
@@ -276,8 +306,17 @@ def notification_fingerprint(event: dict) -> str:
 
 def alert_category(event: dict) -> str:
     event_type = str(event.get("event_type") or "")
+    if event_type in {"CANDLE_CLOSE_ANALYSIS_15M", "CANDLE_CLOSE_ANALYSIS_1H",
+                      "CANDLE_CLOSE_ANALYSIS_COMBINED"}:
+        return "CANDLE_CLOSE_REPORT"
+    if event_type in {"TRUE_ENGINE_CONFLICT", "SYSTEM_STATE_INVARIANT_BLOCKED"}:
+        return "POSITION_EMERGENCY"
+    if event_type in {"TIMEFRAME_DIVERGENCE", "BIAS_TRANSITION", "SCORE_NEAR_TIE"}:
+        return "MEANINGFUL_SCENARIO_UPDATE"
     if event_type in {"ENTRY_READY", "ENTRY_NOW"}:
         return "ENTRY_READY"
+    if event_type == "PROBE_READY":
+        return "PROBE_READY"
     if event_type == "EARLY_ENTRY_PREPARE":
         return "PREPARE"
     if event_type == "EARLY_ENTRY_REPLACED":
@@ -399,7 +438,12 @@ def aggregate_signal_facts(symbol: str, events: list[dict]) -> list[dict]:
             "triggerReason": "；".join(reasons),
             "topic": f"decision-alert:{key}",
         })
-        if any(f.get("event_type") == "STATE_CHANGED" for f in facts):
+        # STATE_CHANGED is an audit fact, not a priority override.  Previously
+        # it could rename ENTRY_READY / EXIT / defense notifications and make
+        # the formatter and eligibility layer treat them as a generic update.
+        if (any(f.get("event_type") == "STATE_CHANGED" for f in facts)
+                and alert_category(representative) in {
+                    "WAIT", "MEANINGFUL_SCENARIO_UPDATE"}):
             representative["event_type"] = "STATE_CHANGED"
         aggregated.append(representative)
     return aggregated

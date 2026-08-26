@@ -55,4 +55,12 @@ def validate_notification(event: dict) -> list[str]:
     if (isinstance(price, (int, float)) and isinstance(short_defense, (int, float))
             and price > short_defense and "防守條件已觸發" not in str(event.get("shortManage"))):
         errors.append("SHORT_DEFENSE_DISPLAYED_AS_PENDING")
+    canonical = event.get("canonicalDecision") or {}
+    event_type = str(event.get("event_type") or "")
+    if event_type.startswith("DEFENSE_"):
+        if event.get("defenseRejected") or canonical.get("defenseRejected"):
+            errors.append("STALE_DEFENSE_REJECTED")
+        side = str(event.get("defenseSide") or canonical.get("defenseSide") or "")
+        if side not in {"LONG", "SHORT"}:
+            errors.append("DEFENSE_SIDE_MISSING")
     return errors

@@ -27,8 +27,13 @@ def build_decision_snapshot(data: dict, *, risk_mode: str = "STANDARD") -> dict:
     decision = data.get("decision") or {}
     score = decision.get("signal_score", decision.get("evidence_score"))
     grade = get_confidence_grade(score)
-    from app.engines.canonical_decision import build_canonical_decision
-    canonical = build_canonical_decision(data, final)
+    # Published canonical state is the single source of truth. Rebuilding it
+    # in the API/UI layer could mix a persisted decision with newer partial
+    # cards from the analysis payload.
+    canonical = dict(final.get("canonicalDecision") or {})
+    if not canonical:
+        from app.engines.canonical_decision import build_canonical_decision
+        canonical = build_canonical_decision(data, final)
     canonical_entry = canonical.get("newEntryDecision") or {}
     canonical_setup = canonical_entry.get("selectedSetup") or {}
     state = str(canonical_entry.get("tradeStatus") or "WAIT_CONFIRMATION")

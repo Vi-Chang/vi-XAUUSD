@@ -7,9 +7,39 @@ from typing import Literal, cast
 from zoneinfo import ZoneInfo
 
 from app.engines.confidence import confidence_label, normalize_signal_score
+from app.engines.multi_timeframe_bias import derive_multi_timeframe_bias
 from app.engines.user_facing_trade_message import UserFacingTradeMessageBuilder
 
 TAIPEI = ZoneInfo("Asia/Taipei")
+
+
+def _direction_first_context(event: dict, canonical: dict) -> tuple[str, list[str]]:
+    multi = event.get("multiTimeframeBias") or canonical.get("multiTimeframeBias")
+    if not multi:
+        multi = derive_multi_timeframe_bias(
+            event.get("normalized_analysis") or canonical or event,
+            canonical_bias=str(canonical.get("marketBias") or
+                               event.get("marketBias") or "NEUTRAL"),
+        )
+    labels = {
+        "BULLISH": "🟢 偏多", "BEARISH": "🔴 偏空",
+        "BULLISH_CORRECTION": "🟠 多頭修正",
+        "BEARISH_CORRECTION": "🟠 空頭修正",
+        "NEUTRAL": "⚪ 震盪", "TRANSITION": "🟡 轉換中",
+        "UNKNOWN": "資料確認中",
+    }
+    short = str(multi.get("shortTermBias") or "SHORT_TERM_TRANSITION")
+    short_label = {
+        "SHORT_TERM_BULLISH": "🟢 偏多", "SHORT_TERM_BEARISH": "🔴 偏空",
+        "SHORT_TERM_MIXED": "🟡 方向分歧", "SHORT_TERM_TRANSITION": "🟡 轉換中",
+    }.get(short, "資料確認中")
+    direction_text = ("短線偏多" if short == "SHORT_TERM_BULLISH" else
+                      "短線偏空" if short == "SHORT_TERM_BEARISH" else "方向分歧")
+    lines = [f"短線：{short_label}"]
+    for key, timeframe in (("bias15m", "15M"), ("bias1h", "1H"), ("bias4h", "4H")):
+        value = str(multi.get(key) or "UNKNOWN")
+        lines.append(f"{timeframe}：{labels.get(value, '資料確認中')}")
+    return direction_text, lines
 
 
 def plain_trade_status(state: str, *, can_enter: bool = False) -> str:
@@ -137,8 +167,206 @@ def _closed_candle_text(candle: dict) -> str:
         return "不可用（PARSE_ERROR）"
 
 
+def _format_close_report(event: dict) -> str:
+    report = event.get("candleCloseReport") or {}
+    report_type = str(report.get("reportType") or "15M")
+    local = _local_time(str(report.get("closeTime") or ""))
+    label = "15M＋1H 收盤總分析" if report_type == "COMBINED" else f"{report_type} 收盤分析"
+    direction = str(report.get("marketDirection") or "NEUTRAL")
+    direction_text = {"LONG": "🟢 偏多", "SHORT": "🔴 偏空"}.get(
+        direction, "🟡 方向轉換／震盪")
+    action = str(report.get("currentAction") or "WAIT")
+    can_enter = bool(report.get("canEnter"))
+    if action == "BLOCKED_DATA":
+        action_text = "⛔ 行情資料異常，本根不提供新進場判斷"
+    elif action == "BLOCKED_EVENT":
+        action_text = "⛔ 重大事件封鎖中，只分析、不建立新倉"
+    elif can_enter and action in {"ENTER_LONG", "ENTER_SHORT"}:
+        action_text = "🟢 進場條件已完成，依下列風控評估執行"
+    else:
+        action_text = "👀 現在先不進場，等待下一個明確觸發"
+    volume_tfs = report.get("volume") or {}
+
+    def volume_line(timeframe: str) -> str:
+        item = volume_tfs.get(timeframe) or {}
+        state = str(item.get("volumeState") or "UNAVAILABLE")
+        ratio = item.get("effectiveRelativeVolume")
+        wording = {
+            "VERY_LOW": "成交活躍度很低", "LOW": "成交活躍度偏低",
+            "NORMAL": "成交活躍度正常", "HIGH": "成交活躍度增加",
+            "VERY_HIGH": "成交活躍度明顯增加", "EXTREME": "成交活躍度極高",
+            "UNAVAILABLE": "成交活躍度資料不足",
+        }.get(state, "成交活躍度正常")
+        return (f"{timeframe}：{wording}（同時段均值 {float(ratio):.2f} 倍）"
+                if isinstance(ratio, (int, float)) else f"{timeframe}：{wording}")
+
+    def proverb_line(timeframe: str) -> str:
+        item = volume_tfs.get(timeframe) or {}
+        proverb = item.get("volumeProverb") or {}
+        text = str(proverb.get("text") or "") if isinstance(proverb, dict) else ""
+        return f"{timeframe} 口訣：{text or '目前沒有明確量價組合，等待價格確認。'}"
+
+    volume_state = str(report.get("volumePriceState") or "UNAVAILABLE")
+    volume_text = {
+        "BULLISH_BREAKOUT_VOLUME": "突破伴隨量能增加，多方突破品質提高",
+        "BEARISH_BREAKOUT_VOLUME": "跌破伴隨量能增加，空方延續品質提高",
+        "VOLUME_CONFIRMED_RISE": "價格上漲且參與度增加，多方動能獲得確認",
+        "VOLUME_CONFIRMED_DROP": "價格下跌且參與度增加，空方動能獲得確認",
+        "LOW_VOLUME_RISE": "價格仍漲但參與度下降，續漲品質降低",
+        "LOW_VOLUME_DROP": "價格下跌但參與度下降，只代表賣壓參與減弱",
+        "LOW_VOLUME_PULLBACK_LONG": "多方結構內縮量回踩，等止跌後再評估",
+        "LOW_VOLUME_PULLBACK_SHORT": "空方結構內縮量反彈，等轉弱後再評估",
+        "BUYING_ABSORPTION": "放量衝高但收弱，買盤可能遭吸收",
+        "SELLING_ABSORPTION": "放量殺低後收回，賣壓可能遭吸收",
+        "LOW_VOLUME_CONSOLIDATION": "量價同步收斂，等待區間選方向",
+    }.get(volume_state, "成交量只作確認，目前沒有單獨改變方向")
+    session_text = {
+        "ASIA": "亞洲盤", "EUROPE": "歐洲盤", "US": "美洲盤",
+        "EUROPE_US_OVERLAP": "歐美重疊時段",
+    }.get(str(report.get("session") or ""), "時段資料不足")
+    quality_text = {
+        "STRONG": "✅ 突破可信度高", "VALID": "✅ 突破有效",
+        "WEAK": "⚠️ 突破力度偏弱", "SUSPECT": "⚠️ 突破仍需確認",
+        "FALSE_BREAK": "❌ 疑似假突破", "UNAVAILABLE": "突破品質資料不足",
+    }.get(str(report.get("breakoutQuality") or ""), "突破品質待確認")
+    support, resistance = report.get("support"), report.get("resistance")
+    levels = []
+    if isinstance(support, (int, float)):
+        levels.append(f"支撐：{float(support):.2f}")
+    if isinstance(resistance, (int, float)):
+        levels.append(f"壓力：{float(resistance):.2f}")
+    changed = list(report.get("whatChanged") or [])
+    candles = report.get("candles") or {}
+    close_values = []
+    for timeframe in ("15M", "1H"):
+        candle = candles.get(timeframe) or {}
+        if isinstance(candle.get("close"), (int, float)):
+            close_values.append(f"{timeframe} 收盤：{float(candle['close']):.2f}")
+    facts = list(event.get("signalFacts") or [])
+    fact_types = {str(item.get("event_type") or "") for item in facts}
+    critical_action = ""
+    if fact_types & {"STOP_TRIGGERED", "EXIT_NOW", "POSITION_EXIT"}:
+        critical_action = "🔴 重要：防守／退出條件已觸發，請優先依風控處理"
+    elif fact_types & {"EXIT_WARNING", "POSITION_DEFEND"}:
+        critical_action = "🟠 重要：持倉風險已上升，請先檢查防守與減倉條件"
+    elif fact_types & {"ENTRY_READY", "ENTRY_NOW"}:
+        critical_action = "🟢 重要：進場條件已完成，請依本輪進場區與防守價評估"
+    lines = [f"🕯【{label}｜{local[-5:]}】"]
+    if critical_action:
+        lines.extend([critical_action, ""])
+    lines.extend([*close_values,
+             f"市場方向：{direction_text}", f"現在能不能進：{action_text}", "",
+             f"目前時段：{session_text}", "", "📦 成交量", volume_line("15M"),
+             proverb_line("15M")]
+    )
+    if report_type in {"1H", "COMBINED"}:
+        lines.extend([volume_line("1H"), proverb_line("1H")])
+    lines.extend([f"量價判讀：{volume_text}", quality_text])
+    if levels:
+        lines.extend(["", "🧱 關鍵位置", "｜".join(levels)])
+    lines.extend(["", (f"多方分數：{int(report.get('longScore') or 0)}｜"
+                       f"空方分數：{int(report.get('shortScore') or 0)}")])
+    zone = report.get("entryZone") or {}
+    if can_enter and isinstance(zone, dict) and isinstance(zone.get("low"), (int, float)):
+        lines.append(f"可執行區：{float(zone['low']):.2f}～{float(zone['high']):.2f}")
+    trigger = report.get("canonicalNextTrigger") or {}
+    trigger_text = (str(trigger.get("label") or trigger.get("condition") or "")
+                    if isinstance(trigger, dict) else str(trigger or ""))
+    support_text = (f"{float(support):.2f}" if isinstance(support, (int, float))
+                    else "最新結構支撐")
+    resistance_text = (
+        f"{float(resistance):.2f}" if isinstance(resistance, (int, float))
+        else "最新結構壓力")
+    if direction == "LONG":
+        long_condition = trigger_text or f"15M 收盤突破 {resistance_text} 後守穩"
+        short_condition = f"15M 收盤跌破 {support_text}，再重新評估空方"
+        invalidation = f"15M 收盤跌破 {support_text}"
+    elif direction == "SHORT":
+        short_condition = trigger_text or f"15M 收盤跌破 {support_text} 後延續"
+        long_condition = f"15M 收盤站上 {resistance_text}，再重新評估多方"
+        invalidation = f"15M 收盤站上 {resistance_text}"
+    else:
+        long_condition = f"15M 收盤站上 {resistance_text}"
+        short_condition = f"15M 收盤跌破 {support_text}"
+        invalidation = "任一方突破失敗就重新計算"
+    lines.extend(["", "🎯 接下來的條件", f"多方：{long_condition}",
+                  f"空方：{short_condition}", f"這次判斷失效：{invalidation}"])
+    if changed:
+        lines.extend(["", "和上一根相比：" + "；".join(changed)])
+    lines.extend(["", "下一根重點：" + str(report.get("nextFocus") or "等待新結構")])
+    return "\n".join(lines)
+
+
 def _format_decision_message_legacy(event: dict) -> str:
     canonical_type = str(event.get("event_type") or "")
+    if canonical_type in {
+            "CANDLE_CLOSE_ANALYSIS_15M", "CANDLE_CLOSE_ANALYSIS_1H",
+            "CANDLE_CLOSE_ANALYSIS_COMBINED"}:
+        return _format_close_report(event)
+    if canonical_type in {
+            "TIMEFRAME_DIVERGENCE", "BIAS_TRANSITION", "SCORE_NEAR_TIE",
+            "TRUE_ENGINE_CONFLICT", "SYSTEM_STATE_INVARIANT_BLOCKED"}:
+        states = dict(event.get("timeframeState") or {})
+        labels = {
+            "BULLISH": "🟢 偏多", "BEARISH": "🔴 偏空",
+            "BULLISH_CORRECTION": "🟠 多頭修正／短線偏空",
+            "BEARISH_CORRECTION": "🟠 空頭修正／短線偏多",
+            "NEUTRAL": "⚪ 震盪", "TRANSITION": "🟡 轉換中",
+            "UNKNOWN": "資料不足",
+        }
+        timeframe_lines = [
+            f"{timeframe}：{labels.get(str(states.get(timeframe) or 'UNKNOWN'), '資料不足')}"
+            for timeframe in ("15M", "1H", "4H")
+        ]
+        if canonical_type == "TIMEFRAME_DIVERGENCE":
+            return "\n".join([
+                "🟡【XAUUSD｜多空週期分歧】", *timeframe_lines,
+                "目前判斷：短線與較大週期方向不同。",
+                "目前操作：等 15M 新結構確認，不把週期分歧當成系統錯誤。",
+            ])
+        if canonical_type == "BIAS_TRANSITION":
+            structural = "偏多" if "BULL" in str(event.get("structuralBias")) else "偏空"
+            return "\n".join([
+                "🔄【XAUUSD｜方向正在轉換】", *timeframe_lines,
+                f"原結構：{structural}",
+                "目前操作：暫停原方向新單，等 15M 收盤確認是否正式翻向。",
+            ])
+        if canonical_type == "SCORE_NEAR_TIE":
+            return ("🟡【XAUUSD｜多空力量接近】\n"
+                    "目前沒有明顯優勢，暫時不進場。\n"
+                    "下一步：等新的 15M 結構或收盤確認。")
+        return ("🚨【XAUUSD｜交易系統判斷異常】\n"
+                "同一份行情資料仍出現無法一致的結果。\n"
+                "系統已停止新的進場判斷，但保留上一個已確認方向作為背景。\n"
+                "目前操作：不開新倉，等系統重新取得一致結果。")
+    if canonical_type in {
+            "LONG_INVALIDATING", "SHORT_INVALIDATING", "LONG_RESTORED",
+            "SHORT_RESTORED", "LONG_WATCH", "SHORT_WATCH"}:
+        structural_side = str(event.get("structuralBias") or "NEUTRAL")
+        old_word = "多方" if "BULL" in structural_side or "LONG" in canonical_type else "空方"
+        level = event.get("invalidationLevel")
+        current = float(event.get("currentPrice") or 0)
+        if canonical_type.endswith("INVALIDATING"):
+            return "\n".join([
+                f"⚠️【{old_word}結構正在失效】", f"現價：{current:.2f}",
+                f"原方向失效線：{float(level):.2f}" if isinstance(level, (int, float)) else
+                "原方向失效線：依最新結構計算",
+                f"目前操作：暫停新{old_word[:-1]}單。",
+                "原因：即時價格已持續越過原方向失效區。",
+                "接下來：等待本根15M正式收盤；確認後才評估新方向。",
+            ])
+        if canonical_type.endswith("RESTORED"):
+            return "\n".join([
+                f"✅【{old_word}重新成立】", f"現價：{current:.2f}",
+                "剛才的反向突破沒有守住，15M 已重新收回原結構。",
+                f"目前操作：恢復留意{old_word[:-1]}方機會，但仍須通過進場風控。",
+            ])
+        new_word = "多" if canonical_type == "LONG_WATCH" else "空"
+        return "\n".join([
+            f"🟡【短線轉換｜開始觀察做{new_word}】", f"現價：{current:.2f}",
+            "原方向已由15M收盤確認失效。",
+            f"目前操作：只進入做{new_word}觀察，尚不是正式進場通知。",
+        ])
     if canonical_type in {
             "EARLY_ENTRY_WATCH", "EARLY_ENTRY_PREPARE", "EARLY_ENTRY_REPLACED",
             "EARLY_ENTRY_MISSED",
@@ -311,6 +539,62 @@ def _format_decision_message_legacy(event: dict) -> str:
             return ("⚠️【XAUUSD｜15M 下方連續出現承接】\n"
                     f"區域：{range_text}\n空方動能可能仍偏弱，但價格尚未跌破承接區。\n目前：不追空。")
     canonical = event.get("canonicalDecision") or {}
+    if canonical_type in {"FIRST_REJECTION", "REPEATED_REJECTION", "FAILED_BREAKOUT",
+                          "SUPPORT_BREAK_PENDING_CLOSE",
+                          "SUPPORT_BROKEN", "SUPPORT_RECLAIMED",
+                          "POSITION_DEFENSIVE", "POSITION_INVALIDATED"}:
+        engine = canonical.get("failedBreakoutRejection") or {}
+        bias_state = str(event.get("marketBiasState") or
+                         canonical.get("marketBiasState") or engine.get("biasState") or
+                         "NEUTRAL")
+        bias_label = {
+            "BULLISH_WITH_RESISTANCE": "偏多，但上方有壓",
+            "NEUTRAL_BULLISH": "中性偏多", "NEUTRAL": "中性",
+            "NEUTRAL_BEARISH": "中性偏空", "BULLISH_WEAKENING": "多方轉弱",
+            "BULLISH_RECLAIM": "多方剛收回關鍵位",
+        }.get(bias_state, "偏多" if "BULL" in bias_state else
+              "偏空" if "BEAR" in bias_state else "中性")
+        support_level = event.get("supportLevel") or engine.get("supportLevel")
+        reasons = event.get("rejectionReasons") or engine.get("rejectionReasons") or []
+        if canonical_type == "SUPPORT_BREAK_PENDING_CLOSE":
+            return "\n".join([
+                "🟠【XAUUSD｜盤中已跌破短線防守】", f"短線方向：{bias_label}",
+                f"防守位置：{float(support_level):.2f}" if isinstance(support_level, (int, float)) else
+                "防守位置：等待最新結構確認",
+                "現在：禁止新進場，等待這根 15M K 棒正式收盤。",
+                "收回防守 → 判斷假跌破；收盤確認失守 → 取消目前劇本，但不直接反手。",
+            ])
+        if canonical_type == "SUPPORT_BROKEN":
+            return "\n".join([
+                "🟠【XAUUSD｜短線支撐已收盤跌破】",
+                f"短線方向：{bias_label}",
+                f"原支撐：{float(support_level):.2f}，現在改列為反彈壓力候選"
+                if isinstance(support_level, (int, float)) else "原支撐已改列為反彈壓力候選",
+                "現在：取消原多方交易劇本；高週期方向保留，重新尋找新結構。",
+                "目前不追多，也不因單一支撐失守就直接追空。",
+            ])
+        if canonical_type == "SUPPORT_RECLAIMED":
+            return "\n".join([
+                "🔄【XAUUSD｜關鍵位置重新收回】", f"短線方向：{bias_label}",
+                f"15M 已重新站回 {float(support_level):.2f}；仍需後續延續確認。"
+                if isinstance(support_level, (int, float)) else "15M 已重新收回原支撐；仍需後續延續確認。",
+                "現在：先不追價，重新計算新的合理入口。",
+            ])
+        if canonical_type in {"POSITION_DEFENSIVE", "POSITION_INVALIDATED"}:
+            action = "依風控退出" if canonical_type == "POSITION_INVALIDATED" else "降低部位風險"
+            return "\n".join([
+                f"{'🔴' if canonical_type == 'POSITION_INVALIDATED' else '🟠'}【XAUUSD｜多單持倉風險升高】",
+                f"市場方向：{bias_label}", f"若你持有同方向部位：{action}。",
+                "持倉處理來自獨立風險引擎，不因大方向仍偏多就自動續抱。",
+            ])
+        title = ("上方第一次出現明顯壓力" if canonical_type == "FIRST_REJECTION" else
+                 "壓力區連續測試失敗" if canonical_type == "REPEATED_REJECTION" else
+                 "多方突破已失敗")
+        return "\n".join([
+            f"🟡【XAUUSD｜{title}】", f"短線方向：{bias_label}",
+            *([f"原因：{'、'.join(str(item) for item in reasons[:3])}"] if reasons else []),
+            "現在：停止追多，等待新支撐或重新收盤突破。",
+        ])
     if canonical_type == "DATA_RECOVERED":
         closed = event.get("latestClosedCandlePrice")
         return "\n".join([
@@ -344,11 +628,11 @@ def _format_decision_message_legacy(event: dict) -> str:
         health_text = {
             "HEALTHY": "🟢 正常", "RECOVERING": "🟡 資料恢復中",
             "DEGRADED": "🟠 15M 資料延遲", "DEGRADED_15M": "🟠 15M 資料延遲",
-            "STALE": "🔴 行情資料過期",
+            "STALE": "🔴 行情資料過期", "INVALID": "🔴 必要行情資料無效",
         }.get(data_health, "🟠 資料狀態待確認")
-        side = str(event.get("defenseSide") or canonical.get("defenseSide") or
-                   ("LONG" if bias == "BULLISH" else
-                    "SHORT" if bias == "BEARISH" else ""))
+        # A market bias is not a strategy side. Defense events are rendered
+        # only from the side bound to the active scenario.
+        side = str(event.get("defenseSide") or canonical.get("defenseSide") or "")
         buffer = event.get("confirmationBuffer")
         if not isinstance(buffer, (int, float)):
             buffer = canonical.get("confirmationBuffer")
@@ -486,11 +770,22 @@ def _format_decision_message_legacy(event: dict) -> str:
                                 "PENDING_CONFIRMATION")
         if entry_confirmation in {"WAIT_15M_CLOSE", "BLOCKED_BY_DATA"}:
             bias = str(canonical.get("marketBias") or "NEUTRAL")
+            strategy_side = str(canonical.get("activeStrategySide") or "")
+            side_text = ("做多" if strategy_side == "LONG" else
+                         "做空" if strategy_side == "SHORT" else "目前沒有有效交易劇本")
+            close_gate = canonical.get("closeGate") or {}
+            target_text = _local_time(str(close_gate.get("targetCandleCloseTime") or ""))
+            target_clock = target_text[-5:] if target_text and target_text != "未知" else ""
+            candle_text = (_closed_candle_text(candle) if candle.get("available") else
+                           "上一根有效15M資料確認中")
             lines = [
-                "【XAUUSD 資料確認中】", "🟠 暫停新進場",
+                "🟠【XAUUSD｜等待15M收盤確認】", "目前動作：暫停新進場",
                 f"市場方向：{'🟢 偏多' if bias == 'BULLISH' else '🔴 偏空' if bias == 'BEARISH' else '⚪ 中性'}",
+                f"目前交易劇本：{side_text}",
                 "資料狀態：最新 15M 收盤暫缺",
-                "系統仍保留原市場方向，但取得最新已收盤 K 棒以前，不產生新的 ENTRY_READY。",
+                f"等待：15M {target_clock} 收盤" if target_clock else "等待：下一個固定15M邊界收盤",
+                f"上一根確認：{candle_text}",
+                "系統仍保留市場方向；同一根等待期間現價變動只更新面板，不重複通知。",
                 "原進場、停損與止盈：暫不具執行效力。",
             ]
             if (scenario_validity in {"INVALIDATED", "STALE"}
@@ -513,28 +808,38 @@ def _format_decision_message_legacy(event: dict) -> str:
             return ("⚠️【XAUUSD 決策資料不完整】\n"
                     "暫停交易判斷。\n"
                     f"原因：{'、'.join(completeness.get('errors') or ['UNKNOWN'])}")
-        title = ("🟢【XAUUSD｜現在可以進場】" if action in {"BUY", "SELL"}
-                 else "🟡【XAUUSD｜現在先不要進場】")
+        direction_text, direction_lines = _direction_first_context(event, canonical)
+        if action in {"BUY", "SELL"}:
+            title = f"{'🟢' if action == 'BUY' else '🔴'}【XAUUSD｜{direction_text}｜可以進場】"
+        else:
+            phase = str(canonical.get("entryConfirmation") or "")
+            wait_text = ("等回踩進場" if "RETEST" in phase or "PULLBACK" in phase
+                         else "等突破確認" if "CONFIRM" in phase else "暫不進場")
+            title = f"🟡【XAUUSD｜{direction_text}｜{wait_text}】"
         lines = [title, f"現價：{float(event.get('currentPrice') or 0):.2f}",
+                 *direction_lines,
                  f"原因：{canonical.get('primaryReason')}",
                  f"最近可執行觸發：{trigger.get('label')}"]
         chosen = entry.get("selectedSetup") or {}
-        if chosen:
+        if chosen and chosen.get("entryZone"):
             zone = chosen.get("entryZone") or {}
+            zone_label = chosen.get("entryZoneLabel") or "候選進場區"
             lines.extend([
-                f"{chosen.get('entryZoneLabel')}：{zone.get('low') or '—'}～{zone.get('high') or '—'}",
+                f"{zone_label}：{zone.get('low') or '—'}～{zone.get('high') or '—'}",
                 (f"可執行 RR：{chosen.get('executableRR')}" if chosen.get('executableRR') is not None
                  else f"預估 RR：{chosen.get('estimatedRR') if chosen.get('estimatedRR') is not None else '—'}"),
             ])
-        opportunities = canonical.get("entryOpportunities") or []
-        labels = {"SHALLOW_PULLBACK": "淺回踩",
-                  "DEEP_PULLBACK": "深度備案",
-                  "BREAKOUT_RETEST": "突破回測"}
+        normalized_zones = entry.get("normalizedPullbackZones") or []
+        opportunities = normalized_zones or canonical.get("entryOpportunities") or []
+        labels = {"SHALLOW": "淺回踩", "MEDIUM": "次要回踩",
+                  "DEEP": "深度備案", "BREAKOUT_RETEST": "突破回測",
+                  "SHALLOW_PULLBACK": "淺回踩", "DEEP_PULLBACK": "深度備案"}
         for opportunity in opportunities[:3]:
             zone = opportunity.get("entry_zone") or {}
             role = ("備用觀察區" if opportunity.get("anchor_role") ==
                     "DEEP_PULLBACK_BACKUP" else
-                    labels.get(opportunity.get("type"), opportunity.get("type")))
+                    labels.get(opportunity.get("semanticPullbackType") or
+                               opportunity.get("type"), "候選進場區"))
             lines.append(
                 f"{role} "
                 f"{zone.get('lower', '—')}～{zone.get('upper', '—')}｜"
@@ -557,9 +862,16 @@ def _format_decision_message_legacy(event: dict) -> str:
         ])
     if canonical_type in {"DATA_DELAYED", "DATA_STALE"}:
         scenario_invalid = str(canonical.get("scenarioState") or "") == "INVALIDATED"
+        confirmed_bias = str(event.get("lastConfirmedBias") or
+                             canonical.get("lastConfirmedBias") or "NEUTRAL")
+        confirmed_text = {"LONG": "🟢 偏多", "SHORT": "🔴 偏空"}.get(
+            confirmed_bias, "⚪ 中立／尚待確認")
         lines = [
             "🔴【XAUUSD 行情資料延遲】",
-            "資料恢復前暫停新的進場確認；持倉防守提醒不會因此關閉。",
+            f"上一個已確認方向：{confirmed_text}",
+            "最新 15M 收盤資料尚未更新。",
+            "目前：暫停新的進場判斷；持倉防守與風控仍繼續。",
+            "資料恢復後會自動重新分析。",
         ]
         if scenario_invalid:
             lines.extend([
@@ -567,16 +879,18 @@ def _format_decision_message_legacy(event: dict) -> str:
                 "資料延遲不會讓策略狀態退回等待原防守。",
             ])
         return "\n".join(lines)
-    if canonical_type in {"ENTRY_READY", "ENTRY_NOW"}:
+    if canonical_type in {"ENTRY_READY", "PROBE_READY", "ENTRY_NOW"}:
         zone = event.get("entryZone") or {}
+        probe = canonical_type == "PROBE_READY"
         return "\n".join([
-            "🟢【XAUUSD 進場條件成立】",
+            "🟠【XAUUSD 可以小倉試單】" if probe else "🟢【XAUUSD 進場條件成立】",
             f"方向：{'做多' if event.get('direction') == 'LONG' else '做空'}",
             f"現價：{float(event.get('currentPrice') or 0):.2f}",
             f"可執行區：{zone.get('low', '—')}～{zone.get('high', '—')}",
             f"失效價：{event.get('stopLoss') or '—'}",
             f"風險報酬比：{event.get('effectiveRR') or '—'}",
-            "下一步：條件已成立，不再等待更高或更低的新門檻。",
+            (f"建議倉位：一般設定的 {float(event.get('positionSizeMultiplier') or .4):.1f} 倍；次要確認未滿分。"
+             if probe else "下一步：條件已成立，不再等待更高或更低的新門檻。"),
         ])
     if canonical_type == "WAIT_RETEST":
         return "\n".join([

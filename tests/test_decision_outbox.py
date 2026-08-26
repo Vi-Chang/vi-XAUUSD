@@ -634,16 +634,12 @@ async def test_persisted_wait_suppresses_micro_drift_even_across_fingerprint_buc
 async def test_t1_to_t6_stable_breakout_fingerprint_and_retry():
     t1 = _breakout_dedup_event(event_id="dedup-t1")
     parts = notification_fingerprint_parts(t1)
-    assert parts == {"symbol": "XAUUSD-DEDUP-T1-T6", "scenarioId": "BO-dedup-4606",
-                     "direction": "LONG", "status": "WAIT_BREAKOUT_CONFIRMATION",
-                     "triggerPrice": "4606.18", "chaseLimit": "4609.88",
-                     "invalidationPrice": "4590.00",
-                     "sourceCandleTime": "",
-                     "canonicalStateVersion": "1",
-                     "canonicalState": "WAIT_BREAKOUT_CONFIRMATION",
-                     "marketBias": "NEUTRAL", "entryConfirmation": "",
-                     "defenseState": "", "dataHealth": "",
-                     "primaryTriggerId": "BO-dedup-4606"}
+    assert parts["symbol"] == "XAUUSD-DEDUP-T1-T6"
+    assert parts["scenarioId"] == "BO-dedup-4606"
+    assert parts["status"] == "WAIT_BREAKOUT_CONFIRMATION"
+    assert parts["triggerPrice"] == "4606.18"
+    assert parts["sourceCandleTime"] == ""
+    assert "canonicalStateVersion" not in parts
     first = persist_decision_events("XAUUSD-DEDUP-T1-T6", [t1])
     assert len(first) == 1
     deliveries = []

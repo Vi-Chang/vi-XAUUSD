@@ -23,6 +23,11 @@ def validate_final_decision(decision: dict) -> list[str]:
     lifecycle = str(decision.get("selectedLifecycleState") or "")
     versions = decision.get("priceScenarioVersions") or {}
     used_versions = {int(v) for v in versions.values() if isinstance(v, int)}
+    live_state = str(decision.get("liveBiasState") or "ALIGNED")
+    execution_bias = str(decision.get("executionBias") or "NEUTRAL")
+    structural_side = ("LONG" if "BULL" in str(decision.get("structuralBias") or "")
+                       else "SHORT" if "BEAR" in str(
+                           decision.get("structuralBias") or "") else "NONE")
 
     if low is not None and high is not None and low > high:
         errors.append("ENTRY_ZONE_REVERSED")
@@ -35,6 +40,12 @@ def validate_final_decision(decision: dict) -> list[str]:
     if direction == "SHORT" and low is not None and tp1 is not None and tp1 >= low:
         errors.append("SHORT_TARGET_WRONG_SIDE")
     if action in {"ENTER_LONG", "ENTER_SHORT"}:
+        if live_state in {"INVALIDATING", "SUSPENDED"}:
+            errors.append("ENTRY_DURING_LIVE_BIAS_SUSPENSION")
+        if execution_bias == "NEUTRAL":
+            errors.append("ENTRY_WITH_NEUTRAL_EXECUTION_BIAS")
+        if direction == structural_side and live_state == "REVERSAL_CANDIDATE":
+            errors.append("ENTRY_IN_INVALIDATED_STRUCTURAL_DIRECTION")
         if low is None or high is None or current is None or not low <= current <= high:
             errors.append("ENTRY_PRICE_OUTSIDE_ZONE")
         if action == "ENTER_LONG" and chase is not None and current is not None and current > chase:
@@ -45,9 +56,10 @@ def validate_final_decision(decision: dict) -> list[str]:
             errors.append("LONG_INVALIDATION_WRONG_SIDE")
         if action == "ENTER_SHORT" and invalidation is not None and high is not None and invalidation <= high:
             errors.append("SHORT_INVALIDATION_WRONG_SIDE")
-        if risk_gate != "ENTRY_READY":
+        if risk_gate not in {"ENTRY_READY", "PROBE_READY"}:
             errors.append("ENTRY_WITH_RISK_BLOCK")
-        if lifecycle != "ENTRY_READY":
+        if (risk_gate == "ENTRY_READY" and lifecycle != "ENTRY_READY") or (
+                risk_gate == "PROBE_READY" and lifecycle not in {"ENTRY_READY", "CONFIRMED"}):
             errors.append("ENTRY_WITHOUT_READY_LIFECYCLE")
     if len(used_versions) > 1:
         errors.append("MIXED_SCENARIO_VERSIONS")
@@ -82,10 +94,14 @@ def validate_canonical_contract(decision: dict) -> list[str]:
     selected_id = str(selected.get("setupId") or "")
     trigger = decision.get("canonicalNextTrigger") or {}
     position = decision.get("positionManagement") or {}
+    live_state = str(decision.get("liveBiasState") or "ALIGNED")
+    execution_bias = str(decision.get("executionBias") or "NEUTRAL")
 
     if action in {"BUY", "SELL"} and not can_enter:
         errors.append("ACTION_WITHOUT_ENTRY_PERMISSION")
     if can_enter:
+        if live_state in {"INVALIDATING", "SUSPENDED"} or execution_bias == "NEUTRAL":
+            errors.append("CAN_ENTER_DURING_LIVE_BIAS_SUSPENSION")
         if not bool(decision.get("executionAllowed")):
             errors.append("ENTRY_WITH_EXECUTION_BLOCKED")
         if not bool(decision.get("rrValid")):
@@ -95,7 +111,7 @@ def validate_canonical_contract(decision: dict) -> list[str]:
             errors.append("ENTRY_WITH_STALE_OR_OPEN_CANDLE")
         if str(decision.get("scenarioValidity")) != "ACTIVE":
             errors.append("ENTRY_WITH_INACTIVE_SCENARIO")
-        if str(entry.get("tradeStatus")) != "ENTRY_READY":
+        if str(entry.get("tradeStatus")) not in {"ENTRY_READY", "PROBE_READY"}:
             errors.append("ENTRY_PERMISSION_STATUS_CONFLICT")
     if active_id != selected_id:
         errors.append("ACTIVE_SETUP_SELECTION_CONFLICT")
