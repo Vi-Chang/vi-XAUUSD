@@ -254,6 +254,28 @@ def resolve_canonical_conflict(
         "BIAS_INVALIDATING" if live_state in {"INVALIDATING", "SUSPENDED"} else
         "BIAS_WEAKENING" if live_state in {"WEAKENING", "REVERSAL_CANDIDATE"} else
         "BIAS_ALIGNED")
+    permission_side = _side(result.get("executionBias"))
+    preferred_scalp_side = _side(result.get("preferredScalpSide"))
+    active_strategy_side = _side(
+        result.get("activeStrategySide") or
+        (result.get("newEntryDecision") or {}).get("direction"))
+    intraday_direction_conflict = bool(
+        result.get("tradingHorizon") == "SCALP_INTRADAY"
+        and preferred_scalp_side in {"LONG", "SHORT"}
+        and active_strategy_side in {"LONG", "SHORT"}
+        and preferred_scalp_side != active_strategy_side)
+    if intraday_direction_conflict and result.get("executionAllowed"):
+        result["executionAllowed"] = False
+        result["canEnter"] = False
+        entry = dict(result.get("newEntryDecision") or {})
+        entry.update({"action": "WAIT", "canEnter": False,
+                      "tradeStatus": "WAIT_15M_DIRECTION_ALIGNMENT"})
+        result["newEntryDecision"] = entry
+    elif (result.get("tradingHorizon") == "SCALP_INTRADAY" and
+          active_strategy_side in {"LONG", "SHORT"}):
+        # The executable setup decides which permission is granted. The
+        # preferred 15M side is a guard, never a replacement for a real setup.
+        permission_side = active_strategy_side
     result.update({
         "schemaVersion": "canonical-strategy-snapshot-v1",
         "snapshotId": snapshot_id, "canonicalMarketSnapshot": market_snapshot,
@@ -264,9 +286,9 @@ def resolve_canonical_conflict(
         "snapshotCompleteness": completeness, "conflictType": conflict_type,
         "biasTransitionState": bias_transition_state,
         "lastConfirmedBias": last_confirmed, "allowLong": bool(
-            result.get("executionAllowed") and _side(result.get("executionBias")) == "LONG"),
+            result.get("executionAllowed") and permission_side == "LONG"),
         "allowShort": bool(
-            result.get("executionAllowed") and _side(result.get("executionBias")) == "SHORT"),
+            result.get("executionAllowed") and permission_side == "SHORT"),
         "tradePermission": ("BLOCKED_DATA" if data_blocking
                             else "BLOCKED_SYSTEM" if conflict_type in {
                                 "TRUE_ENGINE_CONFLICT", "CANONICAL_INVARIANT_VIOLATION"}
@@ -278,6 +300,10 @@ def resolve_canonical_conflict(
             "structuralBias": result.get("structuralBias"),
             "liveBias": result.get("liveMomentum"),
             "executionBias": result.get("executionBias"),
+            "intradayPermissionSide": permission_side,
+            "intradayDirectionSource": (result.get("scalpDecision") or {}).get(
+                "directionSource"),
+            "intradayDirectionConflict": intraday_direction_conflict,
             "longScore": long_score, "shortScore": short_score,
             "dataHealth": data_health,
             "engineResults": accepted,
