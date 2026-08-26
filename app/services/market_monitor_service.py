@@ -20,6 +20,11 @@ from app.engines.breakout_setup_manager import (
     evaluate_breakout_setups,
     migrate_legacy_breakout_setup,
 )
+from app.engines.canonical_conflict_resolver import (
+    build_canonical_market_snapshot,
+    engine_result_envelope,
+    stamp_engine_result,
+)
 from app.engines.data_health_gate import evaluate_data_health
 from app.engines.decision_assistant import evaluate_decision_assistant
 from app.engines.decision_health import (
@@ -32,12 +37,21 @@ from app.engines.early_entry_candidate import (
     evaluate_early_entry_candidate,
 )
 from app.engines.entry_opportunity import evaluate_entry_opportunities
+from app.engines.entry_starvation_monitor import evaluate_entry_starvation
+from app.engines.failed_breakout_rejection import (
+    evaluate_failed_breakout,
+    evaluate_intrabar_support_pressure,
+)
 from app.engines.fake_breakout_recovery import evaluate_fake_breakout_recovery
-from app.engines.final_decision_engine import evaluate_final_decision
+from app.engines.final_decision_engine import (
+    collect_signal_candidates,
+    evaluate_final_decision,
+)
 from app.engines.hypothetical_exit_advisor import (
     build_hypothetical_exit_plans,
     evaluate_hypothetical_exits,
 )
+from app.engines.live_bias import evaluate_live_bias
 from app.engines.market_behavior import evaluate_market_behavior
 from app.engines.opportunity_coverage_watchdog import evaluate_opportunity_coverage
 from app.engines.regime_state_machine import evaluate_regime_state
@@ -45,6 +59,7 @@ from app.engines.signal_lifecycle import evaluate_signal_lifecycle
 from app.engines.trade_plan import evaluate_trade_plans, migrate_legacy_virtual_profit
 from app.engines.trend_continuation_engine import evaluate_trend_continuation
 from app.engines.virtual_profit_tracker import evaluate_virtual_profit
+from app.engines.volume_intelligence import evaluate_volume_intelligence
 from app.engines.wick_rejection import evaluate_wick_rejection
 from app.services.double_sweep_service import evaluate_double_sweep_monitor
 
@@ -106,6 +121,14 @@ def evaluate_market_monitors(
     normalized = dict(data.get("normalized_analysis") or {})
     previous_decision_health = _load(symbol, "decision_health")
     previous_final_decision = _load(symbol, "final_decision")
+    market_snapshot = build_canonical_market_snapshot(data)
+    data = {
+        **data, "canonical_market_snapshot": market_snapshot,
+        "snapshotId": market_snapshot["snapshotId"],
+        "previous_canonical_strategy_snapshot": (
+            previous_final_decision.get("canonicalDecision") or
+            previous_final_decision),
+    }
     decision_health = evaluate_decision_health(
         data, previous=previous_decision_health,
         now=str(data.get("timestamp_utc") or "") or None)
@@ -134,9 +157,14 @@ def evaluate_market_monitors(
     _save(symbol, "decision_health", decision_health)
     data = {**data, "decision_health_state": decision_health}
     health = evaluate_data_health(data)
-    if not health["healthy"]:
-        normalized["marketDataStatus"] = "STALE"
-        normalized["dataHealthReason"] = "；".join(health["reasons"])
+    canonical_health = str(decision_health.get("dataHealth") or "INVALID")
+    if canonical_health != "HEALTHY":
+        normalized["marketDataStatus"] = (
+            "DEGRADED" if canonical_health == "DEGRADED" else "FAILED")
+        normalized["dataHealthReason"] = (
+            "部分收盤資料暫缺；原策略僅供參考，所有價位暫不可執行"
+            if canonical_health == "DEGRADED" else
+            "必要行情資料無效；已清除可執行訊號")
         data = {**data, "normalized_analysis": normalized, "data_health": health}
     indicators = indicators or {}
     exit_state, exit_events = evaluate_hypothetical_exits(
@@ -266,6 +294,8 @@ def evaluate_market_monitors(
          "breakout_setup_manager": breakout_setup_state,
          "break_lifecycle_engine": break_state},
         _load(symbol, "entry_opportunities"))
+    opportunity_state = stamp_engine_result(
+        opportunity_state, market_snapshot, engine="entry_opportunity_engine")
     _save(symbol, "entry_opportunities", opportunity_state)
     continuation_state, continuation_events = evaluate_trend_continuation(
         {**data, "breakout_setup_manager": breakout_setup_state},
@@ -292,14 +322,119 @@ def evaluate_market_monitors(
     }
     wick_state, wick_events = evaluate_wick_rejection(
         m15_closed, data=data, previous=_load(symbol, "wick_rejection"))
+    wick_state = stamp_engine_result(
+        wick_state, market_snapshot, engine="wick_rejection_engine")
     _save(symbol, "wick_rejection", wick_state)
     monitor_result["wick_rejection_engine"] = wick_state
     monitor_result["break_lifecycle_engine"] = break_state
+    levels = list(normalized.get("confirmationLevels") or [])
+    current_price = float(normalized.get("currentPrice") or 0)
+    initial_bias = str(decision_health.get("marketBias") or "NEUTRAL")
+    failed_side = ("LONG" if initial_bias == "BULLISH" else
+                   "SHORT" if initial_bias == "BEARISH" else
+                   str(previous_final_decision.get("direction") or "LONG"))
+    resistance_kind = "resistance" if failed_side == "LONG" else "support"
+    support_kind = "support" if failed_side == "LONG" else "resistance"
+    resistance_prices = [float(item["price"]) for item in levels
+                         if item.get("kind") == resistance_kind and
+                         isinstance(item.get("price"), (int, float))]
+    support_prices = [float(item["price"]) for item in levels
+                      if item.get("kind") == support_kind and
+                      isinstance(item.get("price"), (int, float))]
+    atr15 = max(float(normalized.get("atr15") or wick_state.get("atr") or 0), .01)
+    resistance_price = (min(resistance_prices, key=lambda value: abs(value-current_price))
+                        if resistance_prices else None)
+    support_price = (min(support_prices, key=lambda value: abs(value-current_price))
+                     if support_prices else None)
+    wick_direction_matches = (
+        (failed_side == "LONG" and "UPPER" in str(
+            wick_state.get("wick_rejection_state") or "")) or
+        (failed_side == "SHORT" and "LOWER" in str(
+            wick_state.get("wick_rejection_state") or "")))
+    rejection_zone = (wick_state.get("wick_rejection_zone") or {}
+                      if wick_direction_matches else {})
+    resistance_zone = (dict(rejection_zone) if rejection_zone else
+                       ({"low": resistance_price - atr15 * .15,
+                         "high": resistance_price + atr15 * .15}
+                        if resistance_price is not None else None))
+    support_zone = ({"low": support_price, "high": support_price}
+                    if support_price is not None else None)
+    closed_rows = []
+    if m15_closed is not None:
+        for index, row in m15_closed.tail(8).iterrows():
+            closed_rows.append({"time": str(index), **{
+                key: float(row[key]) for key in ("open", "high", "low", "close")
+                if key in row and pd.notna(row[key])}})
+    position = data.get("position_management") or {}
+    position_side = (str(position.get("position_side") or "").upper()
+                     if position.get("has_position") else None)
+    failed_state, failed_events = evaluate_failed_breakout(
+        side=failed_side, resistance_zone=resistance_zone,
+        support_zone=support_zone,
+        attempt_count=int(wick_state.get("failed_breakout_count") or
+                          wick_state.get("wick_rejection_count") or 0),
+        closed_candles=closed_rows, wick_rejection=wick_state,
+        current_price=current_price, position_side=position_side,
+        momentum={
+            "macd_histogram_shrinking": macd_declining,
+            "kd_rollover": bool(m15_ind.get("stoch_k") is not None and
+                                m15_ind.get("stoch_k_prev") is not None and
+                                m15_ind["stoch_k"] < m15_ind["stoch_k_prev"]),
+            "rsi_divergence": bool(m15_ind.get("rsi_divergence")),
+        },
+        volume={"decreasing_on_attempts": bool(m15_ind.get("volume_declining"))},
+        follow_through={
+            "distance_decreasing": bool(m15_ind.get("follow_through_declining")),
+            "confirmed": bool(m15_ind.get("reclaim_follow_through")),
+        },
+        confirmation_buffer=atr15 * .05,
+        base_bias_state=initial_bias,
+        previous=_load(symbol, "failed_breakout_rejection"))
+    failed_state = stamp_engine_result(
+        failed_state, market_snapshot, engine="failed_breakout_rejection_engine")
+    _save(symbol, "failed_breakout_rejection", failed_state)
+    monitor_result["failed_breakout_rejection_engine"] = failed_state
+    # Re-evaluate health/bias after the evidence engine. This is current
+    # evidence, not a cached previous-bias override.
+    refreshed_health = evaluate_decision_health(
+        {**data, **monitor_result}, previous=previous_decision_health,
+        now=str(data.get("timestamp_utc") or "") or None)
+    decision_health.update({key: refreshed_health.get(key) for key in (
+        "marketBias", "marketBiasState", "higherTimeframeBias",
+        "biasConfidence", "marketContext")})
+    decision_health = stamp_engine_result(
+        decision_health, market_snapshot, engine="structure_health_engine")
+    _save(symbol, "decision_health", decision_health)
+    monitor_result["decision_health_state"] = decision_health
+    data = {**data, "decision_health_state": decision_health}
+    volume_state = evaluate_volume_intelligence(
+        m15_closed=m15_closed, h1_closed=h1_closed,
+        atr15=float(normalized.get("atr15") or 0),
+        atr1h=float((indicators.get("1H") or {}).get("atr14") or 0),
+        structural_bias=str(decision_health.get("marketBias") or "NEUTRAL"))
+    volume_state = stamp_engine_result(
+        volume_state, market_snapshot, engine="volume_engine",
+        engine_version="volume-intelligence-v1")
+    _save(symbol, "volume_intelligence", volume_state)
+    monitor_result["volume_intelligence"] = volume_state
+    live_candidates = [asdict(candidate) for candidate in collect_signal_candidates(
+        {**data, **monitor_result})]
+    live_bias_state, live_bias_events = evaluate_live_bias(
+        {**data, **monitor_result},
+        structural_bias=str(decision_health.get("marketBias") or "NEUTRAL"),
+        candidates=live_candidates, previous=_load(symbol, "live_bias"))
+    live_bias_state = stamp_engine_result(
+        live_bias_state, market_snapshot, engine="live_bias_engine")
+    _save(symbol, "live_bias", live_bias_state)
+    monitor_result["live_bias_state"] = live_bias_state
     behavior_input = {**data, "wick_rejection_engine": wick_state,
-                      "break_lifecycle_engine": break_state}
+                      "break_lifecycle_engine": break_state,
+                      "failed_breakout_rejection_engine": failed_state}
     behavior_state, behavior_events = evaluate_market_behavior(
         m15=m15_closed, h1=h1_closed, h4=h4_closed, data=behavior_input,
         previous=_load(symbol, "market_behavior"))
+    behavior_state = stamp_engine_result(
+        behavior_state, market_snapshot, engine="market_behavior_engine")
     _save(symbol, "market_behavior", behavior_state)
     monitor_result["market_behavior_engine"] = behavior_state
     early_state, early_events = evaluate_early_entry_candidate(
@@ -326,10 +461,11 @@ def evaluate_market_monitors(
     _save(symbol, "decision_assistant", assistant_state)
     monitor_result["decision_assistant"] = assistant_state
     signal_facts = (exit_events + ([breakout_event] if breakout_event else []) + wick_events
+                    + failed_events
                     + virtual_events + trade_plan_events + breakout_setup_events
                     + continuation_events + regime_events + behavior_events
                     + assistant_events + opportunity_events + early_events
-                    + coverage_events)
+                    + coverage_events + live_bias_events)
     signal_facts += (double_sweep_events + break_events + recovery_events
                      + profit_events)
     health_event = decision_health.get("dataHealthEvent")
@@ -388,10 +524,36 @@ def evaluate_market_monitors(
             "marketContext": decision_health.get("marketContext"),
             "transitionReason": "舊劇本維持失效；reclaim 只建立全新候選劇本",
         })
-    final_input = {**data, **monitor_result, "signal_facts": signal_facts}
+    engine_results = [
+        engine_result_envelope(name, result, market_snapshot,
+                               str(result.get("engineVersion") or "v1"))
+        for name, result in (
+            ("structure_health_engine", decision_health),
+            ("volume_engine", volume_state),
+            ("live_bias_engine", live_bias_state),
+            ("market_behavior_engine", behavior_state),
+            ("wick_rejection_engine", wick_state),
+            ("failed_breakout_rejection_engine", failed_state),
+            ("entry_opportunity_engine", opportunity_state),
+        )
+    ]
+    final_input = {
+        **data, **monitor_result, "signal_facts": signal_facts,
+        "canonical_engine_results": engine_results,
+        "previous_canonical_strategy_snapshot": (
+            previous_final_decision.get("canonicalDecision") or previous_final_decision),
+    }
     final_state, final_events = evaluate_final_decision(
         final_input, previous_final_decision
     )
+    starvation_state, starvation_events = evaluate_entry_starvation(
+        final_state, previous=_load(symbol, "entry_starvation"),
+        evaluated_at=str(data.get("timestamp_utc") or "") or None)
+    if starvation_events:
+        starvation_state["latestDiagnosticEvent"] = starvation_events[-1]
+    _save(symbol, "entry_starvation", starvation_state)
+    monitor_result["entry_starvation_monitor"] = starvation_state
+    final_state["entryStarvationMonitor"] = starvation_state
     from app.engines.canonical_decision import build_canonical_decision
     canonical = build_canonical_decision(final_input, final_state)
     early_state = apply_canonical_entry_result(
@@ -400,6 +562,54 @@ def evaluate_market_monitors(
     _save(symbol, "early_entry_candidate", early_state)
     monitor_result["early_entry_candidate"] = early_state
     final_state["canonicalDecision"] = canonical
+    canonical_entry = dict(canonical.get("newEntryDecision") or {})
+    final_state.update({
+        "snapshotId": canonical.get("snapshotId"),
+        "canonicalMarketSnapshot": canonical.get("canonicalMarketSnapshot"),
+        "conflictType": canonical.get("conflictType"),
+        "conflictReasonTrace": canonical.get("conflictReasonTrace"),
+        "snapshotCompleteness": canonical.get("snapshotCompleteness"),
+        "timeframeState": canonical.get("timeframeState"),
+        "lastConfirmedBias": canonical.get("lastConfirmedBias"),
+        "tradePermission": canonical.get("tradePermission"),
+        "marketBias": canonical.get("marketBias", final_state.get("marketBias")),
+        "structuralBias": canonical.get(
+            "structuralBias", final_state.get("structuralBias")),
+        "liveBiasState": canonical.get("liveBiasState", final_state.get("liveBiasState")),
+        "executionBias": canonical.get("executionBias", final_state.get("executionBias")),
+        "canEnter": bool(canonical_entry.get("canEnter")),
+    })
+    if not final_state["canEnter"] and canonical.get("tradePermission") in {
+            "BLOCKED_DATA", "BLOCKED_SYSTEM"}:
+        final_state.update({"finalAction": "WAIT", "state": "WAIT_CONFIRMATION"})
+    conflict_type = str(canonical.get("conflictType") or "NO_CONFLICT")
+    previous_conflict = str((previous_final_decision.get("canonicalDecision") or
+                             previous_final_decision).get("conflictType") or
+                            "NO_CONFLICT")
+    conflict_event_types = {
+        "TIMEFRAME_DIVERGENCE": "TIMEFRAME_DIVERGENCE",
+        "BIAS_TRANSITION": "BIAS_TRANSITION",
+        "SCORE_NEAR_TIE": "SCORE_NEAR_TIE",
+        "TRUE_ENGINE_CONFLICT": "TRUE_ENGINE_CONFLICT",
+        "CANONICAL_INVARIANT_VIOLATION": "SYSTEM_STATE_INVARIANT_BLOCKED",
+    }
+    if conflict_type != previous_conflict and conflict_type in conflict_event_types:
+        final_events.append({
+            "event_type": conflict_event_types[conflict_type],
+            "currentState": final_state.get("state"),
+            "finalDecision": final_state.get("finalAction"),
+            "canEnter": final_state.get("canEnter"),
+            "marketBias": final_state.get("marketBias"),
+            "structuralBias": final_state.get("structuralBias"),
+            "liveBiasState": final_state.get("liveBiasState"),
+            "executionBias": final_state.get("executionBias"),
+            "timeframeState": canonical.get("timeframeState"),
+            "conflictType": conflict_type,
+            "lastConfirmedBias": canonical.get("lastConfirmedBias"),
+            "dataHealth": canonical.get("dataHealth"),
+            "snapshotId": canonical.get("snapshotId"),
+            "transitionReason": "市場週期、即時動能或系統一致性分類出現實質變化",
+        })
     for event in final_events:
         event["canonicalDecision"] = canonical
         event["nextTriggerCondition"] = canonical["canonicalNextTrigger"]
@@ -419,11 +629,26 @@ def evaluate_market_monitors(
             "canonicalDecision": canonical,
         })
     final_events.extend(lifecycle_events)
+    from app.engines.candle_close_analysis import evaluate_candle_close_reports
+    close_state, close_events = evaluate_candle_close_reports(
+        final_input, final_state, volume=volume_state,
+        m15_closed=m15_closed, h1_closed=h1_closed,
+        previous=_load(symbol, "candle_close_analysis"),
+        evaluated_at=str(data.get("timestamp_utc") or "") or None)
+    _save(symbol, "candle_close_analysis", close_state)
+    monitor_result["candle_close_analysis"] = close_state
+    final_state["candleCloseAnalysis"] = close_state
+    for event in close_events:
+        event["canonicalDecision"] = canonical
+        event["decisionId"] = final_state.get("decisionId")
+        event["decisionVersion"] = final_state.get("decisionVersion")
+        event["canonicalStateVersion"] = final_state.get("decisionVersion")
+    final_events.extend(close_events)
     final_state["events"] = final_events
     if final_events:
         final_state["latest_event"] = final_events[-1]
-    from app.services.current_decision_store import publish_current_final_decision
-    final_state, _ = publish_current_final_decision(symbol, final_state)
+    from app.services.current_decision_store import atomic_publish_canonical_snapshot
+    final_state, _ = atomic_publish_canonical_snapshot(symbol, final_state)
     final_events = list(final_state.get("events") or [])
     if final_state.get("decisionChanged"):
         from app.services.decision_replay import persist_decision_replay
@@ -458,10 +683,17 @@ def evaluate_live_quote_state(
                  "snapshot_ts": quote_time, "timestamp_utc": quote_time,
                  "current_price": {**(data.get("current_price") or {}),
                                    "mid": price, "last_update": quote_time}}
+    market_snapshot = build_canonical_market_snapshot(candidate)
+    previous_final = _load(symbol, "final_decision")
+    candidate.update({
+        "canonical_market_snapshot": market_snapshot,
+        "snapshotId": market_snapshot["snapshotId"],
+        "previous_canonical_strategy_snapshot": (
+            previous_final.get("canonicalDecision") or previous_final),
+    })
     previous_decision_health = _load(symbol, "decision_health")
     decision_health = evaluate_decision_health(
         candidate, previous=previous_decision_health, now=quote_time)
-    previous_final = _load(symbol, "final_decision")
     scenario_id, scenario_version, structure_version = _defense_scenario_identity(
         previous_final, previous_decision_health)
     defense_binding = dict(previous_final.get("defenseBinding") or {})
@@ -483,22 +715,37 @@ def evaluate_live_quote_state(
         defense_side=str(defense_binding.get("side") or previous_final.get(
             "direction") or ""),
     ))
+    previous_failed = _load(symbol, "failed_breakout_rejection")
+    live_failed, failed_live_events = evaluate_intrabar_support_pressure(
+        previous_failed, current_price=price)
+    if live_failed:
+        _save(symbol, "failed_breakout_rejection", live_failed)
+        candidate["failed_breakout_rejection_engine"] = live_failed
+        refreshed_health = evaluate_decision_health(
+            candidate, previous=previous_decision_health, now=quote_time)
+        decision_health.update({key: refreshed_health.get(key) for key in (
+            "marketBias", "marketBiasState", "higherTimeframeBias",
+            "biasConfidence", "marketContext")})
     candidate["decision_health_state"] = decision_health
     _save(symbol, "decision_health", decision_health)
     from app.engines.freshness_state import evaluate_freshness_state
     from app.utils.timeutils import parse_utc
     candidate["freshness_state"] = evaluate_freshness_state(
         candidate, now=parse_utc(quote_time))
-    health = evaluate_data_health(candidate)
-    if not health["healthy"]:
-        normalized["marketDataStatus"] = "STALE"
-        normalized["dataHealthReason"] = "；".join(health["reasons"])
+    canonical_health = str(decision_health.get("dataHealth") or "INVALID")
+    if canonical_health != "HEALTHY":
+        normalized["marketDataStatus"] = (
+            "DEGRADED" if canonical_health == "DEGRADED" else "FAILED")
+        normalized["dataHealthReason"] = (
+            "部分收盤資料暫缺；原策略僅供參考，所有價位暫不可執行"
+            if canonical_health == "DEGRADED" else
+            "必要行情資料無效；已清除可執行訊號")
     regime_state, _ = evaluate_regime_state(
         {**candidate, "normalized_analysis": normalized},
         previous=_load(symbol, "regime_state"),
     )
     _save(symbol, "regime_state", regime_state)
-    live_facts: list[dict] = []
+    live_facts: list[dict] = list(failed_live_events)
     canonical_bias = str(previous_final.get("marketBias") or
                          previous_final.get("direction") or
                          decision_health.get("marketBias") or "NEUTRAL")
@@ -582,6 +829,37 @@ def evaluate_live_quote_state(
     if presentation["defenseState"] in {"TESTING", "BROKEN_PENDING_CLOSE"}:
         current["canEnter"] = False
         current["positionDefenseState"] = presentation["defenseState"]
+    from app.engines.canonical_decision import build_canonical_decision
+    canonical_input = {
+        **candidate, "normalized_analysis": normalized,
+        "decision_health_state": decision_health,
+        "entry_opportunity_engine": _load(symbol, "entry_opportunities"),
+        "break_lifecycle_engine": _load(symbol, "break_lifecycle"),
+        "wick_rejection_engine": _load(symbol, "wick_rejection"),
+        "market_behavior_engine": _load(symbol, "market_behavior"),
+        "previous_canonical_strategy_snapshot": (
+            previous_final.get("canonicalDecision") or previous_final),
+    }
+    canonical = build_canonical_decision(canonical_input, current)
+    canonical_entry = dict(canonical.get("newEntryDecision") or {})
+    current.update({
+        "canonicalDecision": canonical, "snapshotId": canonical.get("snapshotId"),
+        "canonicalMarketSnapshot": canonical.get("canonicalMarketSnapshot"),
+        "conflictType": canonical.get("conflictType"),
+        "conflictReasonTrace": canonical.get("conflictReasonTrace"),
+        "snapshotCompleteness": canonical.get("snapshotCompleteness"),
+        "timeframeState": canonical.get("timeframeState"),
+        "lastConfirmedBias": canonical.get("lastConfirmedBias"),
+        "tradePermission": canonical.get("tradePermission"),
+        "marketBias": canonical.get("marketBias", current.get("marketBias")),
+        "structuralBias": canonical.get("structuralBias", current.get("structuralBias")),
+        "liveBiasState": canonical.get("liveBiasState", current.get("liveBiasState")),
+        "executionBias": canonical.get("executionBias", current.get("executionBias")),
+        "canEnter": bool(canonical_entry.get("canEnter")),
+    })
+    for event in events:
+        event["canonicalDecision"] = canonical
+        event["snapshotId"] = canonical.get("snapshotId")
     lifecycle_state, lifecycle_events = evaluate_signal_lifecycle(
         current, _load(symbol, "signal_lifecycle"), live_quote=True)
     _save(symbol, "signal_lifecycle", lifecycle_state)
@@ -594,8 +872,8 @@ def evaluate_live_quote_state(
         })
     events.extend(lifecycle_events)
     current["events"] = events
-    from app.services.current_decision_store import publish_current_final_decision
-    current, published = publish_current_final_decision(symbol, current)
+    from app.services.current_decision_store import atomic_publish_canonical_snapshot
+    current, published = atomic_publish_canonical_snapshot(symbol, current)
     events = list(current.get("events") or []) if published else []
     from app.services.decision_outbox import persist_decision_events
     events = persist_decision_events(symbol, events)
@@ -609,8 +887,8 @@ def evaluate_live_quote_state(
 
 
 def persist_final_decision_state(symbol: str, state: dict) -> None:
-    from app.services.current_decision_store import publish_current_final_decision
-    canonical, _ = publish_current_final_decision(symbol, state)
+    from app.services.current_decision_store import atomic_publish_canonical_snapshot
+    canonical, _ = atomic_publish_canonical_snapshot(symbol, state)
     state.clear()
     state.update(canonical)
 

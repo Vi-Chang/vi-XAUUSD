@@ -72,6 +72,26 @@ def test_rr_below_gate_is_no_entry_and_never_best_zone():
     assert entry["selectedSetup"]["requiredEntryPriceForMinRR"] == 4651.22
 
 
+def test_failed_breakout_bias_setup_and_entry_permission_are_separate():
+    data = payload()
+    data["failed_breakout_rejection_engine"] = {
+        "side": "LONG", "state": "REPEATED_REJECTION",
+        "biasState": "NEUTRAL_BULLISH", "marketBias": "NEUTRAL",
+        "biasConfidence": 56, "setupQuality": "POOR", "entryEligibility": "NO",
+        "supportState": "SAFE", "positionRiskState": "POSITION_WARNING",
+    }
+    data["decision_health_state"] = {
+        "dataHealth": "HEALTHY", "entryConfirmation": "READY",
+        "marketBias": "NEUTRAL", "marketBiasState": "NEUTRAL_BULLISH",
+        "biasConfidence": 56,
+    }
+    canonical = build_canonical_decision(data, data["final_decision_state"])
+    assert canonical["marketBiasState"] == "NEUTRAL_BULLISH"
+    assert canonical["setupQuality"] == "POOR"
+    assert canonical["entryEligibility"] == "NO"
+    assert canonical["newEntryDecision"]["action"] == "WAIT"
+
+
 def test_pullback_with_better_rr_is_preferred_over_breakout():
     data = payload(rr=.87)
     pullback = deepcopy(data["final_decision_state"]["signalCandidates"][0])
@@ -112,6 +132,29 @@ def test_stale_data_forces_wait_even_when_engine_says_enter():
     assert canonical["dataStale"]
     assert canonical["primaryAction"] == "WAIT"
     assert canonical["newEntryDecision"]["tradeStatus"] == "WAIT_DATA_CONFIRMATION"
+
+
+def test_degraded_data_keeps_prices_as_reference_without_invalidating_setup():
+    data = payload()
+    snapshot = {"scenarioId": "LONG-OLD", "entryZone": [4639, 4643]}
+    data["decision_health_state"] = {
+        "dataHealth": "DEGRADED", "canonicalDataHealth": "DEGRADED",
+        "entryConfirmation": "WAIT_15M_CLOSE", "marketBias": "BULLISH",
+        "lastValidStrategySnapshot": snapshot,
+        "strategySnapshotMode": "REFERENCE_ONLY",
+    }
+    canonical = build_canonical_decision(data, data["final_decision_state"])
+    entry = canonical["newEntryDecision"]
+
+    assert canonical["dataHealth"] == "DEGRADED"
+    assert canonical["scenarioValidity"] == "BLOCKED_BY_DATA"
+    assert canonical["scenarioInvalidated"] is False
+    assert canonical["lastValidStrategySnapshot"] == snapshot
+    assert entry["canEnter"] is False
+    assert entry["levelsExecutable"] is False
+    assert entry["priceStatus"] == "REFERENCE_ONLY"
+    assert entry["tradeStatus"] == "WAIT_DATA_CONFIRMATION"
+    assert "已失效" not in canonical["primaryReason"]
 
 
 def test_latest_final_health_overrides_stale_embedded_observation_in_snapshot():
@@ -220,11 +263,12 @@ def test_actual_position_management_does_not_borrow_candidate_targets():
     assert position["riskRewardFromActualEntry"] is None
 
 
-def test_final_canonical_validator_fails_closed_on_setup_mismatch():
+def test_stale_nested_setup_mismatch_is_recomputed_without_false_engine_conflict():
     data = payload()
     data["final_decision_state"]["selectedScenarioId"] = "MISSING"
     canonical = build_canonical_decision(data, data["final_decision_state"])
     assert canonical["primaryAction"] == "WAIT"
     assert canonical["newEntryDecision"]["canEnter"] is False
-    assert canonical["newEntryDecision"]["tradeStatus"] == "SYSTEM_CONFLICT"
-    assert "ENGINE_CANONICAL_SETUP_CONFLICT" in canonical["consistencyErrors"]
+    assert canonical["newEntryDecision"]["tradeStatus"] != "SYSTEM_CONFLICT"
+    assert canonical["conflictType"] != "TRUE_ENGINE_CONFLICT"
+    assert canonical["engineSelectedSetupId"] == canonical["activeSetupId"]

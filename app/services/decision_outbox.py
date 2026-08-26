@@ -67,13 +67,25 @@ def _canonicalize_payload(payload: dict, current: CurrentFinalDecision | None) -
     hydrated["canonicalStateVersion"] = current.decision_version
     hydrated["decisionVersion"] = current.decision_version
     hydrated["decisionId"] = current.decision_id
-    snapshot = dict(hydrated.get("canonicalDecision") or {})
+    queued_version = int(payload.get("canonicalStateVersion") or
+                         payload.get("decisionVersion") or 0)
+    snapshot = dict(canonical.get("canonicalDecision") or canonical)
     snapshot.update({
         "marketBias": bias,
         "decisionVersion": current.decision_version,
+        "canonicalStateVersion": current.decision_version,
         "decisionId": current.decision_id,
     })
     hydrated["canonicalDecision"] = snapshot
+    for field in (
+        "structuralBias", "liveMomentum", "liveBiasState", "executionBias",
+        "conflictType", "timeframeState", "lastConfirmedBias", "tradePermission",
+        "snapshotId", "snapshotCompleteness", "dataHealth",
+    ):
+        if canonical.get(field) is not None:
+            hydrated[field] = canonical[field]
+    hydrated["consumerStateReloaded"] = bool(
+        queued_version and queued_version != current.decision_version)
     return hydrated
 
 
@@ -173,7 +185,10 @@ def persist_decision_events(symbol: str, events: list[dict]) -> list[dict]:
             incoming_state_version = int(payload.get("canonicalStateVersion") or
                                          payload.get("decisionVersion") or 0)
             is_test = str(payload.get("event_type") or "") == "TEST_NOTIFICATION"
-            if (current is not None and not is_test
+            close_report = str(payload.get("event_type") or "") in {
+                "CANDLE_CLOSE_ANALYSIS_15M", "CANDLE_CLOSE_ANALYSIS_1H",
+                "CANDLE_CLOSE_ANALYSIS_COMBINED"}
+            if (current is not None and not is_test and not close_report
                     and (incoming_decision_id != current.decision_id
                          or incoming_state_version != current.decision_version)):
                 logger.warning("stale state event rejected before enqueue: %s", event_id)
@@ -198,7 +213,7 @@ def persist_decision_events(symbol: str, events: list[dict]) -> list[dict]:
             payload["notificationEventKey"] = event_key
             payload["notificationPayloadHash"] = payload_hash
             payload_decision_id = str(payload.get("decisionId") or "")
-            if (current is not None and not is_test
+            if (current is not None and not is_test and not close_report
                     and payload_decision_id != current.decision_id):
                 logger.warning("non-current decision event rejected before enqueue: %s", event_id)
                 db.add(NotificationAudit(
@@ -314,9 +329,13 @@ def persist_decision_events(symbol: str, events: list[dict]) -> list[dict]:
                     created_at=now,
                 ))
                 continue
+            close_report = str(payload.get("event_type") or "") in {
+                "CANDLE_CLOSE_ANALYSIS_15M", "CANDLE_CLOSE_ANALYSIS_1H",
+                "CANDLE_CLOSE_ANALYSIS_COMBINED"}
             semantic_reason = detect_meaningful_transition(previous_sent, payload)
             meaningful, numeric_reason = is_meaningful_change(previous_sent, payload)
-            reason = semantic_reason or (numeric_reason if meaningful else None)
+            reason = ("MANDATORY_CANDLE_CLOSE_ANALYSIS" if close_report else
+                      semantic_reason or (numeric_reason if meaningful else None))
             if not reason:
                 logger.info(
                     "telegram notification suppressed: %s (%s)",
@@ -522,13 +541,16 @@ async def deliver_pending_telegram(
             payload = dict(event.payload or {})
             event_type = str(payload.get("event_type") or event.event_type or "")
             is_test = event_type == "TEST_NOTIFICATION"
+            close_report = event_type in {
+                "CANDLE_CLOSE_ANALYSIS_15M", "CANDLE_CLOSE_ANALYSIS_1H",
+                "CANDLE_CLOSE_ANALYSIS_COMBINED"}
             entry_event = event_type in {"ENTRY_READY", "ENTRY_NOW"}
             if entry_event and is_expired(payload, now=now):
                 row.status = "CANCELLED"
                 row.cancellation_reason = "NOTIFICATION_TOO_OLD"
                 row.updated_at = now
                 continue
-            if (not is_test and current is not None
+            if (not is_test and not close_report and current is not None
                     and row.state_version != current.decision_version):
                 row.status = "CANCELLED"
                 row.cancellation_reason = "STALE_STATE_VERSION"
@@ -574,11 +596,14 @@ async def deliver_pending_telegram(
                     CurrentFinalDecision.symbol == str(payload.get("symbol") or "XAUUSD")
                 )).scalar_one_or_none()
                 is_test = str(payload.get("event_type") or "") == "TEST_NOTIFICATION"
+                close_report = str(payload.get("event_type") or "") in {
+                    "CANDLE_CLOSE_ANALYSIS_15M", "CANDLE_CLOSE_ANALYSIS_1H",
+                    "CANDLE_CLOSE_ANALYSIS_COMBINED"}
                 entry_event = str(payload.get("event_type") or "") in {
                     "ENTRY_READY", "ENTRY_NOW"}
                 row = db.execute(select(TelegramNotification).where(
                     TelegramNotification.event_id == claimed_event_id)).scalar_one()
-                if (current is not None and not is_test
+                if (current is not None and not is_test and not close_report
                         and row.state_version != current.decision_version):
                     row.status = "CANCELLED"
                     row.cancellation_reason = "STALE_STATE_VERSION"
@@ -588,6 +613,20 @@ async def deliver_pending_telegram(
                                result="STALE_BEFORE_SEND", worker_id=worker_id)
                     continue
                 payload = _canonicalize_payload(payload, current)
+                if (close_report and current is not None
+                        and row.state_version != current.decision_version):
+                    # The finalized-candle report itself is immutable and must
+                    # not be lost merely because a newer quote advanced the
+                    # canonical version during the aggregation window.  Any
+                    # stale entry permission is removed before rendering.
+                    report = dict(payload.get("candleCloseReport") or {})
+                    report.update({
+                        "canEnter": False, "currentAction": "WAIT",
+                        "currentPrice": current.payload.get("currentPrice"),
+                        "nextFocus": "收盤後行情已有更新；等待最新可執行條件，不沿用舊進場許可",
+                    })
+                    payload.update({"canEnter": False, "finalDecision": "WAIT",
+                                    "candleCloseReport": report})
                 if entry_event and not is_test:
                     symbol = str(payload.get("symbol") or "XAUUSD")
                     safety = validate_pre_delivery(
@@ -637,6 +676,25 @@ async def deliver_pending_telegram(
                 row.status, row.message_id, row.sent_at = (
                     "CONFIRMED", str(message_id), delivery_now)
                 row.last_error, row.updated_at = "", delivery_now
+                if str(payload.get("event_type") or "") in {
+                        "CANDLE_CLOSE_ANALYSIS_15M", "CANDLE_CLOSE_ANALYSIS_1H",
+                        "CANDLE_CLOSE_ANALYSIS_COMBINED"}:
+                    monitor = db.execute(select(MarketMonitorState).where(
+                        MarketMonitorState.symbol == str(
+                            payload.get("symbol") or "XAUUSD"),
+                        MarketMonitorState.monitor_key == "candle_close_analysis",
+                    )).scalar_one_or_none()
+                    if monitor is not None:
+                        stored = dict(monitor.payload or {})
+                        history = list(stored.get("history") or [])
+                        report_key = str(payload.get("reportDedupeKey") or "")
+                        for item in history:
+                            if item.get("telegramReportKey") == report_key:
+                                item["telegramSent"] = True
+                                item["telegramMessageId"] = str(message_id)
+                                item["telegramSentAt"] = delivery_now.isoformat()
+                        stored["history"] = history
+                        monitor.payload, monitor.updated_at = stored, delivery_now
                 lifecycle = payload.get("setupLifecycle") or {}
                 if lifecycle.get("state") == "ENTRY_READY" and payload.get("setupId"):
                     monitor = db.execute(select(MarketMonitorState).where(

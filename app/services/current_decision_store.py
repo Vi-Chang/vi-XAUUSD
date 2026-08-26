@@ -30,7 +30,8 @@ def _record_conflict(db, symbol: str, kind: str, decision: dict,
         symbol=symbol, conflict_type=kind, severity=severity,
         decision_id=str(decision.get("decisionId") or ""), payload=decision,
         created_at=datetime.now(timezone.utc)))
-    logger.error("decision conflict %s for %s", kind, symbol)
+    log = logger.error if severity in {"P0", "P1"} else logger.info
+    log("canonical classification %s for %s", kind, symbol)
 
 
 def get_current_final_decision(symbol: str = "XAUUSD") -> dict:
@@ -56,8 +57,9 @@ def get_canonical_state_version(symbol: str = "XAUUSD") -> int:
     return int(get_current_final_decision(symbol).get("decisionVersion") or 0)
 
 
-def publish_current_final_decision(symbol: str, decision: dict) -> tuple[dict, bool]:
-    """CAS-like publish; older candle/data/worker results can never roll state back."""
+def atomic_publish_canonical_snapshot(symbol: str,
+                                      decision: dict) -> tuple[dict, bool]:
+    """Atomically publish one complete canonical snapshot under a row lock."""
     now = datetime.now(timezone.utc)
     incoming = dict(decision)
     with db_session() as db:
@@ -84,11 +86,16 @@ def publish_current_final_decision(symbol: str, decision: dict) -> tuple[dict, b
                        incoming.get("decisionVersion") or 1)))
         supersedes = row.decision_id if row and changed else ""
         incoming["decisionVersion"] = version
+        incoming["canonicalStateVersion"] = version
         incoming["supersedesDecisionId"] = supersedes
         incoming["sourceDataVersion"] = incoming_data
         decision_id = hashlib.sha256(
             f"{symbol}|{version}|{signature}".encode()).hexdigest()[:24]
         incoming["decisionId"] = decision_id
+        canonical = dict(incoming.get("canonicalDecision") or {})
+        canonical.update({"decisionId": decision_id, "decisionVersion": version,
+                          "canonicalStateVersion": version})
+        incoming["canonicalDecision"] = canonical
         for event in incoming.get("events") or []:
             event["decisionId"], event["decisionVersion"] = decision_id, version
             event["supersedesDecisionId"] = supersedes
@@ -114,6 +121,12 @@ def publish_current_final_decision(symbol: str, decision: dict) -> tuple[dict, b
         row.evaluated_at = incoming_eval
         row.supersedes_decision_id = supersedes
         row.payload, row.updated_at = incoming, now
+        previous_type = str(previous.get("conflictType") or "NO_CONFLICT")
+        incoming_type = str(incoming.get("conflictType") or "NO_CONFLICT")
+        if incoming_type != previous_type and incoming_type != "NO_CONFLICT":
+            _record_conflict(
+                db, symbol, incoming_type, incoming,
+                "P0" if incoming_type == "TRUE_ENGINE_CONFLICT" else "P3")
         monitor = db.execute(select(MarketMonitorState).where(
             MarketMonitorState.symbol == symbol,
             MarketMonitorState.monitor_key == "final_decision").with_for_update()
@@ -147,6 +160,11 @@ def publish_current_final_decision(symbol: str, decision: dict) -> tuple[dict, b
         return incoming, True
 
 
+def publish_current_final_decision(symbol: str, decision: dict) -> tuple[dict, bool]:
+    """Compatibility alias for the atomic canonical publisher."""
+    return atomic_publish_canonical_snapshot(symbol, decision)
+
+
 def conflict_metrics() -> dict:
     with db_session() as db:
         rows = db.execute(select(DecisionConflictAudit)).scalars().all()
@@ -177,4 +195,11 @@ def conflict_metrics() -> dict:
         "notification_queue_expired_count": counts.get("NOTIFICATION_TOO_OLD", 0),
         "price_drift_revalidation_count": counts.get(
             "PRICE_DRIFT_REQUIRES_REEVALUATION", 0),
+        "conflict_classification": {
+            key: counts.get(key, 0) for key in (
+                "TIMEFRAME_DIVERGENCE", "BIAS_TRANSITION",
+                "DATA_VERSION_MISMATCH", "STALE_ENGINE_RESULT",
+                "DATA_DEGRADED_CONDITION", "SCORE_NEAR_TIE",
+                "CANONICAL_INVARIANT_VIOLATION", "TRUE_ENGINE_CONFLICT")
+        },
     }

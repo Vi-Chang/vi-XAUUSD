@@ -81,6 +81,8 @@ class UserFacingTradeMessageBuilder:
         rendered = legacy_renderer(payload)
         lines = _clean_lines(rendered)
         canonical = payload.get("canonicalDecision") or {}
+        live = (payload.get("liveBias") or payload.get("live_bias_state") or
+                canonical.get("liveBiasEvaluation") or {})
         snapshot = (payload.get("multiTimeframeBias") or
                     canonical.get("multiTimeframeBias"))
         if not snapshot:
@@ -100,12 +102,37 @@ class UserFacingTradeMessageBuilder:
                 "macro1d": snapshot.get("bias1d"),
                 "counterHigherTimeframe": snapshot.get("alignment") == "COUNTERTREND",
             }
-        bias_lines = scalp_bias_lines(scalp) if scalp else timeframe_bias_lines(snapshot)
+        if live:
+            structural = str(live.get("structuralBias") or
+                             canonical.get("structuralBias") or "NEUTRAL")
+            momentum = str(live.get("liveMomentum") or "NEUTRAL")
+            execution = str(live.get("executionBias") or
+                            canonical.get("executionBias") or "NEUTRAL")
+            structural_text = ("🟢 原結構偏多" if "BULL" in structural else
+                               "🔴 原結構偏空" if "BEAR" in structural else
+                               "⚪ 原結構中立")
+            momentum_text = {
+                "STRONG_LONG": "🟢 明顯轉強", "STRONG_SHORT": "🔴 明顯轉弱",
+                "NEUTRAL": "🟡 尚未形成明確即時方向",
+            }.get(momentum, "🟡 正在變化")
+            execution_text = {
+                "LONG": "🟢 優先找多", "SHORT": "🔴 優先找空",
+                "LONG_WATCH": "🟡 觀察翻多，尚未正式進場",
+                "SHORT_WATCH": "🟡 觀察翻空，尚未正式進場",
+                "NEUTRAL": "🟡 暫停舊方向，等待15M收盤確認",
+            }.get(execution, "🟡 等待重新判斷")
+            bias_lines = [f"結構方向：{structural_text}",
+                          f"即時動能：{momentum_text}",
+                          f"目前操作：{execution_text}"]
+        else:
+            bias_lines = scalp_bias_lines(scalp) if scalp else timeframe_bias_lines(snapshot)
         # A multi-timeframe block supersedes every ambiguous single market
         # direction row. Unknown timeframes are simply omitted.
         if bias_lines:
             lines = [line for line in lines if not line.startswith((
-                "市場方向：", "高週期方向：", "大方向："))]
+                "市場方向：", "高週期方向：", "大方向：", "短線：",
+                "15M：", "1H：", "4H：", "結構方向：", "即時動能：",
+                "目前操作："))]
             insert_at = 1
             if len(lines) > 1 and lines[1].startswith("現價："):
                 insert_at = 2

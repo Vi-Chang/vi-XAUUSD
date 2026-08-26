@@ -244,6 +244,53 @@ class Settings(BaseSettings):
     trend_short_setup_expiry_bars: int = 3
     trend_min_rr: float = 1.5
     decision_assistant_min_rr: float = 1.5
+    # Entry-opportunity tiers. Safety gates remain absolute; secondary
+    # confirmation only changes score/size and never silently becomes a veto.
+    entry_gate_full_score: int = 75
+    entry_gate_probe_score: int = 60
+    entry_gate_watch_score: int = 45
+    entry_gate_absolute_min_rr: float = 1.20
+    entry_gate_probe_size_multiplier: float = 0.40
+    entry_gate_acceptable_distance_atr: float = 0.35
+    entry_gate_counter_4h_penalty: int = 5
+    entry_gate_counter_1d_penalty: int = 3
+    entry_gate_partial_confirmation_penalty: int = 8
+    entry_gate_degraded_data_penalty: int = 8
+    entry_starvation_warning_minutes: int = 60
+    entry_starvation_min_candidates: int = 4
+    live_bias_invalidation_buffer_atr: float = 0.12
+    live_bias_invalidation_min_abs: float = 0.50
+    live_bias_persistence_ticks: int = 2
+    live_bias_strong_displacement_atr: float = 0.80
+    live_bias_stale_age_minutes: int = 30
+    live_bias_origin_max_displacement_atr: float = 1.50
+
+    # Relative tick/quote-volume intelligence.  Values are ratios against the
+    # same-timeframe, same-session history; volume is never treated as a
+    # centralized exchange total or an independent direction signal.
+    volume_history_bars: int = 60
+    volume_session_min_samples: int = 5
+    volume_very_low_ratio: float = 0.45
+    volume_low_ratio: float = 0.75
+    volume_high_ratio: float = 1.35
+    volume_very_high_ratio: float = 1.80
+    volume_extreme_ratio: float = 2.50
+    volume_breakout_score_bonus: int = 12
+    volume_confirmation_score_bonus: int = 7
+    volume_quality_score_penalty: int = 5
+    volume_low_pullback_score_bonus: int = 8
+    candle_strong_body_ratio: float = 0.65
+    candle_weak_body_ratio: float = 0.30
+    candle_rejection_wick_ratio: float = 0.45
+    candle_close_edge_ratio: float = 0.20
+    candle_expansion_atr_ratio: float = 1.20
+    candle_compression_atr_ratio: float = 0.55
+
+    # Finalized-candle reports are event-driven.  The scheduler is only a
+    # recovery path when providers finalize 15M and 1H a few seconds apart.
+    candle_close_finalization_grace_seconds: int = 15
+    combined_close_report_wait_seconds: int = 45
+    candle_close_report_history_limit: int = 200
     decision_assistant_approaching_atr: float = 0.20
     decision_assistant_missed_entry_atr: float = 0.70
     decision_assistant_trigger_hysteresis_atr: float = 0.10
@@ -261,6 +308,7 @@ class Settings(BaseSettings):
     closed_15m_context_max_staleness_seconds: int = 20 * 60
     data_health_degrade_confirm_count: int = 2
     data_health_recovery_confirm_count: int = 2
+    data_health_invalid_confirm_count: int = 3
     defense_confirmation_buffer_atr_mult: float = 0.10
     defense_approaching_atr_mult: float = 0.25
     long_breakout_threshold_atr: float = 0.10

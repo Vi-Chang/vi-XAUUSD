@@ -62,7 +62,8 @@ const BLOCK_REASON_ZH = {
 };
 
 const QUALITY_ZH = { GOOD: "良好", EXCELLENT: "優秀", FAIR: "普通", POOR: "不佳",
-  DEGRADED: "部分可用", STALE: "已過期", FAILED: "失效" };
+  HEALTHY: "正常", DEGRADED: "部分資料暫缺，策略僅供參考",
+  INVALID: "必要資料無效", STALE: "已過期", FAILED: "失效" };
 const GRADE_ZH = { A: "A級（高信心）", B: "B級（中高信心）",
   C: "C級（中低信心）", D: "D級（低信心）", U: "未評級" };
 

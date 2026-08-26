@@ -148,6 +148,7 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
     """Build the sole next-trigger/new-entry/position-management contract."""
     settings = get_settings()
     minimum_rr = float(settings.decision_assistant_min_rr)
+    absolute_min_rr = float(settings.entry_gate_absolute_min_rr)
     health = evaluate_data_health(data)
     decision_health = dict(
         data.get("decision_health_state") or evaluate_decision_health(data)
@@ -161,6 +162,9 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
         "canonicalDataHealth",
         "entryConfirmation",
         "marketBias",
+        "marketBiasState",
+        "higherTimeframeBias",
+        "biasConfidence",
         "latestClosed15m",
         "contextClosed15m",
     ):
@@ -191,11 +195,13 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
     candidates = [item for item in all_candidates if item["active"]]
     behavior_state = data.get("market_behavior_engine") or {}
     rejection = data.get("wick_rejection_engine") or behavior_state.get("wick_rejection") or {}
+    failed_rejection = data.get("failed_breakout_rejection_engine") or {}
     market_bias = str(decision_health.get("marketBias") or
                       behavior_state.get("market_bias") or
                       normalized.get("trendBias") or "neutral").upper()
     market_bias = ("BULLISH" if "BULL" in market_bias else
                    "BEARISH" if "BEAR" in market_bias else "NEUTRAL")
+    live_bias = dict(data.get("live_bias_state") or final.get("liveBias") or {})
     for item in candidates:
         item["setupScore"] = _setup_score(item, market_bias)
     engine_selected_id = str(final.get("selectedScenarioId") or "")
@@ -254,8 +260,9 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
     # is good.  It blocks entry through the READY gate below, but must not be
     # presented as a data outage.  Only an explicit data block (or an unhealthy
     # data-health gate) makes the canonical snapshot stale.
+    canonical_health = str(decision_health.get("dataHealth") or "INVALID").upper()
     data_confirmation_blocked = entry_confirmation == "BLOCKED_BY_DATA"
-    stale = not bool(health.get("healthy")) or data_confirmation_blocked
+    stale = canonical_health != "HEALTHY" or data_confirmation_blocked
     scenario_validity = str(final.get("scenarioValidity") or "")
     if stale:
         scenario_validity = "BLOCKED_BY_DATA"
@@ -274,11 +281,14 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
         scenario_validity = "PENDING_CONFIRMATION"
     behavior = str(behavior_state.get("market_behavior") or "RANGE")
     rr_ok = bool(selected.get("rrPassed")) if selected else False
+    probe_ready = str(final.get("riskGate") or "") == "PROBE_READY"
+    rr_value = _number(selected.get("riskReward")) if selected else None
+    absolute_rr_ok = bool(rr_value is not None and rr_value >= absolute_min_rr)
     recovery_scalp = bool(selected and
                           selected.get("opportunityType") == "FAKE_BREAKOUT_RECOVERY")
     confirmation_closed = (trigger_level is None or
                            (confirmation or {}).get("status") == "CLOSED_CONFIRMED")
-    can_enter = (bool(final.get("canEnter")) and rr_ok and not stale
+    can_enter = (bool(final.get("canEnter")) and (rr_ok or probe_ready and absolute_rr_ok) and not stale
                   and entry_confirmation == "READY"
                   and closed_available and confirmation_closed
                   and scenario_validity == "ACTIVE"
@@ -299,6 +309,9 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
     if direction == "LONG" and not recovery_scalp and behavior in {
             "SLOW_BEARISH_DRIFT", "REVERSAL_WARNING"}:
         can_enter = False
+    if (str(failed_rejection.get("entryEligibility") or "") == "NO" and
+            str(failed_rejection.get("side") or "") == direction):
+        can_enter = False
     # Candidate lifecycle is diagnostic only. Do not let nested cards expose a
     # green permission that contradicts the canonical new-entry decision.
     selected_id = str((selected or {}).get("setupId") or "")
@@ -306,6 +319,10 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
         candidate["canEnter"] = bool(
             can_enter and str(candidate.get("setupId") or "") == selected_id)
         candidate["executionAllowed"] = candidate["canEnter"]
+        candidate["priceExecutionStatus"] = (
+            "EXECUTABLE" if candidate["canEnter"] else
+            "REFERENCE_ONLY" if canonical_health == "DEGRADED" else
+            "NOT_EXECUTABLE")
     entry_action = ("BUY" if can_enter and direction == "LONG" else
               "SELL" if can_enter and direction == "SHORT" else "WAIT")
     if can_enter:
@@ -378,6 +395,8 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
         primary_reason = "多方動能正在恢復，但上方連續出現賣壓拒絕，等待15M實體突破拒絕區。"
     elif conflict == "BEARISH_MOMENTUM_BUT_PRICE_SUPPORTED":
         primary_reason = "空方動能正在增強，但下方連續出現承接，等待15M實體跌破支撐拒絕區。"
+    elif str(failed_rejection.get("entryEligibility") or "") == "NO":
+        primary_reason = "短線突破反覆失敗或防守受壓；方向信心已降級，目前不追價。"
     position = data.get("position_management") or {}
     levels = list(normalized.get("confirmationLevels") or [])
     resistance_levels = [float(item["price"]) for item in levels
@@ -408,6 +427,15 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
                 and rejection_breakout != "BREAKOUT_CONFIRMED"
                 and normalized_position_action == "HOLD"):
             management_mode = "TAKE_PROFIT_WATCH"
+    failed_position_state = str(failed_rejection.get("positionRiskState") or "")
+    if known and str(failed_rejection.get("side") or "") == position_side:
+        failed_action = str(failed_rejection.get("positionAction") or "HOLD")
+        if failed_action in {"EXIT", "REDUCE"}:
+            normalized_position_action = failed_action
+            management_mode = ("STRUCTURE_INVALIDATED" if failed_action == "EXIT"
+                               else "DEFENSIVE_MANAGEMENT")
+        elif failed_position_state == "POSITION_WARNING":
+            management_mode = "HOLD_WITH_CAUTION"
     action = normalized_position_action if known else entry_action
     actual_entry = _number(position.get("entry_price"))
     tp_facts = [fact for fact in data.get("signal_facts") or []
@@ -534,6 +562,8 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
         "wickRejectionZone": rejection.get("wick_rejection_zone"),
         "momentumPriceConflict": conflict,
         "breakoutFailureState": rejection_breakout,
+        "failedBreakoutRejection": failed_rejection,
+        "failedBreakoutState": failed_rejection.get("state", "NONE"),
         "primaryAction": action,
         "primaryReason": primary_reason,
         "waitReason": ("WAIT_FOR_15M_CLOSE" if close_gate else None),
@@ -563,7 +593,9 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
         "confirmationRegistry": registry,
         "executableZone": selected.get("entryZone") if selected else None,
         "rr": selected.get("riskReward") if selected else None,
-        "rrValid": rr_ok,
+        "rrValid": rr_ok or probe_ready and absolute_rr_ok,
+        "preferredRRValid": rr_ok,
+        "absoluteMinimumRRValid": absolute_rr_ok,
         "entryQuality": selected.get("entryQuality") if selected else "INVALID",
         "reasonCodes": reason_codes,
         "primarySetup": selected or None,
@@ -594,8 +626,32 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
         "closedCandleAvailable": closed_available,
         "closedCandleErrorReason": closed_error,
         "marketBias": market_bias,
+        "structuralBias": live_bias.get("structuralBias", market_bias),
+        "liveMomentum": live_bias.get("liveMomentum", "NEUTRAL"),
+        "liveBiasState": live_bias.get("liveBiasState", "ALIGNED"),
+        "executionBias": live_bias.get("executionBias", "NEUTRAL"),
+        "biasFreshness": live_bias.get("biasFreshness", "FRESH"),
+        "biasAgeMinutes": live_bias.get("biasAgeMinutes"),
+        "biasOriginPrice": live_bias.get("biasOriginPrice"),
+        "priceDisplacementAtr": live_bias.get("priceDisplacementAtr"),
+        "intrabarSafetyOverride": bool(live_bias.get("intrabarSafetyOverride")),
+        "liveBiasEvaluation": live_bias,
+        "higherTimeframeBias": (decision_health.get("higherTimeframeBias") or
+                                market_bias),
+        "marketBiasState": (decision_health.get("marketBiasState") or
+                            failed_rejection.get("biasState") or market_bias),
+        "biasConfidence": (decision_health.get("biasConfidence") or
+                           failed_rejection.get("biasConfidence")),
+        "setupQuality": (failed_rejection.get("setupQuality") or
+                         selected.get("entryQuality") if selected else
+                         failed_rejection.get("setupQuality") or "INVALID"),
+        "entryEligibility": (failed_rejection.get("entryEligibility") or
+                             ("YES" if can_enter else "NO")),
         "multiTimeframeBias": multi_timeframe_bias,
         "dataHealth": decision_health.get("dataHealth"),
+        "lastValidStrategySnapshot": decision_health.get(
+            "lastValidStrategySnapshot"),
+        "strategySnapshotMode": decision_health.get("strategySnapshotMode"),
         "entryConfirmation": entry_confirmation,
         "scenarioValidity": scenario_validity,
         "executionAllowed": can_enter,
@@ -671,6 +727,10 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
         "dataStale": stale,
         "newEntryDecision": {
             "action": entry_action, "canEnter": can_enter, "direction": direction,
+            "levelsExecutable": canonical_health == "HEALTHY" and can_enter,
+            "priceStatus": ("REFERENCE_ONLY" if canonical_health == "DEGRADED"
+                            else "CLEARED" if canonical_health == "INVALID"
+                            else "EXECUTABLE" if can_enter else "NOT_EXECUTABLE"),
             "tradeStatus": ("SCENARIO_INVALIDATED" if scenario_validity in {
                                 "INVALIDATED", "STALE"} else
                             "WAIT_DATA_CONFIRMATION" if stale or not closed_available else
@@ -679,6 +739,7 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
                                 or (not recovery_scalp and behavior in {
                                     "SLOW_BEARISH_DRIFT", "REVERSAL_WARNING"})) else
                             "NO_ENTRY_RR" if selected and not rr_ok else
+                            "PROBE_READY" if can_enter and probe_ready else
                             "ENTRY_READY" if can_enter else "WAIT_CONFIRMATION"),
             "selectedSetup": selected or None,
             "primaryOpportunityId": opportunity_engine.get("primaryOpportunityId"),
@@ -701,6 +762,7 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
             "currentPrice": current,
             "unrealizedPnl": _number(position.get("unrealized_pnl")),
             "action": normalized_position_action if known else None,
+            "positionRiskState": failed_position_state if known else None,
             "managementMode": management_mode,
             "riskRewardFromActualEntry": position_rr,
             "tacticalDefense": (primary_position.get("tacticalDefenseLevel")
@@ -727,6 +789,13 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
         },
     }
     scalp_snapshot = build_scalp_decision_snapshot(data, result)
+    execution_bias = str(result.get("executionBias") or "NEUTRAL")
+    scalp_snapshot["preferredSide"] = {
+        "LONG": "LONG", "LONG_WATCH": "LONG",
+        "SHORT": "SHORT", "SHORT_WATCH": "SHORT",
+    }.get(execution_bias, "BOTH")
+    if execution_bias == "NEUTRAL":
+        scalp_snapshot["scalpBias"] = "SCALP_TRANSITION"
     result.update({
         "tradingHorizon": scalp_snapshot["tradingHorizon"],
         "scalpDecision": scalp_snapshot,
@@ -734,10 +803,20 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
         "nextLongScalpOpportunity": scalp_snapshot["nextLongScalpOpportunity"],
         "nextShortScalpOpportunity": scalp_snapshot["nextShortScalpOpportunity"],
     })
-    from app.engines.decision_consistency import (
-        fail_closed_canonical,
-        validate_canonical_contract,
+    gate = dict(final.get("entryOpportunityGate") or {})
+    result["longScore"] = int(gate.get("longScore") or 0)
+    result["shortScore"] = int(gate.get("shortScore") or 0)
+    from app.engines.canonical_conflict_resolver import (
+        build_canonical_market_snapshot,
+        resolve_canonical_conflict,
     )
+    from app.engines.decision_consistency import validate_canonical_contract
     consistency_errors = validate_canonical_contract(result)
-    return (fail_closed_canonical(result, consistency_errors)
-            if consistency_errors else result)
+    market_snapshot = dict(data.get("canonical_market_snapshot") or
+                           build_canonical_market_snapshot(data))
+    return resolve_canonical_conflict(
+        result, market_snapshot=market_snapshot,
+        previous=dict(data.get("previous_canonical_strategy_snapshot") or {}),
+        engine_results=list(data.get("canonical_engine_results") or []),
+        consistency_errors=consistency_errors,
+    )

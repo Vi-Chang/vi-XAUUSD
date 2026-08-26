@@ -183,6 +183,24 @@ def _decision_recovery_sync_needed() -> bool:
     )
 
 
+def _combined_close_report_pending() -> bool:
+    """Whether a finalized top-of-hour 15M bar is waiting for its 1H peer."""
+    try:
+        from sqlalchemy import select
+
+        from app.db.models import MarketMonitorState
+        from app.db.session import db_session
+        with db_session() as db:
+            row = db.execute(select(MarketMonitorState).where(
+                MarketMonitorState.symbol == "XAUUSD",
+                MarketMonitorState.monitor_key == "candle_close_analysis",
+            )).scalar_one_or_none()
+            return bool(row and (row.payload or {}).get("pendingCombined"))
+    except Exception:
+        logger.exception("failed to inspect pending combined candle report")
+        return False
+
+
 async def job_candle_close_refresh() -> None:
     """Refresh once a newly closed 15M candle should be available."""
     if not _owns_scheduler():
@@ -203,7 +221,9 @@ async def job_candle_close_refresh() -> None:
     )
     if current is not None and current >= expected:
         state.candle_refresh_bucket = expected
-        state.candle_refresh_attempts = 0
+        pending_combined = _combined_close_report_pending()
+        state.candle_refresh_attempts = (state.candle_refresh_attempts
+                                         if pending_combined else 0)
         # A lightweight candle refresh can update lastClosedCandleTimestamp before
         # the canonical decision is recomputed.  Do one full sync for the new
         # bucket when data is already GOOD but the decision remains fail-closed.
@@ -215,6 +235,13 @@ async def job_candle_close_refresh() -> None:
             await run_full_analysis(
                 trigger="candle_close_recovery_sync",
                 reason_zh="最新 15 分鐘 K 棒已收盤，資料恢復後同步重算決策",
+            )
+        elif (pending_combined and state.candle_refresh_attempts <
+              s.candle_close_refresh_max_attempts):
+            state.candle_refresh_attempts += 1
+            await run_full_analysis(
+                trigger="combined_candle_close_followup",
+                reason_zh="等待整點 1 小時 K 棒完成，合併收盤分析",
             )
         return
     if state.candle_refresh_bucket != expected:

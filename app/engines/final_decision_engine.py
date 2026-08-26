@@ -14,6 +14,9 @@ from app.config import get_settings
 from app.engines.data_health_gate import evaluate_data_health
 from app.engines.decision_health import evaluate_decision_health
 from app.engines.entry_location import classify_entry_location, stop_is_valid
+from app.engines.entry_opportunity_gate import evaluate_entry_opportunity_gate
+from app.engines.live_bias import evaluate_live_bias
+from app.engines.multi_timeframe_bias import derive_multi_timeframe_bias
 from app.engines.scenario_execution import (
     can_execute_scenario,
     resolve_scenario_validity,
@@ -135,6 +138,57 @@ def collect_signal_candidates(data: dict) -> list[SignalCandidate]:
             ],
             "missingConditions": ([] if recovery.get("scalpEntryReady") else
                                    ["等待新的15M收盤完成短線進場確認"]),
+        })
+    failed_rejection = data.get("failed_breakout_rejection_engine") or {}
+    failed_state = str(failed_rejection.get("state") or "NONE")
+    failed_side = str(failed_rejection.get("side") or "")
+    failed_zone = failed_rejection.get("resistanceZone") or {}
+    failed_low, failed_high = _number(failed_zone.get("low")), _number(
+        failed_zone.get("high"))
+    failed_support = _number(failed_rejection.get("supportLevel"))
+    atr15 = max(_number((data.get("normalized_analysis") or {}).get("atr15")) or .01, .01)
+    if (failed_state in {"REPEATED_REJECTION", "FAILED_BREAKOUT",
+                         "CONFIRMED_REVERSAL_RISK"}
+            and failed_low is not None and failed_high is not None):
+        rejection_side = "SHORT" if failed_side == "LONG" else "LONG"
+        midpoint = (failed_low + failed_high) / 2
+        stop = (failed_high + atr15 * .25 if rejection_side == "SHORT"
+                else failed_low - atr15 * .25)
+        target = failed_support
+        risk = (stop-midpoint if rejection_side == "SHORT" else midpoint-stop)
+        reward = ((midpoint-target) if rejection_side == "SHORT" and target is not None
+                  else (target-midpoint) if target is not None else 0)
+        rr = reward / risk if risk > 0 and reward > 0 else None
+        setup_ledgers.append({
+            "setupId": f"REJECTION-{failed_rejection.get('closedCandleTime') or 'ACTIVE'}",
+            "lineageId": str(failed_rejection.get("closedCandleTime") or "REJECTION"),
+            "direction": rejection_side, "status": "CONFIRMED",
+            "signalScore": max(50, int(failed_rejection.get("rejectionScore") or 0)),
+            "entryZoneLow": failed_low, "entryZoneHigh": failed_high,
+            "stopPrice": stop, "tp1": target, "type": (
+                "RESISTANCE_REJECTION_SHORT" if rejection_side == "SHORT"
+                else "SUPPORT_REJECTION_LONG"), "riskReward": rr,
+            "passedReasons": list(failed_rejection.get("rejectionReasons") or []),
+        })
+    if (str(failed_rejection.get("supportState") or "") == "RECLAIMED"
+            and failed_support is not None):
+        reclaim_side = failed_side if failed_side in {"LONG", "SHORT"} else "LONG"
+        zone_low, zone_high = failed_support - atr15 * .12, failed_support + atr15 * .12
+        stop = (failed_support - atr15 * .35 if reclaim_side == "LONG"
+                else failed_support + atr15 * .35)
+        target = (failed_low if reclaim_side == "SHORT" else failed_high)
+        midpoint = (zone_low + zone_high) / 2
+        risk = (midpoint-stop if reclaim_side == "LONG" else stop-midpoint)
+        reward = ((target-midpoint) if reclaim_side == "LONG" and target is not None
+                  else (midpoint-target) if target is not None else 0)
+        setup_ledgers.append({
+            "setupId": f"FALSE-BREAK-{failed_rejection.get('closedCandleTime') or 'ACTIVE'}",
+            "direction": reclaim_side, "status": "CONFIRMED", "signalScore": 68,
+            "entryZoneLow": zone_low, "entryZoneHigh": zone_high,
+            "stopPrice": stop, "tp1": target,
+            "type": f"FALSE_BREAK_{reclaim_side}",
+            "riskReward": reward / risk if risk > 0 and reward > 0 else None,
+            "passedReasons": ["15M 收盤重新收回失守位置"],
         })
     opportunity_engine = data.get("entry_opportunity_engine") or {}
     unified_opportunities = list(opportunity_engine.get("opportunities") or [])
@@ -304,6 +358,11 @@ def _summary(reason: str, action: str) -> str:
         "STRUCTURE_UNCLEAR": "目前沒有清楚、可執行的市場結構。",
         "POSITION_ACTIVE": "目前先管理既有部位，不建立互相衝突的新交易。",
         "ENTRY_READY": "進場、失效與目標條件均已完成，可依計畫評估執行。",
+        "PROBE_READY": "主要方向與結構成立；次要確認未滿分，可用設定的小倉倍率試單。",
+        "RR_BELOW_ABSOLUTE_MINIMUM": "風險報酬低於絕對安全底線，禁止進場。",
+        "STOP_INVALID": "目前無法建立方向正確的有效停損，禁止進場。",
+        "CHASE_ZONE": "價格已進入真正追價區，等待新的回踩或結構。",
+        "SETUP_FORMING": "交易機會正在形成，尚缺明確的價格或收盤條件。",
         "WAIT_CONFIRMATION": "機會仍在，但目前還不到可以下單的條件。",
         "BEHAVIOR_WAIT_PULLBACK": "大方向仍偏多，但15M正在緩步下降，暫停追多並等待止跌確認。",
         "BEHAVIOR_LONG_BLOCK": "15M出現急跌或反轉風險，暫停新的多單進場。",
@@ -327,6 +386,8 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
     health = evaluate_data_health(data)
     decision_health = (data.get("decision_health_state") or
                        evaluate_decision_health(data, previous=previous))
+    canonical_health = str(decision_health.get("dataHealth") or "INVALID").upper()
+    data_execution_allowed = canonical_health == "HEALTHY"
     market_bias = str(decision_health.get("marketBias") or "NEUTRAL")
     entry_confirmation = str(decision_health.get("entryConfirmation") or
                              "BLOCKED_BY_DATA")
@@ -342,6 +403,13 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
                            or (data.get("trade_plan_manager") or {}).get("activePlans"))
     behavior = str((data.get("market_behavior_engine") or {}).get(
         "market_behavior") or "RANGE")
+    normalized = data.get("normalized_analysis") or {}
+    multi_bias = derive_multi_timeframe_bias(normalized, canonical_bias=market_bias)
+    live_bias = dict(data.get("live_bias_state") or {})
+    if not live_bias:
+        live_bias, _ = evaluate_live_bias(
+            data, structural_bias=market_bias,
+            candidates=[asdict(candidate) for candidate in candidates], previous=None)
     def _selection_rank(item: SignalCandidate) -> tuple[bool, bool, int]:
         zone = item.entry_zone
         in_zone = bool(zone and zone[0] <= current_price <= zone[1])
@@ -350,11 +418,42 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
             and stop_is_valid(item.direction, current_price, item.invalidation_price)
             and item.risk_reward is not None
             and item.risk_reward >= settings.decision_assistant_min_rr
-            and health["healthy"]
+            and data_execution_allowed
         )
         return executable, item.lifecycle_state == "ENTRY_READY", item.strength
 
     selected = max(candidates, key=_selection_rank, default=None)
+    # Durable health state is authoritative.  A stateless failed fetch must
+    # never overwrite hysteresis and erase a still-valid strategy snapshot.
+    core_data_health = canonical_health
+    gate_context = {
+        "currentPrice": current_price, "atr15": atr,
+        "dataHealth": core_data_health,
+        "priceDataDesync": bool((data.get("data_quality") or {}).get("source_mismatch")),
+        "marketClosed": str((data.get("freshness_state") or {}).get(
+            "healthState") or "") == "MARKET_CLOSED",
+        "eventBlackout": bool(event.get("event_lockout") or event.get("post_event_wait")),
+        "spreadAbnormal": spread > spread_limit, "positionActive": position_active,
+        "closedCandleAvailable": bool(normalized.get("lastClosedCandleTimestamp")),
+        "bias15m": multi_bias.get("bias15m"), "bias1h": multi_bias.get("bias1h"),
+        "bias4h": multi_bias.get("bias4h"), "bias1d": multi_bias.get("bias1d"),
+        "marketBias": market_bias, "momentum": normalized.get("shortTermMomentum"),
+        "marketBehavior": behavior,
+        "defenseState": defense_state,
+        "scenarioValidity": "ACTIVE",
+        "evaluatedAt": str(data.get("timestamp_utc") or ""),
+        "structuralBias": live_bias.get("structuralBias", market_bias),
+        "structuralSide": live_bias.get("structuralSide"),
+        "liveBiasState": live_bias.get("liveBiasState", "ALIGNED"),
+        "executionBias": live_bias.get("executionBias", "NEUTRAL"),
+        "volumeIntelligence": data.get("volume_intelligence") or {},
+    }
+    entry_gate = evaluate_entry_opportunity_gate(
+        [asdict(candidate) for candidate in candidates], context=gate_context)
+    gate_selected = entry_gate.get("selected") or {}
+    gate_scenario_id = str(gate_selected.get("scenarioId") or "")
+    selected = next((candidate for candidate in candidates
+                     if candidate.scenario_id == gate_scenario_id), selected)
     recovery_scalp = bool(selected and selected.setup_type == "FAKE_BREAKOUT_RECOVERY")
     if (recovery_scalp and selected is not None
             and selected.lifecycle_state == "ENTRY_READY"
@@ -388,10 +487,6 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
     preliminary_risk_valid = bool(
         not event.get("event_lockout") and not event.get("post_event_wait")
         and spread <= spread_limit and not position_active
-        and not (selected and selected.direction == "LONG" and behavior in {
-            "STRONG_DECLINE", "REVERSAL_CONFIRMED"})
-        and not (selected and selected.direction == "LONG" and not recovery_scalp
-                 and behavior == "REVERSAL_WARNING")
         and not (defense_state == "BROKEN_CONFIRMED" and (
             not selected or selected.direction == decision_health.get("side"))))
     execution_gate = (can_execute_scenario(
@@ -409,7 +504,7 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
         expires_at=selected.expires_at,
         evaluated_at=str(data.get("timestamp_utc") or ""),
     ) if selected else {
-        "scenarioValidity": ("BLOCKED_BY_DATA" if not health["healthy"]
+        "scenarioValidity": ("BLOCKED_BY_DATA" if not data_execution_allowed
                              else "PENDING_CONFIRMATION"),
         "executionAllowed": False, "candidateInvalidated": False,
         "scenarioInvalidated": False, "marketBiasChanged": False,
@@ -420,14 +515,16 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
                   for item in data.get("signal_facts") or [] if isinstance(item, dict)}
     risk_gate = "PASS"
     action: FinalAction
+    gate_state = str(entry_gate.get("entryState") or "WATCH")
+    gate_hard_blocks = list((entry_gate.get("selected") or {}).get("hardBlocks") or [])
     if entry_confirmation != "READY":
-        action = "NO_TRADE"
+        action = "NO_TRADE" if entry_confirmation == "BLOCKED_BY_DATA" else "WAIT"
         primary = ("WAIT_15M_CLOSE" if entry_confirmation == "WAIT_15M_CLOSE"
                    else "WAIT_NEW_STRUCTURE" if entry_confirmation == "WAIT_NEW_STRUCTURE"
                    else "BLOCKED_BY_DATA")
         risk_gate = ("WAIT" if entry_confirmation == "WAIT_NEW_STRUCTURE"
                      else "DATA_INVALID")
-    elif not health["healthy"]:
+    elif "DATA_STALE" in gate_hard_blocks:
         action = "NO_TRADE"
         primary, risk_gate = "DATA_STALE", "DATA_INVALID"
     elif bool(event.get("event_lockout") or event.get("post_event_wait")):
@@ -436,15 +533,6 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
         action, primary, risk_gate = "NO_TRADE", "SPREAD_TOO_HIGH", "RISK_BLOCK"
     elif position_active:
         action, primary, risk_gate = "MANAGE_POSITION", "POSITION_ACTIVE", "POSITION_MANAGEMENT"
-    elif (selected and selected.direction == "LONG" and (
-            behavior in {"STRONG_DECLINE", "REVERSAL_CONFIRMED"}
-            or (not recovery_scalp and behavior == "REVERSAL_WARNING"))):
-        action, primary, risk_gate = "NO_TRADE", "BEHAVIOR_LONG_BLOCK", "RISK_BLOCK"
-    elif (selected and selected.direction == "LONG" and not recovery_scalp
-          and behavior == "SLOW_BEARISH_DRIFT"):
-        action, primary, risk_gate = "WAIT", "BEHAVIOR_WAIT_PULLBACK", "WAIT"
-    elif str(assistant.get("regime")) in {"RANGE", "NO_EDGE", "REVERSAL_RISK"}:
-        action, primary, risk_gate = "NO_TRADE", "STRUCTURE_UNCLEAR", "NO_TRADE"
     elif (defense_state == "BROKEN_CONFIRMED"
           and (not selected or selected.direction == decision_health.get("side"))):
         action, primary, risk_gate = "NO_TRADE", "SCENARIO_DEFENSE_INVALIDATED", "RISK_BLOCK"
@@ -455,25 +543,40 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
             "NO_TRADE", "DEFENSE_BREAK_WAIT_OPPOSITE_CONFIRMATION", "RISK_BLOCK")
     elif execution_gate["scenarioValidity"] in {"INVALIDATED", "STALE"}:
         action, primary, risk_gate = "NO_TRADE", "SCENARIO_INVALIDATED", "RISK_BLOCK"
-    elif (selected and selected.lifecycle_state == "ENTRY_READY"
-          and in_executable_zone and valid_stop
-          and (rr is None or rr < settings.decision_assistant_min_rr)):
-        action, primary, risk_gate = "NO_TRADE", "RR_TOO_LOW", "RISK_BLOCK"
-    elif (selected and selected.lifecycle_state == "ENTRY_READY"
-          and execution_gate["executionAllowed"]):
-        if raw_score < 50:
-            action, primary, risk_gate = "NO_TRADE", "QUALITY_TOO_LOW", "RISK_BLOCK"
-        else:
-            action = "ENTER_LONG" if selected.direction == "LONG" else "ENTER_SHORT"
-            primary, risk_gate = "ENTRY_READY", "ENTRY_READY"
-    elif selected and entry_location in {"CHASE_LONG", "CHASE_SHORT"}:
-        action, primary, risk_gate = "WAIT", "OVEREXTENDED", "WAIT_RETEST"
-    elif selected and selected.lifecycle_state in {"ENTRY_READY", "CONFIRMED", "WATCHING"}:
-        action, primary, risk_gate = "WAIT", "SETUP_CONFIRMED_WAIT_PRICE", "WAIT"
-    elif rr is not None and rr < settings.decision_assistant_min_rr:
-        action, primary, risk_gate = "NO_TRADE", "RR_TOO_LOW", "RISK_BLOCK"
+    elif (not bool(assistant.get("canEnter", True)) and
+          str(assistant.get("regime") or "") in {"RANGE", "REVERSAL_RISK"}):
+        action, primary, risk_gate = "NO_TRADE", "REGIME_NO_SETUP", "WATCH"
+    elif gate_state == "BLOCKED":
+        hard_reason = gate_hard_blocks[0] if gate_hard_blocks else "ENTRY_HARD_BLOCK"
+        primary = ({"CHASE_ZONE": "OVEREXTENDED",
+                    "RR_BELOW_ABSOLUTE_MINIMUM": "RR_TOO_LOW"}.get(
+                        hard_reason, hard_reason))
+        # A chase block prohibits execution but remains a wait-for-retrace
+        # workflow; it is not a terminal no-trade market classification.
+        action = "WAIT" if hard_reason == "CHASE_ZONE" else "NO_TRADE"
+        risk_gate = "RISK_BLOCK"
+    elif gate_state == "ENTRY_READY" and selected and execution_gate["executionAllowed"]:
+        action = "ENTER_LONG" if selected.direction == "LONG" else "ENTER_SHORT"
+        primary, risk_gate = "ENTRY_READY", "ENTRY_READY"
+    elif gate_state == "PROBE_READY" and selected:
+        action = "ENTER_LONG" if selected.direction == "LONG" else "ENTER_SHORT"
+        primary, risk_gate = "PROBE_READY", "PROBE_READY"
     else:
-        action, primary, risk_gate = "WAIT", "WAIT_CONFIRMATION", "WAIT"
+        confirmed_wait_price = bool(
+            selected and selected.lifecycle_state in {"CONFIRMED", "ENTRY_READY"}
+            and entry_location in {
+                "WAIT_PRICE", "FAVORABLE_REPRICE", "WAIT_HIGHER_PRICE",
+                "WAIT_BEARISH_RECONFIRMATION", "ABOVE_LONG_ZONE",
+                "BELOW_SHORT_ZONE"})
+        behavior_wait = bool(
+            (entry_gate.get("selected") or {}).get("softFilters") and
+            any(row.get("code") == "MINOR_STRUCTURE_CONFLICT" and
+                "即時價格行為" in str(row.get("reason") or "")
+                for row in (entry_gate.get("selected") or {}).get("softFilters") or []))
+        action, primary, risk_gate = "WAIT", (
+            "SETUP_CONFIRMED_WAIT_PRICE" if confirmed_wait_price else
+            "BEHAVIOR_WAIT_PULLBACK" if behavior_wait else
+            "SETUP_FORMING" if selected else "WAIT_CONFIRMATION"), "WATCH"
     if str(assistant.get("regime")) == "HTF_BULLISH_LTF_WEAKENING":
         secondary.append("TIMEFRAME_CONFLICT")
 
@@ -496,6 +599,8 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
     signature_payload = (
         action, primary, scenario_id, selected.scenario_version if selected else 1,
         market_bias, entry_confirmation, defense_state,
+        gate_state, (entry_gate.get("longScore"), entry_gate.get("shortScore")),
+        tuple(gate_hard_blocks),
         execution_gate["scenarioValidity"],
         str(assistant.get("regime") or ""),
         tuple(stable_level(v) for v in zone) if zone else None,
@@ -508,14 +613,18 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
     version = int(previous.get("decisionVersion") or 0) + (1 if changed else 0)
     decision_id = hashlib.sha256(
         f"{data.get('symbol', 'XAUUSD')}|{version}|{signature}".encode()).hexdigest()[:24]
-    state_map = {"ENTER_LONG": "LONG_READY", "ENTER_SHORT": "SHORT_READY",
+    state_map = {"ENTER_LONG": ("LONG_PROBE_READY" if primary == "PROBE_READY"
+                                else "LONG_READY"),
+                 "ENTER_SHORT": ("SHORT_PROBE_READY" if primary == "PROBE_READY"
+                                  else "SHORT_READY"),
                  "NO_TRADE": ("WAIT_NEW_STRUCTURE"
                               if primary in {"WAIT_NEW_STRUCTURE", "SCENARIO_INVALIDATED"}
                               else str(base.get("state") or "NO_TRADE")
                               if primary in {"WAIT_15M_CLOSE", "BLOCKED_BY_DATA"}
                               else "NO_TRADE"),
                  "MANAGE_POSITION": "MANAGE_POSITION",
-                 "WAIT": str(base.get("state") or "WAIT")}
+                 "WAIT": ("WAIT_NEW_STRUCTURE" if primary == "WAIT_NEW_STRUCTURE"
+                          else str(base.get("state") or "WAIT"))}
     major_update = bool(fact_types & {
         "BULLISH_RESTORED", "BEARISH_CONFIRMED", "BREAKOUT_CONFIRMED",
         "BREAKOUT_FAILED", "PULLBACK_ZONE_CREATED", "SCENARIO_INVALIDATED",
@@ -538,15 +647,33 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
     candidate_payloads: list[dict] = []
     for item in candidates:
         payload = asdict(item)
+        if (item.direction == str(live_bias.get("structuralSide") or "") and
+                str(live_bias.get("liveBiasState") or "") == "REVERSAL_CANDIDATE"):
+            payload["lifecycle_state"] = "INVALIDATED"
+            payload["liveInvalidationReason"] = live_bias.get("reason")
+        elif (item.direction == str(live_bias.get("structuralSide") or "") and
+              bool(live_bias.get("intrabarSafetyOverride"))):
+            payload["lifecycle_state"] = "INVALIDATING"
+            payload["liveInvalidationReason"] = live_bias.get("reason")
         payload.update(resolve_scenario_validity(
             direction=item.direction, current_price=current_price,
             invalidation_price=item.invalidation_price,
             lifecycle_state=item.lifecycle_state,
-            data_health=str(decision_health.get("dataHealth") or health.get("status") or "STALE"),
+            data_health=canonical_health,
             entry_confirmation=entry_confirmation,
             expires_at=item.expires_at,
             evaluated_at=str(data.get("timestamp_utc") or ""),
         ))
+        if payload.get("lifecycle_state") == "INVALIDATED":
+            payload.update({"scenarioValidity": "INVALIDATED",
+                            "executionAllowed": False,
+                            "scenarioInvalidated": True})
+        elif payload.get("lifecycle_state") == "INVALIDATING":
+            payload.update({"executionAllowed": False,
+                            "blockedReasons": list(dict.fromkeys([
+                                *(payload.get("blockedReasons") or []),
+                                "LIVE_BIAS_INVALIDATING"])),
+                            })
         candidate_payloads.append(payload)
     base.update({
         "engineVersion": "final-decision-v1", "decisionId": decision_id,
@@ -556,6 +683,13 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
         "primaryReason": primary, "secondaryReasons": secondary,
         "noTradeReason": primary if action == "NO_TRADE" else "",
         "humanSummary": _summary(primary, action), "riskGate": risk_gate,
+        "entryOpportunityState": gate_state, "entryOpportunityGate": entry_gate,
+        "entryConfidenceScore": (entry_gate.get("selected") or {}).get(
+            "entryConfidenceScore", 0),
+        "positionSizeMultiplier": (entry_gate.get("selected") or {}).get(
+            "positionSizeMultiplier", 0.0),
+        "hardBlocks": gate_hard_blocks,
+        "softFilters": list((entry_gate.get("selected") or {}).get("softFilters") or []),
         "rawScore": raw_score, "calibratedProbability": _calibrated_probability(raw_score, data),
         "signalCandidates": candidate_payloads,
         "selectedScenarioId": scenario_id,
@@ -601,6 +735,13 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
         },
         "dataAgeSeconds": health.get("dataAgeSeconds"),
         "marketBias": market_bias,
+        "structuralBias": live_bias.get("structuralBias", market_bias),
+        "liveBiasState": live_bias.get("liveBiasState", "ALIGNED"),
+        "executionBias": live_bias.get("executionBias", "NEUTRAL"),
+        "liveBias": live_bias,
+        "marketBiasState": decision_health.get("marketBiasState", market_bias),
+        "higherTimeframeBias": decision_health.get("higherTimeframeBias", market_bias),
+        "biasConfidence": decision_health.get("biasConfidence"),
         "dataHealth": decision_health.get("dataHealth"),
         "entryConfirmation": entry_confirmation,
         "scenarioValidity": execution_gate["scenarioValidity"],
@@ -635,6 +776,28 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
     # to let marketDirection disagree with marketBias in the same payload.
     base["marketDirection"] = market_bias
     base["marketDirectionSource"] = "decision_health_state.marketBias"
+    selected_gate = entry_gate.get("selected") or {}
+    base["evaluationDebugSnapshot"] = {
+        "price": current_price,
+        "bias15m": multi_bias.get("bias15m"),
+        "bias1h": multi_bias.get("bias1h"),
+        "bias4h": multi_bias.get("bias4h"),
+        "bias1d": multi_bias.get("bias1d"),
+        "structuralBias": live_bias.get("structuralBias", market_bias),
+        "liveMomentum": live_bias.get("liveMomentum"),
+        "liveBiasState": live_bias.get("liveBiasState"),
+        "executionBias": live_bias.get("executionBias"),
+        "longScore": entry_gate.get("longScore", 0),
+        "shortScore": entry_gate.get("shortScore", 0),
+        "setupType": selected_gate.get("setupType"),
+        "hardBlocks": list(selected_gate.get("hardBlocks") or []),
+        "softFilters": list(selected_gate.get("softFilters") or []),
+        "riskReward": selected_gate.get("riskReward"),
+        "entryDistance": selected_gate.get("entryDistance"),
+        "decision": gate_state,
+        "telegramAction": ("SEND" if primary in {"ENTRY_READY", "PROBE_READY"}
+                           else "STATE_TRANSITION_ONLY"),
+    }
     base["entrySignal"] = ("READY" if base.get("canEnter") else
                            "PAUSED" if (not health["healthy"] or
                                         execution_gate["scenarioValidity"] in {
@@ -693,7 +856,7 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
     event_types: list[str] = []
     if changed:
         if action in {"ENTER_LONG", "ENTER_SHORT"}:
-            event_types.append("ENTRY_READY")
+            event_types.append("PROBE_READY" if primary == "PROBE_READY" else "ENTRY_READY")
         elif primary in {"SCENARIO_INVALIDATED", "SCENARIO_DEFENSE_INVALIDATED"}:
             event_types.append("SCENARIO_INVALIDATED")
         elif primary == "OVEREXTENDED":
@@ -716,6 +879,9 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
         "RECOVERY_SETUP_INVALIDATED",
         "DEFENSE_TEST", "DEFENSE_RECLAIMED", "DEFENSE_HELD",
         "DEFENSE_BROKEN_CONFIRMED",
+        "FIRST_REJECTION", "REPEATED_REJECTION", "SUPPORT_BREAK_PENDING_CLOSE", "SUPPORT_BROKEN",
+        "SUPPORT_RECLAIMED", "POSITION_DEFENSIVE", "POSITION_INVALIDATED",
+        "PROBE_READY", "ENTRY_STARVATION_WARNING",
         "DATA_DELAYED", "DATA_STALE", "DATA_RECOVERED",
         "EARLY_ENTRY_WATCH", "EARLY_ENTRY_PREPARE", "EARLY_ENTRY_REPLACED",
         "EARLY_ENTRY_MISSED",
@@ -762,6 +928,11 @@ def evaluate_final_decision(data: dict, previous: dict | None = None) -> tuple[d
             "lineageId": base.get("selectedLineageId"),
             "qualityScore": base.get("qualityScore"), "qualityGrade": base.get("qualityGrade"),
             "effectiveRR": base.get("effectiveRR"),
+            "entryOpportunityState": base.get("entryOpportunityState"),
+            "entryConfidenceScore": base.get("entryConfidenceScore"),
+            "positionSizeMultiplier": base.get("positionSizeMultiplier"),
+            "hardBlocks": base.get("hardBlocks") or [],
+            "softFilters": base.get("softFilters") or [],
             "signalFacts": list(data.get("signal_facts") or []),
             "marketBehavior": behavior,
             "marketBehaviorState": data.get("market_behavior_engine") or {},

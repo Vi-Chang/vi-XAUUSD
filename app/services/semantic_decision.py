@@ -82,6 +82,7 @@ def build_semantic_decision(payload: dict) -> dict[str, Any]:
     scalp = payload.get("scalpDecision") or canonical.get("scalpDecision") or {}
     entry = canonical.get("newEntryDecision") or {}
     position = canonical.get("positionManagement") or {}
+    live = payload.get("liveBias") or canonical.get("liveBiasEvaluation") or {}
     trigger_type, trigger_status = _trigger_state(payload, canonical)
     return {
         "symbol": str(payload.get("symbol") or "XAUUSD"),
@@ -89,9 +90,17 @@ def build_semantic_decision(payload: dict) -> dict[str, Any]:
                                canonical.get("primaryAction") or entry.get("action") or
                                "WAIT").upper(),
         "shortTermBias": str(scalp.get("scalpBias") or
+                             canonical.get("marketBiasState") or
+                             payload.get("marketBiasState") or
                              multi.get("shortTermBias") or "UNKNOWN"),
         "preferredScalpSide": str(scalp.get("preferredSide") or
                                   payload.get("preferredScalpSide") or ""),
+        "structuralBias": str(live.get("structuralBias") or
+                              canonical.get("structuralBias") or "NEUTRAL"),
+        "liveBiasState": str(live.get("liveBiasState") or
+                             canonical.get("liveBiasState") or "ALIGNED"),
+        "executionBias": str(live.get("executionBias") or
+                             canonical.get("executionBias") or "NEUTRAL"),
         "bias15m": str(multi.get("bias15m") or "UNKNOWN"),
         "bias1h": str(multi.get("bias1h") or "UNKNOWN"),
         "bias4h": str(multi.get("bias4h") or "UNKNOWN"),
@@ -101,6 +110,11 @@ def build_semantic_decision(payload: dict) -> dict[str, Any]:
         "rrState": _rr_state(payload, canonical),
         "defenseState": str(payload.get("defenseState") or
                             canonical.get("defenseState") or "NORMAL"),
+        "failedBreakoutState": str(payload.get("failedBreakoutState") or
+                                    canonical.get("failedBreakoutState") or "NONE"),
+        "supportRoleState": str(payload.get("supportState") or
+                                (canonical.get("failedBreakoutRejection") or {}).get(
+                                    "supportState") or "SAFE"),
         "positionState": str(position.get("action") or payload.get("positionState") or
                              (payload.get("event_type") if payload.get("positionId") else "NONE")),
         "dataHealthState": str(payload.get("dataHealth") or
@@ -129,6 +143,10 @@ def detect_meaningful_transition(previous: dict | None,
         return None
     ordered = (
         ("positionState", "POSITION_CHANGED"), ("defenseState", "DEFENSE_CHANGED"),
+        ("liveBiasState", "LIVE_BIAS_CHANGED"),
+        ("executionBias", "EXECUTION_BIAS_CHANGED"),
+        ("supportRoleState", "SUPPORT_ROLE_CHANGED"),
+        ("failedBreakoutState", "BREAKOUT_FAILURE_CHANGED"),
         ("canonicalAction", "ACTION_CHANGED"), ("shortTermBias", "BIAS_CHANGED"),
         ("preferredScalpSide", "BIAS_CHANGED"), ("bias15m", "BIAS_CHANGED"),
         ("bias1h", "BIAS_CHANGED"), ("triggerStatus", "TRIGGER_STATUS_CHANGED"),

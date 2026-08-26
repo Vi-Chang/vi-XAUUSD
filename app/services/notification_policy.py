@@ -8,7 +8,7 @@ from app.services.semantic_decision import build_decision_signature
 
 CRITICAL = {"STOP_TRIGGERED", "POSITION_EXIT", "HARD_INVALIDATED"}
 ACTION = {
-    "ENTRY_READY", "ENTRY_NOW", "POSITION_DEFEND", "SETUP_INVALIDATED",
+    "ENTRY_READY", "PROBE_READY", "ENTRY_NOW", "POSITION_DEFEND", "SETUP_INVALIDATED",
     "SOFT_INVALIDATED", "EXIT_NOW", "ENTRY_INVALIDATED",
     "EARLY_ENTRY_INVALIDATED",
 }
@@ -35,6 +35,14 @@ IMPORTANT = {
     "EARLY_ENTRY_WATCH", "EARLY_ENTRY_REPLACED",
     "STATE_CHANGED", "PULLBACK_ZONE_UPDATED", "MARKET_BEHAVIOR_CHANGED",
     "NEW_RECLAIM_EVENT", "TRAILING_EXIT",
+    "FIRST_REJECTION", "REPEATED_REJECTION", "SUPPORT_BREAK_PENDING_CLOSE", "SUPPORT_BROKEN",
+    "SUPPORT_RECLAIMED", "POSITION_DEFENSIVE", "POSITION_INVALIDATED",
+    "LONG_INVALIDATING", "SHORT_INVALIDATING", "LONG_RESTORED", "SHORT_RESTORED",
+    "LONG_WATCH", "SHORT_WATCH",
+    "CANDLE_CLOSE_ANALYSIS_15M", "CANDLE_CLOSE_ANALYSIS_1H",
+    "CANDLE_CLOSE_ANALYSIS_COMBINED",
+    "TIMEFRAME_DIVERGENCE", "BIAS_TRANSITION", "SCORE_NEAR_TIE",
+    "TRUE_ENGINE_CONFLICT", "SYSTEM_STATE_INVARIANT_BLOCKED",
 }
 INFO = {"REGIME_MAJOR_CHANGE", "MARKET_CLOSED", "SETUP_CREATED", "SETUP_ARMED"}
 WAIT_STATES = {"WAIT", "NO_TRADE", "WAIT_CONFIRMATION"}
@@ -67,6 +75,13 @@ def is_user_actionable_notification(payload: dict) -> tuple[bool, str, str]:
     if event_type in {"DELIVERY_UNKNOWN", "HEARTBEAT", "CANDLE_FINALIZED",
                       "OPPORTUNITY_COVERAGE_GAP"}:
         return False, "LOG_ONLY_EVENT", "LOG_ONLY"
+    if event_type in {"CANDLE_CLOSE_ANALYSIS_15M", "CANDLE_CLOSE_ANALYSIS_1H",
+                      "CANDLE_CLOSE_ANALYSIS_COMBINED"}:
+        return True, "MANDATORY_CANDLE_CLOSE_ANALYSIS", "P2"
+    if event_type in {"TIMEFRAME_DIVERGENCE", "BIAS_TRANSITION", "SCORE_NEAR_TIE"}:
+        return True, "CANONICAL_MARKET_STATE_CHANGED", "P3"
+    if event_type in {"TRUE_ENGINE_CONFLICT", "SYSTEM_STATE_INVARIANT_BLOCKED"}:
+        return True, "CANONICAL_SYSTEM_SAFETY_BLOCK", "P0"
     if event_type in {"DATA_DELAYED", "DATA_STALE"}:
         return ((_critical_data_block(payload), "CRITICAL_DATA_BLOCK", "P7")
                 if _critical_data_block(payload) else
@@ -82,7 +97,7 @@ def is_user_actionable_notification(payload: dict) -> tuple[bool, str, str]:
             "TP2_HIT", "TP3_HIT", "TAKE_PROFIT_1", "TAKE_PROFIT_2",
             "TAKE_PROFIT_3", "TRAILING_STOP_UPDATE"}:
         return True, "POSITION_ACTION", "P0"
-    if event_type in {"ENTRY_READY", "ENTRY_NOW"} or (
+    if event_type in {"ENTRY_READY", "PROBE_READY", "ENTRY_NOW"} or (
             (state.endswith("READY") or state.startswith("ENTRY_READY_")) and
             bool(payload.get("canEnter", True))):
         return True, "ENTRY_PERMISSION_CHANGED", "P1"
@@ -92,6 +107,8 @@ def is_user_actionable_notification(payload: dict) -> tuple[bool, str, str]:
             "INVALIDATED", "SETUP_INVALIDATED", "PULLBACK_INVALIDATED",
             "EXPIRED", "SETUP_EXPIRED"}:
         return True, "ACTIVE_SETUP_INVALIDATED", "P2"
+    if event_type in {"LONG_INVALIDATING", "SHORT_INVALIDATING"}:
+        return True, "INTRABAR_SAFETY_OVERRIDE", "P2"
     if event_type in {"EARLY_ENTRY_PREPARE", "EARLY_ENTRY_REPLACED"}:
         return True, "PREPARE_ACTION", "P3"
     if event_type in {"EARLY_ENTRY_WATCH", "ENTRY_APPROACHING",
@@ -101,9 +118,17 @@ def is_user_actionable_notification(payload: dict) -> tuple[bool, str, str]:
         return True, "MISSED_ACTION", "P5"
     if event_type in {"BIAS_CHANGE", "REGIME_MAJOR_CHANGE", "BULLISH_RECOVERY",
                       "BEARISH_RECOVERY", "FALSE_BREAKOUT",
-                      "MARKET_BEHAVIOR_CHANGED"} or bool(
+                      "MARKET_BEHAVIOR_CHANGED", "LONG_RESTORED", "SHORT_RESTORED",
+                      "LONG_WATCH", "SHORT_WATCH"} or bool(
             payload.get("marketBiasChanged")):
         return True, "MATERIAL_BIAS_CHANGE", "P6"
+    if event_type in {"FIRST_REJECTION", "REPEATED_REJECTION", "FAILED_BREAKOUT",
+                      "SUPPORT_BREAK_PENDING_CLOSE",
+                      "SUPPORT_BROKEN", "SUPPORT_RECLAIMED"}:
+        return True, "MATERIAL_PRICE_EVIDENCE", "P3"
+    if event_type in {"POSITION_WARNING", "POSITION_DEFENSIVE",
+                      "POSITION_INVALIDATED"}:
+        return True, "POSITION_ACTION", "P0"
     if event_type in {"STATE_CHANGED", "PULLBACK_ZONE_UPDATED",
                       "NEW_RECLAIM_EVENT"}:
         # The semantic transition detector decides whether this lifecycle fact
@@ -222,6 +247,12 @@ def is_expired(payload: dict, *, now: datetime | None = None) -> bool:
 
 
 def canonical_dedupe_key(payload: dict) -> str:
+    if str(payload.get("event_type") or "") in {
+            "CANDLE_CLOSE_ANALYSIS_15M", "CANDLE_CLOSE_ANALYSIS_1H",
+            "CANDLE_CLOSE_ANALYSIS_COMBINED"}:
+        # A report is a finalized-candle fact.  Unlike ordinary WAIT alerts,
+        # its close timestamp is intentionally part of the durable identity.
+        return str(payload.get("reportDedupeKey") or payload.get("eventKey") or "")
     # Delegate to the meaningful market fingerprint. It deliberately excludes
     # quote/calculation time, but includes action-changing prices and state.
     from app.services.alert_aggregator import notification_fingerprint

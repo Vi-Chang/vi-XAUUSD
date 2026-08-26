@@ -180,9 +180,12 @@ def validate_pre_delivery(db: Session, *, symbol: str, queued_payload: dict,
     snapshot["effective_stop"] = stop
     snapshot["effective_target"] = target
     snapshot["effective_rr"] = round(effective_rr, 3)
-    if effective_rr < settings.decision_assistant_min_rr:
+    risk_gate = str(current.get("riskGate") or "")
+    required_rr = (settings.entry_gate_absolute_min_rr if risk_gate == "PROBE_READY"
+                   else settings.decision_assistant_min_rr)
+    if effective_rr < required_rr:
         return _blocked("RR_REVALIDATION_FAILED", snapshot, current)
-    if str(current.get("riskGate") or "") != "ENTRY_READY":
+    if risk_gate not in {"ENTRY_READY", "PROBE_READY"}:
         return _blocked("RISK_GATE_NOT_READY", snapshot, current)
     render = {**queued_payload, "finalDecision": action,
               "currentState": current.get("state"), "currentPrice": delivery_price,

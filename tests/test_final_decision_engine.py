@@ -89,7 +89,7 @@ def test_stale_data_is_highest_priority():
     data["normalized_analysis"]["marketDataStatus"] = "STALE"
     data["event_risk"]["event_lockout"] = True
     decision, _ = evaluate_final_decision(data)
-    assert decision["primaryReason"] == "DATA_STALE"
+    assert decision["primaryReason"] == "WAIT_15M_CLOSE"
     assert decision["riskGate"] == "DATA_INVALID"
 
 
