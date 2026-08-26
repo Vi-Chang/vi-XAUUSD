@@ -54,23 +54,16 @@ def _tactical_vote(value: str) -> float | None:
 
 
 def derive_short_term_bias(snapshot: dict) -> str:
-    """Combine the tactical 15M/1H/4H leg without letting 1D override it."""
-    weighted: list[tuple[float, float]] = []
-    for field, weight in (("bias15m", .45), ("bias1h", .35), ("bias4h", .20)):
+    """Resolve intraday direction in strict 15M -> 1H order.
+
+    4H is deliberately excluded: it is background context, not an intraday
+    direction vote. A directional 15M structure cannot be overturned by 1H.
+    """
+    for field in ("bias15m", "bias1h"):
         vote = _tactical_vote(str(snapshot.get(field) or "UNKNOWN"))
-        if vote is not None:
-            weighted.append((vote, weight))
-    if not weighted:
-        return "SHORT_TERM_TRANSITION"
-    score = sum(value * weight for value, weight in weighted) / sum(
-        weight for _, weight in weighted)
-    values = [value for value, _ in weighted]
-    if max(values) > 0 and min(values) < 0 and abs(score) < .45:
-        return "SHORT_TERM_MIXED"
-    if score >= .35:
-        return "SHORT_TERM_BULLISH"
-    if score <= -.35:
-        return "SHORT_TERM_BEARISH"
+        if vote is None or vote == 0:
+            continue
+        return "SHORT_TERM_BULLISH" if vote > 0 else "SHORT_TERM_BEARISH"
     return "SHORT_TERM_TRANSITION"
 
 

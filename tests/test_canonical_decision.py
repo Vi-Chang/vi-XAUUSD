@@ -226,6 +226,31 @@ def test_unknown_position_is_explicit_not_hypothetical():
     assert position["targets"] == []
 
 
+def test_closed_15m_direction_is_not_overwritten_by_live_or_macro_bias():
+    data = payload()
+    data["normalized_analysis"]["timeframeAssessments"] = [
+        {"timeframe": "15M", "trend": "bearish"},
+        {"timeframe": "1H", "trend": "bullish"},
+        {"timeframe": "4H", "trend": "bullish"},
+        {"timeframe": "1D", "trend": "bullish"},
+    ]
+    data["live_bias_state"] = {
+        "executionBias": "LONG", "structuralBias": "BULLISH",
+        "liveMomentum": "STRONG_LONG", "liveBiasState": "ALIGNED",
+    }
+    canonical = build_canonical_decision(data, data["final_decision_state"])
+    scalp = canonical["scalpDecision"]
+    assert scalp["preferredSide"] == "SHORT"
+    assert scalp["directionSource"] == "15M"
+    assert scalp["legacyExecutionBias"] == "LONG"
+    assert scalp["priorityConflict"] is True
+    assert canonical["executionAllowed"] is False
+    assert canonical["allowLong"] is False
+    assert canonical["allowShort"] is False
+    assert canonical["newEntryDecision"]["tradeStatus"] == (
+        "WAIT_15M_DIRECTION_ALIGNMENT")
+
+
 def test_engine_selected_setup_does_not_change_between_wait_cards():
     data = payload()
     final = data["final_decision_state"]

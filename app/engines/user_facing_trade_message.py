@@ -102,7 +102,11 @@ class UserFacingTradeMessageBuilder:
                 "macro1d": snapshot.get("bias1d"),
                 "counterHigherTimeframe": snapshot.get("alignment") == "COUNTERTREND",
             }
-        if live:
+        if scalp:
+            # The user-facing intraday direction is always the strict
+            # 15M -> 1H resolver. Live/HTF values remain background metadata.
+            bias_lines = scalp_bias_lines(scalp)
+        elif live:
             structural = str(live.get("structuralBias") or
                              canonical.get("structuralBias") or "NEUTRAL")
             momentum = str(live.get("liveMomentum") or "NEUTRAL")
@@ -125,7 +129,7 @@ class UserFacingTradeMessageBuilder:
                           f"即時動能：{momentum_text}",
                           f"目前操作：{execution_text}"]
         else:
-            bias_lines = scalp_bias_lines(scalp) if scalp else timeframe_bias_lines(snapshot)
+            bias_lines = timeframe_bias_lines(snapshot)
         # A multi-timeframe block supersedes every ambiguous single market
         # direction row. Unknown timeframes are simply omitted.
         if bias_lines:

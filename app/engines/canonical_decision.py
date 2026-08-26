@@ -789,13 +789,14 @@ def build_canonical_decision(data: dict, final: dict) -> dict:
         },
     }
     scalp_snapshot = build_scalp_decision_snapshot(data, result)
+    # executionBias is a legacy/live structural view. It must never overwrite
+    # the strict 15M -> 1H intraday resolver used by execution and messaging.
     execution_bias = str(result.get("executionBias") or "NEUTRAL")
-    scalp_snapshot["preferredSide"] = {
-        "LONG": "LONG", "LONG_WATCH": "LONG",
-        "SHORT": "SHORT", "SHORT_WATCH": "SHORT",
-    }.get(execution_bias, "BOTH")
-    if execution_bias == "NEUTRAL":
-        scalp_snapshot["scalpBias"] = "SCALP_TRANSITION"
+    scalp_snapshot["legacyExecutionBias"] = execution_bias
+    scalp_snapshot["priorityConflict"] = (
+        scalp_snapshot["preferredSide"] in {"LONG", "SHORT"}
+        and execution_bias in {"LONG", "SHORT", "LONG_WATCH", "SHORT_WATCH"}
+        and not execution_bias.startswith(str(scalp_snapshot["preferredSide"])))
     result.update({
         "tradingHorizon": scalp_snapshot["tradingHorizon"],
         "scalpDecision": scalp_snapshot,

@@ -8,31 +8,79 @@ from app.config import get_settings
 from app.engines.multi_timeframe_bias import derive_multi_timeframe_bias
 
 
+def _intraday_side(value: Any) -> str:
+    normalized = str(value or "UNKNOWN").upper()
+    if normalized in {"BULLISH", "BEARISH_CORRECTION"}:
+        return "LONG"
+    if normalized in {"BEARISH", "BULLISH_CORRECTION"}:
+        return "SHORT"
+    return "NONE"
+
+
+def resolve_intraday_bias_priority(multi: dict) -> dict[str, Any]:
+    """Resolve 15M -> 1H direction; 4H/macro can only tune confidence.
+
+    An established 15M structure is the intraday direction. 1H is a fallback
+    when 15M has no direction, while 4H and 1D are context and never a veto.
+    """
+    side15 = _intraday_side(multi.get("bias15m"))
+    side1h = _intraday_side(multi.get("bias1h"))
+    side4h = _intraday_side(multi.get("bias4h"))
+    side1d = _intraday_side(multi.get("bias1d"))
+
+    if side15 != "NONE":
+        preferred = side15
+        source = "15M"
+        confidence = 72
+    elif side1h != "NONE":
+        preferred = side1h
+        source = "1H_FALLBACK"
+        confidence = 58
+    else:
+        preferred = "NONE"
+        source = "NO_TACTICAL_DIRECTION"
+        confidence = 40
+
+    adjustments: list[dict[str, Any]] = []
+    risk_flags: list[str] = []
+
+    def adjust(label: str, context_side: str, aligned: int, conflict: int,
+               conflict_flag: str | None = None) -> None:
+        nonlocal confidence
+        if preferred == "NONE" or context_side == "NONE":
+            return
+        delta = aligned if context_side == preferred else conflict
+        confidence += delta
+        adjustments.append({"source": label, "delta": delta,
+                            "alignment": "ALIGNED" if delta > 0 else "CONFLICT"})
+        if delta < 0 and conflict_flag:
+            risk_flags.append(conflict_flag)
+
+    # 1H is confirmation only when 15M has already established the direction.
+    if source == "15M":
+        adjust("1H", side1h, 8, -10, "COUNTER_1H_STRUCTURE")
+    adjust("4H_BACKGROUND", side4h, 5, -5, "COUNTER_4H_STRUCTURE")
+    adjust("MACRO_CONFIDENCE_ONLY", side1d, 3, -3, "COUNTER_MACRO_TREND_RISK")
+    confidence = max(0, min(100, confidence))
+
+    scalp_bias = {"LONG": "SCALP_BULLISH", "SHORT": "SCALP_BEARISH"}.get(
+        preferred, "SCALP_TRANSITION")
+    return {
+        "scalpBias": scalp_bias,
+        "preferredSide": preferred,
+        "directionSource": source,
+        "directionConfidence": confidence,
+        "confidenceAdjustments": adjustments,
+        "riskFlags": list(dict.fromkeys(risk_flags)),
+        "fifteenMinuteStructureEstablished": side15 != "NONE",
+        "macroVetoAllowed": False,
+        "biasPriority": ["15M", "1H", "4H_BACKGROUND", "MACRO_CONFIDENCE_ONLY"],
+    }
+
+
 def derive_scalp_bias(multi: dict) -> str:
-    """15M and 1H decide execution direction; 4H/1D never veto it."""
-    m15 = str(multi.get("bias15m") or "UNKNOWN")
-    h1 = str(multi.get("bias1h") or "UNKNOWN")
-
-    def side(value: str) -> int | None:
-        if value in {"BULLISH", "BEARISH_CORRECTION"}:
-            return 1
-        if value in {"BEARISH", "BULLISH_CORRECTION"}:
-            return -1
-        if value in {"NEUTRAL", "TRANSITION"}:
-            return 0
-        return None
-
-    votes = [vote for vote in (side(m15), side(h1)) if vote is not None]
-    if not votes or all(vote == 0 for vote in votes):
-        return "SCALP_TRANSITION"
-    if len(votes) == 2 and votes[0] * votes[1] < 0:
-        return "SCALP_MIXED"
-    score = sum(votes) / len(votes)
-    if score >= .5:
-        return "SCALP_BULLISH"
-    if score <= -.5:
-        return "SCALP_BEARISH"
-    return "SCALP_TRANSITION"
+    """Backward-compatible view of the canonical intraday resolver."""
+    return str(resolve_intraday_bias_priority(multi)["scalpBias"])
 
 
 def preferred_scalp_side(scalp_bias: str) -> str:
@@ -105,8 +153,9 @@ def build_scalp_decision_snapshot(data: dict, canonical: dict | None = None) -> 
     normalized = data.get("normalized_analysis") or {}
     multi = canonical.get("multiTimeframeBias") or derive_multi_timeframe_bias(
         normalized, canonical_bias=str(canonical.get("marketBias") or "NEUTRAL"))
-    scalp_bias = derive_scalp_bias(multi)
-    preferred = preferred_scalp_side(scalp_bias)
+    priority = resolve_intraday_bias_priority(multi)
+    scalp_bias = str(priority["scalpBias"])
+    preferred = str(priority["preferredSide"])
     opportunity_engine = data.get("entry_opportunity_engine") or {}
     opportunities = list(opportunity_engine.get("opportunities") or [])
     long_primary, long_secondary = _zones(opportunities, "LONG")
@@ -143,8 +192,15 @@ def build_scalp_decision_snapshot(data: dict, canonical: dict | None = None) -> 
         "setupAge": age, "setupTTL": ttl,
         "setupExpired": bool(age >= ttl), "dataHealth": canonical.get("dataHealth"),
         "counterHigherTimeframe": conflict4h or conflict1d,
-        "riskFlags": (["COUNTER_4H_STRUCTURE"] if conflict4h else []) +
-                     (["COUNTER_MACRO_TREND_RISK"] if conflict1d else []),
+        "directionSource": priority["directionSource"],
+        "directionConfidence": priority["directionConfidence"],
+        "confidenceAdjustments": priority["confidenceAdjustments"],
+        "fifteenMinuteStructureEstablished": priority["fifteenMinuteStructureEstablished"],
+        "macroVetoAllowed": False,
+        "biasPriority": priority["biasPriority"],
+        "riskFlags": list(dict.fromkeys(priority["riskFlags"] +
+                     (["COUNTER_4H_STRUCTURE"] if conflict4h else []) +
+                     (["COUNTER_MACRO_TREND_RISK"] if conflict1d else []))),
         "managementMode": "ALLOW_RUNNER" if aligned_15_1_4 else
                           "SCALP_ONLY" if conflict4h or conflict1d else "STANDARD_INTRADAY",
         "nextLongScalpOpportunity": long_primary,

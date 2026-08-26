@@ -9,6 +9,7 @@ from app.engines.scalp_decision import (
     build_scalp_decision_snapshot,
     derive_scalp_bias,
     preferred_scalp_side,
+    resolve_intraday_bias_priority,
     scalp_opportunity_coverage,
     scalp_setup_ttl_bars,
 )
@@ -220,3 +221,70 @@ def test_15_telegram_localization_boundary_hides_engine_codes():
     for raw in ("ENTRY_READY", "PREPARE_SHORT", "FAILED_BREAKOUT",
                 "DEGRADED_15M", "None", "null", "undefined", "NaN"):
         assert raw not in message
+
+
+def test_16_15m_bearish_cannot_be_overturned_by_bullish_1h_4h_macro():
+    multi = derive_multi_timeframe_bias(
+        {"timeframeAssessments": assessments("bearish", "bullish", "bullish", "bullish")},
+        canonical_bias="BULLISH")
+    resolved = resolve_intraday_bias_priority(multi)
+    assert multi["shortTermBias"] == "SHORT_TERM_BEARISH"
+    assert resolved["preferredSide"] == "SHORT"
+    assert resolved["directionSource"] == "15M"
+    assert resolved["macroVetoAllowed"] is False
+    assert resolved["directionConfidence"] < 72
+
+
+def test_17_15m_bullish_cannot_be_overturned_by_bearish_1h_4h_macro():
+    multi = derive_multi_timeframe_bias(
+        {"timeframeAssessments": assessments("bullish", "bearish", "bearish", "bearish")},
+        canonical_bias="BEARISH")
+    resolved = resolve_intraday_bias_priority(multi)
+    assert multi["shortTermBias"] == "SHORT_TERM_BULLISH"
+    assert resolved["preferredSide"] == "LONG"
+    assert resolved["directionSource"] == "15M"
+    assert resolved["directionConfidence"] < 72
+
+
+def test_18_1h_is_fallback_only_when_15m_has_no_direction():
+    multi = derive_multi_timeframe_bias(
+        {"timeframeAssessments": assessments("neutral", "bearish", "bullish", "bullish")},
+        canonical_bias="BULLISH")
+    resolved = resolve_intraday_bias_priority(multi)
+    assert resolved["preferredSide"] == "SHORT"
+    assert resolved["directionSource"] == "1H_FALLBACK"
+    assert resolved["fifteenMinuteStructureEstablished"] is False
+
+
+def test_19_macro_change_only_adjusts_confidence_not_15m_direction():
+    bullish_macro = derive_multi_timeframe_bias(
+        {"timeframeAssessments": assessments("bearish", "bearish", "bullish", "bullish")})
+    bearish_macro = derive_multi_timeframe_bias(
+        {"timeframeAssessments": assessments("bearish", "bearish", "bearish", "bearish")})
+    counter = resolve_intraday_bias_priority(bullish_macro)
+    aligned = resolve_intraday_bias_priority(bearish_macro)
+    assert counter["preferredSide"] == aligned["preferredSide"] == "SHORT"
+    assert counter["directionConfidence"] < aligned["directionConfidence"]
+
+
+def test_20_telegram_uses_15m_even_when_live_execution_bias_disagrees():
+    multi = derive_multi_timeframe_bias(
+        {"timeframeAssessments": assessments("bearish", "bullish", "bullish", "bullish")},
+        canonical_bias="BULLISH")
+    event = {
+        "event_type": "EARLY_ENTRY_PREPARE", "candidateSide": "SHORT",
+        "direction": "SHORT", "currentPrice": 99.0,
+        "candidateZone": {"low": 98.5, "high": 99.5},
+        "candidateDefenseLevel": 101.0,
+        "canonicalDecision": {
+            "multiTimeframeBias": multi,
+            "scalpDecision": build_scalp_decision_snapshot(
+                {"normalized_analysis": {"currentPrice": 99.0}},
+                {"multiTimeframeBias": multi, "marketBias": "BULLISH"}),
+            "liveBiasEvaluation": {"executionBias": "LONG", "structuralBias": "BULLISH"},
+        },
+    }
+    message = format_decision_message(event)
+    assert "短線：🔴 偏空" in message
+    assert "目前策略：優先找空" in message
+    assert "目前操作：🟢 優先找多" not in message
